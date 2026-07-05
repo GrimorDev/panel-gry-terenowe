@@ -16,27 +16,104 @@
         <span><strong>Gry Terenowe</strong><small>Panel wychowawcy</small></span>
       </div>
       <nav>
-        <button class="nav active" data-view="dashboard">Gra</button>
+        <button class="nav active" data-view="setup">Przygotuj</button>
+        <button class="nav" data-view="dashboard">Prowadź</button>
         <button class="nav" data-view="score">Ocena</button>
-        <button class="nav" data-view="mapView">Mapa</button>
         <button class="nav" data-view="teamsView">Drużyny</button>
-        <button class="nav" data-view="admin">Admin</button>
+        <button class="nav" data-view="resources">Materiały</button>
       </nav>
     </aside>
 
     <main>
       <header class="top">
         <div>
-          <span class="kicker">Aktywna gra</span>
+          <span class="kicker">Wybrana gra</span>
           <h1 id="gameName">Ładowanie...</h1>
         </div>
         <div class="top-actions">
+          <label class="game-picker">
+            Gra
+            <select id="gameSelect"></select>
+          </label>
           <button class="secondary" id="scanQrBtn">Skanuj QR</button>
           <button class="primary" id="tvBtn">Ekran TV</button>
         </div>
       </header>
 
-      <section class="view active" id="dashboard">
+      <section class="view active" id="setup">
+        <div class="setup-hero">
+          <div>
+            <span class="kicker">Krok 1</span>
+            <h2>Wybierz albo utwórz grę</h2>
+            <p>Tu ustawiasz nazwę, datę, czas i bazę gry. Dopiero potem dodajesz stacje na mapie i drużyny.</p>
+          </div>
+          <button class="secondary" id="newGameBtn">Wyczyść formularz</button>
+        </div>
+
+        <div class="setup-grid">
+          <section class="panel">
+            <div class="panel-head"><h2>Ustawienia gry</h2><span id="gameFormMode">edycja</span></div>
+            <form id="gameForm" class="form">
+              <input name="id" type="hidden">
+              <label>Nazwa gry<input name="name" placeholder="np. Podchody po lesie" required></label>
+              <div class="form-row">
+                <label>Typ
+                  <select name="template">
+                    <option>Własna</option>
+                    <option>Polska</option>
+                    <option>Włochy</option>
+                    <option>Olimp</option>
+                  </select>
+                </label>
+                <label>Czas minut<input name="duration_minutes" type="number" min="5" max="600" value="90"></label>
+              </div>
+              <div class="form-row">
+                <label>Data<input name="game_date" type="date"></label>
+                <label>Start<input name="start_time" type="time" value="12:00"></label>
+              </div>
+              <label class="check"><input name="use_template" type="checkbox"> Dodaj przykładowe stacje z wybranego typu</label>
+              <div class="dialog-actions">
+                <button class="primary" type="submit">Zapisz grę</button>
+                <button class="secondary danger-text" id="deleteGameBtn" type="button">Usuń tę grę</button>
+              </div>
+            </form>
+          </section>
+
+          <section class="panel">
+            <div class="panel-head"><h2>Drużyny</h2><button class="primary small-btn" id="addTeamBtnSetup">Dodaj drużynę</button></div>
+            <div class="team-mini" id="teamMini"></div>
+          </section>
+        </div>
+
+        <section class="panel station-builder">
+          <div class="panel-head">
+            <div>
+              <span class="kicker">Krok 2</span>
+              <h2>Stacje na mapie</h2>
+              <p>Kliknij mapę, żeby wskazać miejsce stacji. Przeciągnij punkt, żeby go poprawić.</p>
+            </div>
+            <button class="secondary" id="fitMap">Pokaż wszystkie</button>
+          </div>
+          <div class="builder-layout">
+            <div id="map"></div>
+            <aside class="station-editor">
+              <form id="stationForm" class="form">
+                <input name="id" type="hidden">
+                <label>Nazwa stacji<input name="title" placeholder="np. Most nad rzeką" required></label>
+                <div class="form-row">
+                  <label>Kolejność<input name="station_order" type="number" min="1" value="1"></label>
+                  <label>Lat<input name="lat" type="number" step="0.000001" placeholder="kliknij mapę"></label>
+                </div>
+                <label>Lng<input name="lng" type="number" step="0.000001" placeholder="kliknij mapę"></label>
+                <button class="primary" type="submit">Zapisz stację</button>
+              </form>
+              <div class="station-manage" id="stationManage"></div>
+            </aside>
+          </div>
+        </section>
+      </section>
+
+      <section class="view" id="dashboard">
         <div class="grid dashboard-grid">
           <section class="panel timer-panel">
             <div class="panel-head">
@@ -70,8 +147,8 @@
             <div class="action-grid">
               <button id="quickScore">Oceń stację</button>
               <button id="quickTeam">Dodaj drużynę</button>
-              <button id="quickStation">Dodaj stację</button>
-              <button id="quickMap">Otwórz mapę</button>
+              <button id="quickStation">Ustaw stacje</button>
+              <button id="quickMap">Mapa stacji</button>
             </div>
           </section>
 
@@ -124,19 +201,6 @@
         </div>
       </section>
 
-      <section class="view" id="mapView">
-        <section class="panel map-panel">
-          <div class="panel-head">
-            <div>
-              <h2>Mapa gry</h2>
-              <span>OpenStreetMap, realne współrzędne stacji</span>
-            </div>
-            <button class="secondary" id="fitMap">Pokaż wszystkie</button>
-          </div>
-          <div id="map"></div>
-        </section>
-      </section>
-
       <section class="view" id="teamsView">
         <div class="panel-head page-head">
           <h2>Drużyny</h2>
@@ -145,39 +209,8 @@
         <div class="team-grid" id="teamGrid"></div>
       </section>
 
-      <section class="view" id="admin">
+      <section class="view" id="resources">
         <div class="admin-layout">
-          <section class="panel">
-            <div class="panel-head"><h2>Nowa gra</h2><span>szablon</span></div>
-            <form id="gameForm" class="form">
-              <label>Nazwa gry<input name="name" value="Wycieczka po Polsce"></label>
-              <label>Typ
-                <select name="template">
-                  <option>Polska</option>
-                  <option>Włochy</option>
-                  <option>Olimp</option>
-                  <option>Własna</option>
-                </select>
-              </label>
-              <label>Data<input name="game_date" type="date"></label>
-              <label>Start<input name="start_time" type="time" value="12:00"></label>
-              <label>Czas minut<input name="duration_minutes" type="number" min="5" max="600" value="90"></label>
-              <button class="primary" type="submit">Utwórz grę</button>
-            </form>
-          </section>
-
-          <section class="panel">
-            <div class="panel-head"><h2>Dodaj stację</h2><span>mapa</span></div>
-            <form id="stationForm" class="form">
-              <input name="id" type="hidden">
-              <label>Nazwa<input name="title" placeholder="np. Most nad rzeką" required></label>
-              <label>Kolejność<input name="station_order" type="number" min="1" value="1"></label>
-              <label>Szerokość geogr.<input name="lat" type="number" step="0.000001" placeholder="52.22977"></label>
-              <label>Długość geogr.<input name="lng" type="number" step="0.000001" placeholder="21.01178"></label>
-              <button class="primary" type="submit">Zapisz stację</button>
-            </form>
-          </section>
-
           <section class="panel wide">
             <div class="panel-head"><h2>Stacje i kody QR</h2><span>do wydruku</span></div>
             <div class="qr-grid" id="qrGrid"></div>

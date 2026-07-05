@@ -35,9 +35,13 @@ h1, h2, h3, p { margin-top: 0; }
 h1 { margin-bottom: 0; font-size: clamp(28px, 4vw, 46px); letter-spacing: 0; }
 h2 { margin-bottom: 0; font-size: 21px; }
 .top-actions, .timer-controls, .dialog-actions { display: flex; flex-wrap: wrap; gap: 10px; }
+.game-picker { width: min(420px, 42vw); color: var(--muted); font-size: 13px; }
+.game-picker select { min-width: 260px; }
 .primary { padding: 0 16px; color: white; background: var(--brand); }
 .primary:hover { background: var(--brand-strong); }
 .secondary { padding: 0 16px; color: var(--ink); background: white; border: 1px solid var(--line); }
+.small-btn { min-height: 36px; padding: 0 12px; font-size: 13px; }
+.danger-text { color: var(--red); }
 
 .view { display: none; }
 .view.active { display: block; }
@@ -47,6 +51,99 @@ h2 { margin-bottom: 0; font-size: 21px; }
 .panel-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; color: var(--muted); }
 .panel-head h2 { color: var(--ink); }
 .page-head { margin-bottom: 14px; }
+
+.setup-hero {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: center;
+  margin-bottom: 14px;
+  padding: 18px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: var(--shadow);
+}
+
+.setup-hero p, .panel-head p {
+  margin: 5px 0 0;
+  color: var(--muted);
+}
+
+.setup-grid {
+  display: grid;
+  grid-template-columns: minmax(320px, 1fr) minmax(260px, .65fr);
+  gap: 14px;
+  margin-bottom: 14px;
+}
+
+.form-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.team-mini, .station-manage {
+  display: grid;
+  gap: 9px;
+}
+
+.mini-row {
+  display: grid;
+  grid-template-columns: 14px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 9px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #f8fbf9;
+}
+
+.color-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 99px;
+  background: var(--team-color);
+}
+
+.empty {
+  margin: 0;
+  color: var(--muted);
+}
+
+.station-builder {
+  padding: 14px;
+}
+
+.builder-layout {
+  display: grid;
+  grid-template-columns: minmax(420px, 1fr) 360px;
+  gap: 14px;
+}
+
+.station-editor {
+  display: grid;
+  align-content: start;
+  gap: 12px;
+}
+
+.station-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+}
+
+.station-card span {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+  margin-top: 3px;
+}
 
 .timer-panel { grid-row: span 2; }
 .timer { font-size: clamp(68px, 13vw, 132px); line-height: .94; font-weight: 950; font-variant-numeric: tabular-nums; color: var(--brand); letter-spacing: 0; }
@@ -92,7 +189,7 @@ textarea { min-height: 86px; resize: vertical; }
 .stepper strong { text-align: center; font-size: 42px; }
 
 .map-panel { padding: 14px; }
-#map { width: 100%; height: min(70vh, 680px); min-height: 460px; border: 1px solid var(--line); border-radius: 8px; }
+#map { width: 100%; height: min(68vh, 660px); min-height: 520px; border: 1px solid var(--line); border-radius: 8px; }
 .leaflet-popup-content button { width: 100%; margin-top: 8px; background: var(--brand); color: white; }
 
 .team-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 14px; }
@@ -132,13 +229,15 @@ dialog { width: min(620px, calc(100vw - 24px)); border: 1px solid var(--line); b
   .side { position: static; height: auto; padding: 12px; max-width: 100vw; }
   nav { display: flex; gap: 8px; overflow-x: auto; }
   .nav { white-space: nowrap; text-align: center; }
-  .dashboard-grid, .score-layout, .admin-layout { grid-template-columns: 1fr; }
+  .dashboard-grid, .score-layout, .admin-layout, .setup-grid, .builder-layout { grid-template-columns: 1fr; }
+  .game-picker { width: 100%; }
 }
 
 @media (max-width: 620px) {
   main { padding: 14px; }
   .top { flex-direction: column; align-items: stretch; }
-  .top-actions, .timer-controls { display: grid; grid-template-columns: 1fr 1fr; }
+  .top-actions, .timer-controls, .form-row { display: grid; grid-template-columns: 1fr; }
+  .setup-hero { align-items: stretch; flex-direction: column; }
   .timer-controls label { width: auto; }
   .timer { font-size: 66px; }
   .action-grid, .inline-form { grid-template-columns: 1fr; }

@@ -7,6 +7,7 @@ let map = null;
 let markers = [];
 let qrScanner = null;
 let localTimer = null;
+let activeGameId = null;
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
@@ -29,7 +30,10 @@ function toast(message) {
 }
 
 async function api(action = "state", options = {}) {
-  const response = await fetch(`${apiUrl}?action=${encodeURIComponent(action)}`, options);
+  const url = action.includes("&")
+    ? `${apiUrl}?action=${action}`
+    : `${apiUrl}?action=${encodeURIComponent(action)}`;
+  const response = await fetch(url, options);
   const data = await response.json();
   if (!data.ok) throw new Error(data.error || "Błąd API");
   return data;
@@ -81,6 +85,30 @@ function renderTimer() {
   $("#timerBar").style.width = `${Math.max(0, Math.min(1, ratio)) * 100}%`;
   $("#timer").classList.toggle("warning", ratio <= .35 && ratio > .15);
   $("#timer").classList.toggle("danger", ratio <= .15);
+}
+
+function renderGameSelect() {
+  const select = $("#gameSelect");
+  const previous = String(state.game.id);
+  select.innerHTML = state.games.map((game) => `
+    <option value="${game.id}">
+      ${esc(game.name)} (${esc(game.game_date)}, ${Number(game.team_count)} druż., ${Number(game.station_count)} st.)
+    </option>
+  `).join("");
+  select.value = previous;
+}
+
+function renderGameForm() {
+  if ($("#gameForm").contains(document.activeElement)) return;
+  const form = $("#gameForm");
+  form.elements.id.value = state.game.id;
+  form.elements.name.value = state.game.name;
+  form.elements.template.value = state.game.template || "Własna";
+  form.elements.game_date.value = state.game.game_date;
+  form.elements.start_time.value = state.game.start_time?.slice(0, 5) || "12:00";
+  form.elements.duration_minutes.value = state.game.duration_minutes;
+  form.elements.use_template.checked = false;
+  $("#gameFormMode").textContent = "edytujesz wybraną grę";
 }
 
 function startLocalTimer() {
@@ -153,6 +181,14 @@ function renderTeams() {
     renderScoreView();
     renderMap();
   }));
+
+  $("#teamMini").innerHTML = state.teams.length ? state.teams.map((team) => `
+    <div class="mini-row">
+      <span class="color-dot" style="--team-color:${esc(team.color)}"></span>
+      <strong>${esc(team.name)}</strong>
+      <span>${Number(team.total_points)} pkt</span>
+    </div>
+  `).join("") : `<p class="empty">Nie ma jeszcze drużyn. Dodaj je przed startem gry.</p>`;
 }
 
 function renderStations() {
@@ -224,6 +260,30 @@ function renderQrCards() {
   }));
 }
 
+function renderStationManager() {
+  $("#stationManage").innerHTML = state.stations.length ? state.stations.map((station) => `
+    <article class="station-card">
+      <div>
+        <strong>${esc(station.station_order)}. ${esc(station.title)}</strong>
+        <span>${station.lat && station.lng ? `${Number(station.lat).toFixed(5)}, ${Number(station.lng).toFixed(5)}` : "bez punktu na mapie"}</span>
+      </div>
+      <div>
+        <button class="secondary small-btn" data-edit-station="${station.id}">Edytuj</button>
+        <button class="secondary small-btn danger-text" data-delete-station="${station.id}">Usuń</button>
+      </div>
+    </article>
+  `).join("") : `<p class="empty">Kliknij mapę i dodaj pierwszą stację tej gry.</p>`;
+
+  $$("[data-edit-station]").forEach((button) => button.addEventListener("click", () => fillStationForm(Number(button.dataset.editStation))));
+  $$("[data-delete-station]").forEach((button) => button.addEventListener("click", async () => {
+    if (!confirm("Usunąć tę stację z tej gry?")) return;
+    state = await post("deleteStation", { game_id: state.game.id, id: Number(button.dataset.deleteStation) });
+    selectedStationId = state.stations[0] ? Number(state.stations[0].id) : null;
+    renderAll();
+    toast("Stacja usunięta");
+  }));
+}
+
 function renderStationSelects() {
   const options = state.stations.map((station) => `<option value="${station.id}">${esc(station.title)}</option>`).join("");
   $$("[data-station-select]").forEach((select) => {
@@ -256,7 +316,7 @@ function renderContentList() {
 function fillStationForm(id) {
   const station = state.stations.find((item) => Number(item.id) === id);
   if (!station) return;
-  showView("admin");
+  showView("setup");
   const form = $("#stationForm");
   form.elements.id.value = station.id;
   form.elements.title.value = station.title;
@@ -266,30 +326,47 @@ function fillStationForm(id) {
 }
 
 function renderMap() {
-  if (!window.L || !state?.stations?.length) return;
+  if (!window.L) return;
   if (!map) {
     map = L.map("map", { scrollWheelZoom: true });
     L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
       maxZoom: 19,
       attribution: "&copy; OpenStreetMap",
     }).addTo(map);
+    map.on("click", (event) => {
+      const form = $("#stationForm");
+      form.elements.id.value = "";
+      form.elements.title.focus();
+      form.elements.station_order.value = state.stations.length + 1;
+      form.elements.lat.value = event.latlng.lat.toFixed(6);
+      form.elements.lng.value = event.latlng.lng.toFixed(6);
+      toast("Miejsce stacji wybrane na mapie");
+    });
   }
   markers.forEach((marker) => marker.remove());
   markers = [];
   const points = state.stations.filter((station) => station.lat && station.lng);
   points.forEach((station) => {
     const status = stationStatus(station.id);
-    const marker = L.circleMarker([Number(station.lat), Number(station.lng)], {
-      radius: 10,
-      color: status.color,
-      fillColor: status.color,
-      fillOpacity: .9,
-    }).addTo(map);
+    const marker = L.marker([Number(station.lat), Number(station.lng)], { draggable: true }).addTo(map);
     marker.bindPopup(`
       <strong>${esc(station.title)}</strong><br>
       ${esc(status.label)}<br>
       <button data-popup-station="${station.id}">Oceń tutaj</button>
     `);
+    marker.on("dragend", async () => {
+      const point = marker.getLatLng();
+      state = await post("station", {
+        game_id: state.game.id,
+        id: Number(station.id),
+        title: station.title,
+        station_order: Number(station.station_order),
+        lat: point.lat.toFixed(6),
+        lng: point.lng.toFixed(6),
+      });
+      renderAll();
+      toast("Punkt stacji przesunięty");
+    });
     marker.on("popupopen", () => {
       setTimeout(() => {
         document.querySelector(`[data-popup-station="${station.id}"]`)?.addEventListener("click", () => {
@@ -300,7 +377,8 @@ function renderMap() {
     });
     markers.push(marker);
   });
-  fitMap();
+  if (markers.length) fitMap();
+  else map.setView([52.22977, 21.01178], 15);
 }
 
 function fitMap() {
@@ -310,28 +388,36 @@ function fitMap() {
 
 function renderAll() {
   $("#gameName").textContent = state.game.name;
+  activeGameId = Number(state.game.id);
+  renderGameSelect();
+  renderGameForm();
   renderTimer();
   renderRanking();
   renderBadges();
   renderScoreView();
   renderQrCards();
+  renderStationManager();
   renderStationSelects();
   renderContentList();
   renderMap();
   startLocalTimer();
 }
 
-async function reloadState() {
-  state = await api("state");
+async function reloadState(gameId = activeGameId) {
+  const suffix = gameId ? `&game_id=${encodeURIComponent(gameId)}` : "";
+  state = await api(`state${suffix}`);
+  activeGameId = Number(state.game.id);
   if (!selectedTeamId && state.teams[0]) selectedTeamId = Number(state.teams[0].id);
   if (!selectedStationId && state.stations[0]) selectedStationId = Number(state.stations[0].id);
+  if (selectedTeamId && !state.teams.some((team) => Number(team.id) === Number(selectedTeamId))) selectedTeamId = state.teams[0] ? Number(state.teams[0].id) : null;
+  if (selectedStationId && !state.stations.some((station) => Number(station.id) === Number(selectedStationId))) selectedStationId = state.stations[0] ? Number(state.stations[0].id) : null;
   renderAll();
 }
 
 function showView(id) {
   $$(".view").forEach((view) => view.classList.toggle("active", view.id === id));
   $$(".nav").forEach((button) => button.classList.toggle("active", button.dataset.view === id));
-  if (id === "mapView") setTimeout(() => { map?.invalidateSize(); fitMap(); }, 80);
+  if (id === "setup") setTimeout(() => { map?.invalidateSize(); fitMap(); }, 80);
 }
 
 async function handleQrCode(text) {
@@ -371,11 +457,18 @@ function stopQrScanner() {
 
 function bindEvents() {
   $$(".nav").forEach((button) => button.addEventListener("click", () => showView(button.dataset.view)));
+  $("#gameSelect").addEventListener("change", async (event) => {
+    selectedTeamId = null;
+    selectedStationId = null;
+    await reloadState(Number(event.target.value));
+    toast("Przełączono grę");
+  });
   $("#quickScore").addEventListener("click", () => showView("score"));
   $("#quickTeam").addEventListener("click", () => $("#teamDialog").showModal());
-  $("#quickStation").addEventListener("click", () => showView("admin"));
-  $("#quickMap").addEventListener("click", () => showView("mapView"));
+  $("#quickStation").addEventListener("click", () => showView("setup"));
+  $("#quickMap").addEventListener("click", () => showView("setup"));
   $("#addTeamBtn").addEventListener("click", () => $("#teamDialog").showModal());
+  $("#addTeamBtnSetup").addEventListener("click", () => $("#teamDialog").showModal());
   $("#fitMap").addEventListener("click", fitMap);
   $("#tvBtn").addEventListener("click", () => $("#tvDialog").showModal());
   $("#scanQrBtn").addEventListener("click", startQrScanner);
@@ -445,12 +538,35 @@ function bindEvents() {
   $("#gameForm").addEventListener("submit", async (event) => {
     event.preventDefault();
     const form = event.currentTarget;
-    state = await post("game", Object.fromEntries(new FormData(form).entries()));
+    const data = Object.fromEntries(new FormData(form).entries());
+    data.use_template = form.elements.use_template.checked;
+    state = await post("game", data);
     selectedTeamId = null;
     selectedStationId = null;
     renderAll();
-    showView("dashboard");
-    toast("Nowa gra utworzona");
+    showView("setup");
+    toast(data.id ? "Gra zapisana" : "Nowa gra utworzona");
+  });
+
+  $("#newGameBtn").addEventListener("click", () => {
+    const form = $("#gameForm");
+    form.reset();
+    form.elements.id.value = "";
+    form.elements.game_date.valueAsDate = new Date();
+    form.elements.start_time.value = "12:00";
+    form.elements.duration_minutes.value = 90;
+    form.elements.template.value = "Własna";
+    $("#gameFormMode").textContent = "tworzysz nową grę";
+    toast("Wpisz dane nowej gry");
+  });
+
+  $("#deleteGameBtn").addEventListener("click", async () => {
+    if (!state?.game?.id || !confirm("Usunąć całą grę razem z drużynami, stacjami i punktacją?")) return;
+    state = await post("deleteGame", { id: Number(state.game.id) });
+    selectedTeamId = null;
+    selectedStationId = null;
+    renderAll();
+    toast("Gra usunięta");
   });
 
   $("#stationForm").addEventListener("submit", async (event) => {

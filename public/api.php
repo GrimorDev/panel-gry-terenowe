@@ -203,6 +203,24 @@ function current_game_id(): int
     return $row ? (int) $row['id'] : 0;
 }
 
+function fetch_games(): array
+{
+    $rows = db()->query('
+        SELECT g.*,
+          COALESCE((SELECT COUNT(*) FROM teams t WHERE t.game_id = g.id), 0) AS team_count,
+          COALESCE((SELECT COUNT(*) FROM stations s WHERE s.game_id = g.id), 0) AS station_count
+        FROM games g
+        ORDER BY g.game_date DESC, g.id DESC
+    ')->fetchAll();
+
+    foreach ($rows as &$row) {
+        $row['remaining_seconds'] = computed_remaining($row);
+        $row['timer_running'] = pg_bool($row['timer_running']);
+    }
+
+    return $rows;
+}
+
 function computed_remaining(array $game): int
 {
     $remaining = (int) $game['timer_remaining_seconds'];
@@ -289,6 +307,7 @@ function fetch_state(int $gameId): array
 
     return [
         'ok' => true,
+        'games' => fetch_games(),
         'game' => $game,
         'teams' => $teams->fetchAll(),
         'stations' => $stations->fetchAll(),
@@ -314,11 +333,24 @@ function template_stations(string $template): array
 
 function create_game(array $data): void
 {
+    $id = (int) ($data['id'] ?? 0);
     $name = trim((string) ($data['name'] ?? 'Nowa gra'));
     $template = trim((string) ($data['template'] ?? 'Polska'));
     $date = (string) ($data['game_date'] ?? date('Y-m-d'));
     $start = (string) ($data['start_time'] ?? '12:00');
     $duration = max(5, min(600, (int) ($data['duration_minutes'] ?? 90)));
+    $useTemplate = !empty($data['use_template']);
+
+    if ($id > 0) {
+        $stmt = db()->prepare('
+            UPDATE games
+            SET name = ?, template = ?, game_date = ?, start_time = ?, duration_minutes = ?,
+                timer_remaining_seconds = CASE WHEN timer_running THEN timer_remaining_seconds ELSE ? END
+            WHERE id = ?
+        ');
+        $stmt->execute([$name, $template, $date, $start, $duration, $duration * 60, $id]);
+        respond(fetch_state($id));
+    }
 
     $pdo = db();
     $pdo->beginTransaction();
@@ -330,25 +362,47 @@ function create_game(array $data): void
     $stmt->execute([$name, $template, $date, $start, $duration, $duration * 60]);
     $gameId = (int) $stmt->fetchColumn();
 
-    $lat = 52.22977;
-    $lng = 21.01178;
-    $stationStmt = $pdo->prepare('
-        INSERT INTO stations (game_id, title, station_order, lat, lng, qr_code)
-        VALUES (?, ?, ?, ?, ?, ?)
-    ');
-    foreach (template_stations($template) as $index => $title) {
-        $stationStmt->execute([
-            $gameId,
-            $title,
-            $index + 1,
-            $lat + (($index % 3) - 1) * 0.0014,
-            $lng + (floor($index / 3) - 1) * 0.0014,
-            'station-' . $gameId . '-' . bin2hex(random_bytes(4)),
-        ]);
+    if ($useTemplate) {
+        $lat = (float) ($data['base_lat'] ?? 52.22977);
+        $lng = (float) ($data['base_lng'] ?? 21.01178);
+        $stationStmt = $pdo->prepare('
+            INSERT INTO stations (game_id, title, station_order, lat, lng, qr_code)
+            VALUES (?, ?, ?, ?, ?, ?)
+        ');
+        foreach (template_stations($template) as $index => $title) {
+            $stationStmt->execute([
+                $gameId,
+                $title,
+                $index + 1,
+                $lat + (($index % 3) - 1) * 0.0014,
+                $lng + (floor($index / 3) - 1) * 0.0014,
+                'station-' . $gameId . '-' . bin2hex(random_bytes(4)),
+            ]);
+        }
     }
     $pdo->commit();
 
     respond(fetch_state($gameId));
+}
+
+function delete_game(array $data): void
+{
+    $id = (int) ($data['id'] ?? 0);
+    if ($id <= 0) {
+        fail('Brakuje ID gry');
+    }
+    db()->prepare('DELETE FROM games WHERE id = ?')->execute([$id]);
+    $nextId = current_game_id();
+    if ($nextId <= 0) {
+        create_game([
+            'name' => 'Nowa gra',
+            'template' => 'Własna',
+            'game_date' => date('Y-m-d'),
+            'start_time' => '12:00',
+            'duration_minutes' => 90,
+        ]);
+    }
+    respond(fetch_state($nextId));
 }
 
 function set_timer(array $data): void
@@ -521,6 +575,9 @@ try {
     if ($method === 'GET' && $action === 'state') {
         respond(fetch_state(current_game_id()));
     }
+    if ($method === 'GET' && $action === 'games') {
+        respond(['ok' => true, 'games' => fetch_games()]);
+    }
     if ($method === 'GET' && $action === 'stationByQr') {
         station_by_qr((string) ($_GET['code'] ?? ''));
     }
@@ -528,6 +585,8 @@ try {
     $data = json_body();
     if ($method === 'POST' && $action === 'game') {
         create_game($data);
+    } elseif ($method === 'POST' && $action === 'deleteGame') {
+        delete_game($data);
     } elseif ($method === 'POST' && $action === 'timer') {
         set_timer($data);
     } elseif ($method === 'POST' && $action === 'team') {
