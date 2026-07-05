@@ -2,6 +2,8 @@
 
 Deployowalna aplikacja webowa dla wychowawcow i instruktorow do prowadzenia gier terenowych bez papierowych kart punktacji.
 
+Stack: Node.js, TypeScript, React, PostgreSQL.
+
 ## Start lokalny
 
 ```bash
@@ -19,6 +21,9 @@ Panel: http://localhost:8080
    - `APP_PORT=8080`
    - `APP_URL=https://twoja-domena.pl`
    - `PROXY_NETWORK=proxy` lub nazwa sieci Dockera, w ktorej jest Nginx Proxy Manager
+   - `SESSION_SECRET=dlugi-losowy-sekret`
+   - `ADMIN_EMAIL=admin@twoja-domena.pl`
+   - `ADMIN_PASSWORD=ustaw-silne-haslo`
 5. Deploy.
 
 ## Nginx Proxy Manager
@@ -33,6 +38,8 @@ Jesli masz inna siec proxy niz `proxy`, ustaw w Portainerze zmienna `PROXY_NETWO
 
 ## Co dziala
 
+- logowanie i sesja w ciasteczku,
+- automatyczna migracja tabel w PostgreSQL,
 - tworzenie gry z szablonu,
 - timer start/pauza/reset i zmiana czasu gry,
 - dodawanie druzyn ze zdjeciem,

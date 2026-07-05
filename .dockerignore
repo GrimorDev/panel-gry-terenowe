@@ -1,4 +1,5 @@
 .git
 postgres_data
 node_modules
+dist
 *.log

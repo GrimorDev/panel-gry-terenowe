@@ -5,14 +5,17 @@ services:
     ports:
       - "${APP_PORT:-8080}:80"
     environment:
+      NODE_ENV: production
+      PORT: 80
       DB_HOST: db
       DB_PORT: 5432
       DB_NAME: field_games
       DB_USER: field_games
       DB_PASS: field_games_password
       APP_URL: ${APP_URL:-http://localhost:8080}
-    volumes:
-      - app_uploads:/var/www/html/public/uploads
+      SESSION_SECRET: ${SESSION_SECRET:-zmien-to-w-portainerze}
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@hufc.local}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-hufc1234}
     depends_on:
       db:
         condition: service_healthy
@@ -40,7 +43,6 @@ services:
 
 volumes:
   postgres_data:
-  app_uploads:
 
 networks:
   proxy:

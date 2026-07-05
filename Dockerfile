@@ -1,14 +1,20 @@
-FROM php:8.3-apache
+FROM node:22-alpine AS deps
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci
 
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends libpq-dev \
-    && docker-php-ext-install pdo pdo_pgsql \
-    && a2enmod rewrite headers \
-    && sed -ri 's!/var/www/html!/var/www/html/public!g' /etc/apache2/sites-available/000-default.conf /etc/apache2/apache2.conf \
-    && rm -rf /var/lib/apt/lists/*
+FROM deps AS build
+COPY tsconfig*.json vite.config.ts ./
+COPY index.html ./
+COPY src ./src
+RUN npm run build
 
-COPY . /var/www/html/
-RUN mkdir -p /var/www/html/public/uploads/avatars \
-    && chown -R www-data:www-data /var/www/html/public/uploads
-
+FROM node:22-alpine AS runner
+WORKDIR /app
+ENV NODE_ENV=production
+ENV PORT=80
+COPY package*.json ./
+RUN npm ci --omit=dev
+COPY --from=build /app/dist ./dist
 EXPOSE 80
+CMD ["node", "dist/server/server.js"]
