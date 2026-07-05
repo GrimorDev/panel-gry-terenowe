@@ -113,6 +113,9 @@ async function ensureSchema() {
       session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
       title VARCHAR(160) NOT NULL,
       color VARCHAR(30) NOT NULL DEFAULT 'green',
+      image_data TEXT,
+      mime_type VARCHAR(80),
+      share_token VARCHAR(80) UNIQUE,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
 
@@ -181,6 +184,10 @@ async function ensureSchema() {
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
   `);
+
+  await pool.query("ALTER TABLE session_photos ADD COLUMN IF NOT EXISTS image_data TEXT");
+  await pool.query("ALTER TABLE session_photos ADD COLUMN IF NOT EXISTS mime_type VARCHAR(80)");
+  await pool.query("ALTER TABLE session_photos ADD COLUMN IF NOT EXISTS share_token VARCHAR(80) UNIQUE");
 
   const users = await pool.query("SELECT COUNT(*)::int AS count FROM users");
   if (users.rows[0].count === 0) {
@@ -343,7 +350,7 @@ function templateStations(template: string) {
 }
 
 const app = express();
-app.use(express.json({ limit: "3mb" }));
+app.use(express.json({ limit: "25mb" }));
 
 app.post("/api/login", async (req, res) => {
   const email = String(req.body.email || "").trim().toLowerCase();
@@ -366,6 +373,20 @@ app.post("/api/logout", (_req, res) => {
 app.get("/api/me", requireAuth, (req, res) => res.json({ ok: true, user: req.user }));
 
 app.use("/api", requireAuth);
+
+app.post("/api/profile", async (req, res) => {
+  const id = Number(req.user?.id);
+  const name = String(req.body.name || "").trim();
+  const email = String(req.body.email || "").trim().toLowerCase();
+  if (!name || !email) return res.status(400).json({ ok: false, error: "Podaj imię i e-mail" });
+  const result = await pool.query(
+    "UPDATE users SET name=$1, email=$2 WHERE id=$3 RETURNING id, email, name, role",
+    [name, email, id]
+  );
+  const user = result.rows[0];
+  res.setHeader("Set-Cookie", `hufc_session=${sessionCookie(user)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=604800`);
+  res.json({ ok: true, user });
+});
 
 app.get("/api/state", async (req, res) => {
   try {
@@ -468,13 +489,26 @@ app.delete("/api/sessions/:id", async (req, res) => {
 });
 
 app.post("/api/photos", async (req, res) => {
-  await pool.query(
-    "INSERT INTO session_photos (session_id, title, color) VALUES ($1,$2,$3)",
-    [Number(req.body.session_id), String(req.body.title || "Zdjęcie"), String(req.body.color || "green")]
-  );
+  const id = Number(req.body.id || 0);
+  const title = String(req.body.title || "Zdj?cie").trim();
+  const sessionId = Number(req.body.session_id);
+  const imageData = String(req.body.image_data || "");
+  const mimeType = String(req.body.mime_type || "");
+  if (id) {
+    await pool.query("UPDATE session_photos SET title=$1 WHERE id=$2", [title, id]);
+  } else {
+    await pool.query(
+      "INSERT INTO session_photos (session_id, title, color, image_data, mime_type, share_token) VALUES ($1,$2,$3,$4,$5,$6)",
+      [sessionId, title, String(req.body.color || "green"), imageData || null, mimeType || null, crypto.randomBytes(18).toString("hex")]
+    );
+  }
   res.json(await state(Number(req.body.game_id || 0) || undefined));
 });
 
+app.delete("/api/photos/:id", async (req, res) => {
+  await pool.query("DELETE FROM session_photos WHERE id=$1", [Number(req.params.id)]);
+  res.json(await state(req.query.gameId ? Number(req.query.gameId) : undefined));
+});
 app.post("/api/stations", async (req, res) => {
   const gameId = Number(req.body.game_id);
   const id = Number(req.body.id || 0);
@@ -542,6 +576,18 @@ app.get("/api/station-by-qr", async (req, res) => {
   const result = await pool.query("SELECT id, game_id FROM stations WHERE qr_code=$1", [code]);
   if (!result.rows[0]) return res.status(404).json({ ok: false, error: "Nie znaleziono stacji" });
   res.json({ ok: true, station_id: result.rows[0].id, game_id: result.rows[0].game_id });
+});
+
+app.get("/share/photo/:token", async (req, res) => {
+  const result = await pool.query(`
+    SELECT p.title, p.image_data, p.created_at, s.title AS session_title
+    FROM session_photos p
+    JOIN sessions s ON s.id = p.session_id
+    WHERE p.share_token=$1
+  `, [req.params.token]);
+  const photo = result.rows[0];
+  if (!photo) return res.status(404).send("Nie znaleziono zdjęcia");
+  res.type("html").send(`<!doctype html><html lang="pl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${photo.title}</title><style>body{margin:0;font-family:system-ui,sans-serif;background:#f8f5ef;color:#171717}.wrap{max-width:1100px;margin:0 auto;padding:24px}img{width:100%;border-radius:16px;box-shadow:0 16px 40px #0002}p{color:#666}</style></head><body><main class="wrap"><h1>${photo.title}</h1><p>${photo.session_title} · ${new Date(photo.created_at).toLocaleDateString("pl-PL")}</p>${photo.image_data ? `<img src="${photo.image_data}" alt="${photo.title}">` : "<p>Zdjęcie nie ma jeszcze pliku obrazu.</p>"}</main></body></html>`);
 });
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));

@@ -9,7 +9,7 @@ type User = { id: number; email: string; name: string; role: string };
 type Cohort = { id: number; name: string; caretaker: string; ward_count: number };
 type Ward = { id: number; name: string; age: number; parent_name: string; contact: string; cohort_id: number | null; cohort_name: string | null };
 type Session = { id: number; title: string; session_date: string; location: string; attendance: number; total: number; cohort_id: number | null; cohort_name: string | null; scope: string };
-type Photo = { id: number; session_id: number; session_title: string; session_date: string; title: string; color: string };
+type Photo = { id: number; session_id: number; session_title: string; session_date: string; title: string; color: string; image_data: string | null; mime_type: string | null; share_token: string | null; created_at: string };
 type Game = { id: number; name: string; template: string; game_date: string; start_time: string; duration_minutes: number; remaining_seconds: number; timer_running: boolean; status: string; team_count?: number; station_count?: number };
 type Team = { id: number; game_id: number; name: string; color: string; total_points: number; avg_cooperation: number; correct_count: number; finished_count: number };
 type Station = { id: number; game_id: number; title: string; station_order: number; lat: string | null; lng: string | null; qr_code: string };
@@ -40,6 +40,24 @@ function secondsLabel(seconds: number) {
 
 function initials(name: string) {
   return name.split(" ").filter(Boolean).map((part) => part[0]).join("").slice(0, 2).toUpperCase();
+}
+
+async function imageFileToDataUrl(file: File) {
+  const bitmap = await createImageBitmap(file);
+  const max = 1600;
+  const scale = Math.min(1, max / Math.max(bitmap.width, bitmap.height));
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.round(bitmap.width * scale);
+  canvas.height = Math.round(bitmap.height * scale);
+  const context = canvas.getContext("2d");
+  if (!context) throw new Error("Nie udało się przygotować zdjęcia");
+  context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+  const mimeType = file.type === "image/png" ? "image/png" : "image/jpeg";
+  return {
+    image_data: canvas.toDataURL(mimeType, 0.86),
+    mime_type: mimeType,
+    title: file.name.replace(/\.[^.]+$/, "") || "Zdjęcie"
+  };
 }
 
 function Button({ children, variant = "secondary", ...props }: React.ButtonHTMLAttributes<HTMLButtonElement> & { variant?: "primary" | "secondary" | "danger" }) {
@@ -109,9 +127,10 @@ function App() {
   const [teamId, setTeamId] = useState<number | null>(null);
   const [stationId, setStationId] = useState<number | null>(null);
   const [toast, setToast] = useState("");
-  const [modal, setModal] = useState<null | "ward" | "session" | "team" | "tv">(null);
+  const [modal, setModal] = useState<null | "ward" | "session" | "team" | "photo" | "account" | "tv">(null);
   const [editingWard, setEditingWard] = useState<Ward | null>(null);
   const [editingSession, setEditingSession] = useState<Session | null>(null);
+  const [editingPhoto, setEditingPhoto] = useState<Photo | null>(null);
   const mapEl = useRef<HTMLDivElement | null>(null);
   const map = useRef<L.Map | null>(null);
   const markers = useRef<L.LayerGroup | null>(null);
@@ -201,6 +220,16 @@ function App() {
     flash(data.id ? "Gra zapisana" : "Nowa gra utworzona");
   }
 
+  async function uploadPhoto(sessionId: number, file: File) {
+    if (!state) return;
+    const image = await imageFileToDataUrl(file);
+    setState(await api<AppState>("/api/photos", {
+      method: "POST",
+      body: JSON.stringify({ session_id: sessionId, game_id: state.game.id, ...image })
+    }));
+    flash("Zdjęcie zapisane w galerii");
+  }
+
   if (auth === "checking") return <div className="loading">Ładowanie panelu...</div>;
   if (auth === "guest" || !user) return <Login onLogin={async (next) => { setUser(next); await load(); setAuth("ready"); }} />;
   if (!state) return <div className="loading">Ładowanie danych...</div>;
@@ -209,7 +238,7 @@ function App() {
     <aside className="sidebar">
       <div className="brand-lock"><span className="brand-mark">H</span><span><strong>Hufc</strong><small>Panel wychowawcy</small></span></div>
       <nav>{navItems.map(([id, label]) => <button key={id} className={`nav-item ${view === id ? "active" : ""}`} onClick={() => setView(id)}>{label}</button>)}</nav>
-      <button className="user-chip" onClick={() => api("/api/logout", { method: "POST" }).then(() => { setUser(null); setAuth("guest"); })}>
+      <button className="user-chip" onClick={() => setModal("account")}>
         <span>{initials(user.name)}</span><strong>{user.name}</strong><small>{user.role}</small>
       </button>
     </aside>
@@ -219,12 +248,14 @@ function App() {
       {view === "wards" && <Wards state={state} onAdd={() => { setEditingWard(null); setModal("ward"); }} onEdit={(ward) => { setEditingWard(ward); setModal("ward"); }} onDelete={async (id) => setState(await api<AppState>(`/api/wards/${id}?gameId=${state.game.id}`, { method: "DELETE" }))} />}
       {view === "cohorts" && <Cohorts cohorts={state.cohorts} />}
       {view === "sessions" && <Sessions state={state} onAdd={() => { setEditingSession(null); setModal("session"); }} onEdit={(session) => { setEditingSession(session); setModal("session"); }} onDelete={async (id) => setState(await api<AppState>(`/api/sessions/${id}?gameId=${state.game.id}`, { method: "DELETE" }))} />}
-      {view === "gallery" && <Gallery state={state} onAddPhoto={async (sessionId) => { setState(await api<AppState>("/api/photos", { method: "POST", body: JSON.stringify({ session_id: sessionId, title: "Zdjęcie", game_id: state.game.id }) })); flash("Zdjęcie dodane"); }} />}
+      {view === "gallery" && <Gallery state={state} onAddGallery={() => { setEditingSession(null); setModal("session"); }} onUploadPhoto={uploadPhoto} onEditPhoto={(photo) => { setEditingPhoto(photo); setModal("photo"); }} onDeletePhoto={async (id) => setState(await api<AppState>(`/api/photos/${id}?gameId=${state.game.id}`, { method: "DELETE" }))} />}
       {view === "games" && <GamesModule state={state} gameTab={gameTab} setGameTab={setGameTab} ranking={ranking} teamId={teamId} stationId={stationId} setTeamId={setTeamId} setStationId={setStationId} activeScore={activeScore} mapRef={mapEl} onSaveGame={saveGame} onSaveStation={saveStation} onAddTeam={() => setModal("team")} onDeleteStation={async (id) => setState(await api<AppState>(`/api/stations/${id}?gameId=${state.game.id}`, { method: "DELETE" }))} onTimer={async (command) => setState(await api<AppState>("/api/timer", { method: "POST", body: JSON.stringify({ game_id: state.game.id, command }) }))} onScore={async (payload) => { setState(await api<AppState>("/api/scores", { method: "POST", body: JSON.stringify(payload) })); flash("Ocena zapisana"); }} setState={setState} load={load} openTv={() => setModal("tv")} />}
     </main>
 
     {modal === "ward" && <WardDialog state={state} ward={editingWard} onClose={() => setModal(null)} onSaved={(next) => { setState(next); setModal(null); }} />}
     {modal === "session" && <SessionDialog state={state} session={editingSession} onClose={() => setModal(null)} onSaved={(next) => { setState(next); setModal(null); }} />}
+    {modal === "photo" && editingPhoto && <PhotoDialog state={state} photo={editingPhoto} onClose={() => setModal(null)} onSaved={(next) => { setState(next); setModal(null); }} />}
+    {modal === "account" && <AccountDialog user={user} onClose={() => setModal(null)} onSaved={(next) => { setUser(next); setModal(null); }} onLogout={() => api("/api/logout", { method: "POST" }).then(() => { setUser(null); setAuth("guest"); setModal(null); })} />}
     {modal === "team" && <TeamDialog gameId={state.game.id} onClose={() => setModal(null)} onSaved={(next) => { setState(next); setModal(null); }} />}
     {modal === "tv" && <TvDialog state={state} ranking={ranking} onClose={() => setModal(null)} />}
     {toast && <div className="toast">{toast}</div>}
@@ -275,8 +306,27 @@ function Sessions({ state, onAdd, onEdit, onDelete }: { state: AppState; onAdd: 
   </div>;
 }
 
-function Gallery({ state, onAddPhoto }: { state: AppState; onAddPhoto: (sessionId: number) => void }) {
-  return <div><h1>Galeria</h1><p className="help">Dodawaj zdjęcia do galerii konkretnej zbiórki.</p>{state.sessions.map((session) => <section className="gallery-section" key={session.id}><h2>{session.title} · {dateLabel(session.session_date)}</h2><div className="gallery-grid">{state.photos.filter((photo) => photo.session_id === session.id).map((photo) => <PhotoTile key={photo.id} photo={photo} />)}<button className="photo-tile add" onClick={() => onAddPhoto(session.id)}>Dodaj zdjęcie</button></div></section>)}</div>;
+function Gallery({ state, onAddGallery, onUploadPhoto, onEditPhoto, onDeletePhoto }: { state: AppState; onAddGallery: () => void; onUploadPhoto: (sessionId: number, file: File) => void; onEditPhoto: (photo: Photo) => void; onDeletePhoto: (id: number) => void }) {
+  return <div>
+    <div className="page-head">
+      <div><h1>Galeria</h1><p className="help">Galerie tworzą się automatycznie dla zbiórek. Możesz dodać osobną galerię, zrobić zdjęcie aparatem albo wgrać plik.</p></div>
+      <Button variant="primary" onClick={onAddGallery}>Nowa galeria</Button>
+    </div>
+    {state.sessions.map((session) => {
+      const photos = state.photos.filter((photo) => photo.session_id === session.id);
+      return <section className="gallery-section" key={session.id}>
+        <div className="gallery-head"><div><h2>{session.title}</h2><span>{dateLabel(session.session_date)} · {photos.length} zdjęć</span></div></div>
+        <div className="gallery-grid">
+          {photos.map((photo) => <PhotoTile key={photo.id} photo={photo} onEdit={onEditPhoto} onDelete={onDeletePhoto} />)}
+          <label className="photo-tile add">
+            <input type="file" accept="image/*" capture="environment" onChange={(event) => { const file = event.currentTarget.files?.[0]; if (file) onUploadPhoto(session.id, file); event.currentTarget.value = ""; }} />
+            <strong>Zrób lub dodaj zdjęcie</strong>
+            <small>Aparat telefonu albo plik z dysku</small>
+          </label>
+        </div>
+      </section>;
+    })}
+  </div>;
 }
 
 function GamesModule(props: { state: AppState; gameTab: string; setGameTab: (tab: any) => void; ranking: Team[]; teamId: number | null; stationId: number | null; setTeamId: (id: number) => void; setStationId: (id: number) => void; activeScore: Score | null; mapRef: React.RefObject<HTMLDivElement>; onSaveGame: (form: HTMLFormElement) => void; onSaveStation: (payload: Partial<Station>) => void; onAddTeam: () => void; onDeleteStation: (id: number) => void; onTimer: (command: "start" | "pause" | "reset") => void; onScore: (payload: { team_id: number | null; station_id: number | null; points: number; correct: boolean; cooperation: number; comment: string }) => void; setState: (state: AppState) => void; load: (gameId?: number) => void; openTv: () => void }) {
@@ -338,8 +388,20 @@ function SessionCard({ session, actions }: { session: Session; actions?: React.R
   return <article className="session-card"><div className="card-row"><strong>{session.title}</strong><span>{dateLabel(session.session_date)}</span></div><div className="mini-progress"><span style={{ width: `${pct}%` }} /></div><p>Obecność: <strong>{session.attendance}/{session.total}</strong> · {session.location}</p>{actions && <div className="button-row">{actions}</div>}</article>;
 }
 
-function PhotoTile({ photo }: { photo: Photo }) {
-  return <div className={`photo-tile ${photo.color}`}><span>{photo.title}</span></div>;
+function PhotoTile({ photo, onEdit, onDelete }: { photo: Photo; onEdit?: (photo: Photo) => void; onDelete?: (id: number) => void }) {
+  const shareUrl = photo.share_token ? `${location.origin}/share/photo/${photo.share_token}` : "";
+  return <article className={`photo-tile ${photo.image_data ? "has-image" : photo.color}`}>
+    {photo.image_data ? <img src={photo.image_data} alt={photo.title} /> : null}
+    <div className="photo-meta">
+      <strong>{photo.title}</strong>
+      <small>{dateLabel(photo.created_at || photo.session_date)}</small>
+      {onEdit && <div className="photo-actions">
+        <Button onClick={() => onEdit(photo)}>Edytuj</Button>
+        {shareUrl && <Button onClick={() => navigator.clipboard?.writeText(shareUrl)}>Udostępnij</Button>}
+        {onDelete && <Button variant="danger" onClick={() => onDelete(photo.id)}>Usuń</Button>}
+      </div>}
+    </div>
+  </article>;
 }
 
 function Ranking({ ranking }: { ranking: Team[] }) {
@@ -352,6 +414,14 @@ function WardDialog({ state, ward, onClose, onSaved }: { state: AppState; ward: 
 
 function SessionDialog({ state, session, onClose, onSaved }: { state: AppState; session: Session | null; onClose: () => void; onSaved: (state: AppState) => void }) {
   return <Modal title={session ? "Edytuj zbiórkę" : "Zaplanuj zbiórkę"} onClose={onClose}><form className="stack" onSubmit={async (event) => { event.preventDefault(); onSaved(await api<AppState>("/api/sessions", { method: "POST", body: JSON.stringify({ ...Object.fromEntries(new FormData(event.currentTarget).entries()), game_id: state.game.id }) })); }}><input type="hidden" name="id" defaultValue={session?.id || ""} /><label>Tytuł<input name="title" defaultValue={session?.title || ""} required /></label><label>Data<input name="session_date" type="date" defaultValue={session?.session_date ? String(session.session_date).slice(0, 10) : new Date().toISOString().slice(0, 10)} /></label><label>Lokalizacja<input name="location" defaultValue={session?.location || ""} /></label><label>Rocznik<select name="cohort_id" defaultValue={session?.cohort_id || ""}><option value="">Cała grupa</option>{state.cohorts.map((cohort) => <option key={cohort.id} value={cohort.id}>{cohort.name}</option>)}</select></label><label>Widoczność<select name="scope" defaultValue={session?.scope || "grupa"}><option value="grupa">Cała grupa hufcowa</option><option value="moja">Mój osobisty kalendarz</option></select></label><label>Obecność<input name="attendance" type="number" defaultValue={session?.attendance || 0} /></label><label>Planowana liczba osób<input name="total" type="number" defaultValue={session?.total || 0} /></label><Button variant="primary">Zapisz</Button></form></Modal>;
+}
+
+function PhotoDialog({ state, photo, onClose, onSaved }: { state: AppState; photo: Photo; onClose: () => void; onSaved: (state: AppState) => void }) {
+  return <Modal title="Edytuj zdjęcie" onClose={onClose}><form className="stack" onSubmit={async (event) => { event.preventDefault(); onSaved(await api<AppState>("/api/photos", { method: "POST", body: JSON.stringify({ ...Object.fromEntries(new FormData(event.currentTarget).entries()), game_id: state.game.id }) })); }}><input type="hidden" name="id" defaultValue={photo.id} /><label>Nazwa zdjęcia<input name="title" defaultValue={photo.title} required /></label>{photo.image_data && <img className="dialog-photo" src={photo.image_data} alt={photo.title} />}<Button variant="primary">Zapisz</Button></form></Modal>;
+}
+
+function AccountDialog({ user, onClose, onSaved, onLogout }: { user: User; onClose: () => void; onSaved: (user: User) => void; onLogout: () => void }) {
+  return <Modal title="Konto" onClose={onClose}><form className="stack" onSubmit={async (event) => { event.preventDefault(); const result = await api<{ ok: true; user: User }>("/api/profile", { method: "POST", body: JSON.stringify(Object.fromEntries(new FormData(event.currentTarget).entries())) }); onSaved(result.user); }}><span className="kicker">{user.role}</span><label>Imię i nazwisko<input name="name" defaultValue={user.name} required /></label><label>E-mail<input name="email" type="email" defaultValue={user.email} required /></label><div className="form-actions"><Button variant="primary">Zapisz zmiany</Button></div></form><div className="danger-zone"><Button variant="danger" onClick={onLogout}>Wyloguj się</Button></div></Modal>;
 }
 
 function TeamDialog({ gameId, onClose, onSaved }: { gameId: number; onClose: () => void; onSaved: (state: AppState) => void }) {
