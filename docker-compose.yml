@@ -45,4 +45,4 @@ volumes:
 networks:
   proxy:
     external: true
-    name: ${PROXY_NETWORK:-nginx-proxy-manager_default}
+    name: ${PROXY_NETWORK:-proxy}
