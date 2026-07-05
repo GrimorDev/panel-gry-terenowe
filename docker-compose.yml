@@ -16,6 +16,12 @@ services:
     depends_on:
       db:
         condition: service_healthy
+    networks:
+      default:
+      proxy:
+        aliases:
+          - hufc-app
+          - hufc-app-1
 
   db:
     image: postgres:16-alpine
@@ -35,3 +41,8 @@ services:
 volumes:
   postgres_data:
   app_uploads:
+
+networks:
+  proxy:
+    external: true
+    name: ${PROXY_NETWORK:-nginx-proxy-manager_default}

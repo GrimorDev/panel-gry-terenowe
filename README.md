@@ -18,7 +18,18 @@ Panel: http://localhost:8080
 4. Ustaw opcjonalnie zmienne:
    - `APP_PORT=8080`
    - `APP_URL=https://twoja-domena.pl`
+   - `PROXY_NETWORK=nginx-proxy-manager_default` lub nazwa sieci Dockera, w ktorej jest Nginx Proxy Manager
 5. Deploy.
+
+## Nginx Proxy Manager
+
+Po deployu ustaw proxy host na:
+
+- Scheme: `http`
+- Forward Hostname/IP: `hufc-app`
+- Forward Port: `80`
+
+Jesli masz inna siec proxy niz `nginx-proxy-manager_default`, ustaw w Portainerze zmienna `PROXY_NETWORK` na dokladna nazwe tej sieci. Nazwe znajdziesz w Portainerze w **Networks** albo przy dzialajacym kontenerze Nginx Proxy Manager.
 
 ## Co dziala
 
