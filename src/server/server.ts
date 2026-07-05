@@ -79,6 +79,43 @@ async function ensureSchema() {
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
 
+    CREATE TABLE IF NOT EXISTS cohorts (
+      id SERIAL PRIMARY KEY,
+      name VARCHAR(120) NOT NULL,
+      caretaker VARCHAR(160) NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS wards (
+      id SERIAL PRIMARY KEY,
+      name VARCHAR(160) NOT NULL,
+      age INTEGER NOT NULL DEFAULT 12,
+      parent_name VARCHAR(160) NOT NULL DEFAULT '',
+      contact VARCHAR(80) NOT NULL DEFAULT '',
+      cohort_id INTEGER REFERENCES cohorts(id) ON DELETE SET NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS sessions (
+      id SERIAL PRIMARY KEY,
+      title VARCHAR(180) NOT NULL,
+      session_date DATE NOT NULL,
+      location VARCHAR(220) NOT NULL DEFAULT '',
+      attendance INTEGER NOT NULL DEFAULT 0,
+      total INTEGER NOT NULL DEFAULT 0,
+      cohort_id INTEGER REFERENCES cohorts(id) ON DELETE SET NULL,
+      scope VARCHAR(20) NOT NULL DEFAULT 'grupa',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS session_photos (
+      id SERIAL PRIMARY KEY,
+      session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+      title VARCHAR(160) NOT NULL,
+      color VARCHAR(30) NOT NULL DEFAULT 'green',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
     CREATE TABLE IF NOT EXISTS games (
       id SERIAL PRIMARY KEY,
       name VARCHAR(160) NOT NULL,
@@ -160,6 +197,37 @@ async function ensureSchema() {
       ["Pierwsza gra terenowa", "Własna", 90, 5400]
     );
   }
+
+  const cohorts = await pool.query("SELECT COUNT(*)::int AS count FROM cohorts");
+  if (cohorts.rows[0].count === 0) {
+    await pool.query(`
+      INSERT INTO cohorts (id, name, caretaker) VALUES
+        (1, 'Rocznik 2013', 'Anna Kowalska'),
+        (2, 'Rocznik 2014', 'Anna Kowalska'),
+        (3, 'Rocznik 2015', 'Tomasz Nowicki')
+      ON CONFLICT DO NOTHING;
+
+      INSERT INTO wards (name, age, parent_name, contact, cohort_id) VALUES
+        ('Julia Nowak', 12, 'Anna Nowak', '600 111 222', 2),
+        ('Kacper Wiśniewski', 13, 'Marek Wiśniewski', '601 222 333', 1),
+        ('Zofia Kowalska', 11, 'Ewa Kowalska', '602 333 444', 3),
+        ('Antoni Zieliński', 12, 'Piotr Zieliński', '603 444 555', 2),
+        ('Maja Lewandowska', 13, 'Katarzyna Lewandowska', '604 555 666', 1);
+
+      INSERT INTO sessions (title, session_date, location, attendance, total, cohort_id, scope) VALUES
+        ('Zbiórka Wilków', CURRENT_DATE + INTERVAL '7 days', 'Harcówka, ul. Leśna 4', 9, 12, 2, 'grupa'),
+        ('Zbiórka Lisów', CURRENT_DATE + INTERVAL '9 days', 'Harcówka, ul. Leśna 4', 11, 11, 1, 'grupa'),
+        ('Rajd nad jezioro', CURRENT_DATE + INTERVAL '14 days', 'Jezioro Kaczor, plaża wschodnia', 22, 28, NULL, 'grupa'),
+        ('Zbiórka Sów', CURRENT_DATE + INTERVAL '16 days', 'Harcówka, sala 2', 7, 10, 3, 'moja');
+
+      INSERT INTO session_photos (session_id, title, color)
+      SELECT id, title, CASE WHEN id % 3 = 0 THEN 'accent' WHEN id % 2 = 0 THEN 'sand' ELSE 'green' END
+      FROM sessions
+      LIMIT 4;
+
+      SELECT setval('cohorts_id_seq', (SELECT MAX(id) FROM cohorts));
+    `);
+  }
 }
 
 function remaining(game: any) {
@@ -189,7 +257,7 @@ async function state(gameId?: number) {
   if (!game) throw new Error("Nie znaleziono gry");
   game.remaining_seconds = remaining(game);
 
-  const [teams, stations, scores, materials, questions, games] = await Promise.all([
+  const [teams, stations, scores, materials, questions, games, cohorts, wards, sessions, photos] = await Promise.all([
     pool.query(`
       SELECT t.*,
         COALESCE(SUM(ts.points), 0)::int AS total_points,
@@ -221,7 +289,31 @@ async function state(gameId?: number) {
       FROM questions q JOIN stations s ON s.id = q.station_id
       WHERE s.game_id = $1 ORDER BY q.id DESC
     `, [game.id]),
-    gamesList()
+    gamesList(),
+    pool.query(`
+      SELECT c.*,
+        COALESCE((SELECT COUNT(*) FROM wards w WHERE w.cohort_id = c.id), 0)::int AS ward_count
+      FROM cohorts c
+      ORDER BY c.name
+    `),
+    pool.query(`
+      SELECT w.*, c.name AS cohort_name
+      FROM wards w
+      LEFT JOIN cohorts c ON c.id = w.cohort_id
+      ORDER BY w.name
+    `),
+    pool.query(`
+      SELECT s.*, c.name AS cohort_name
+      FROM sessions s
+      LEFT JOIN cohorts c ON c.id = s.cohort_id
+      ORDER BY s.session_date ASC, s.id ASC
+    `),
+    pool.query(`
+      SELECT p.*, s.title AS session_title, s.session_date
+      FROM session_photos p
+      JOIN sessions s ON s.id = p.session_id
+      ORDER BY s.session_date DESC, p.id ASC
+    `)
   ]);
 
   return {
@@ -232,7 +324,11 @@ async function state(gameId?: number) {
     stations: stations.rows,
     scores: scores.rows,
     materials: materials.rows,
-    questions: questions.rows
+    questions: questions.rows,
+    cohorts: cohorts.rows,
+    wards: wards.rows,
+    sessions: sessions.rows,
+    photos: photos.rows
   };
 }
 
@@ -327,6 +423,56 @@ app.post("/api/teams", async (req, res) => {
 app.delete("/api/teams/:id", async (req, res) => {
   const result = await pool.query("DELETE FROM teams WHERE id = $1 RETURNING game_id", [Number(req.params.id)]);
   res.json(await state(Number(result.rows[0]?.game_id || req.query.gameId)));
+});
+
+app.post("/api/wards", async (req, res) => {
+  const id = Number(req.body.id || 0);
+  const values = [String(req.body.name || ""), Number(req.body.age || 12), String(req.body.parent_name || ""), String(req.body.contact || ""), Number(req.body.cohort_id || 0) || null];
+  if (!values[0]) return res.status(400).json({ ok: false, error: "Podaj imię i nazwisko" });
+  if (id) {
+    await pool.query("UPDATE wards SET name=$1, age=$2, parent_name=$3, contact=$4, cohort_id=$5 WHERE id=$6", [...values, id]);
+  } else {
+    await pool.query("INSERT INTO wards (name, age, parent_name, contact, cohort_id) VALUES ($1,$2,$3,$4,$5)", values);
+  }
+  res.json(await state(Number(req.body.game_id || 0) || undefined));
+});
+
+app.delete("/api/wards/:id", async (req, res) => {
+  await pool.query("DELETE FROM wards WHERE id=$1", [Number(req.params.id)]);
+  res.json(await state(req.query.gameId ? Number(req.query.gameId) : undefined));
+});
+
+app.post("/api/sessions", async (req, res) => {
+  const id = Number(req.body.id || 0);
+  const values = [
+    String(req.body.title || ""),
+    String(req.body.session_date || new Date().toISOString().slice(0, 10)),
+    String(req.body.location || ""),
+    Number(req.body.attendance || 0),
+    Number(req.body.total || 0),
+    Number(req.body.cohort_id || 0) || null,
+    String(req.body.scope || "grupa")
+  ];
+  if (!values[0]) return res.status(400).json({ ok: false, error: "Podaj tytuł zbiórki" });
+  if (id) {
+    await pool.query("UPDATE sessions SET title=$1, session_date=$2, location=$3, attendance=$4, total=$5, cohort_id=$6, scope=$7 WHERE id=$8", [...values, id]);
+  } else {
+    await pool.query("INSERT INTO sessions (title, session_date, location, attendance, total, cohort_id, scope) VALUES ($1,$2,$3,$4,$5,$6,$7)", values);
+  }
+  res.json(await state(Number(req.body.game_id || 0) || undefined));
+});
+
+app.delete("/api/sessions/:id", async (req, res) => {
+  await pool.query("DELETE FROM sessions WHERE id=$1", [Number(req.params.id)]);
+  res.json(await state(req.query.gameId ? Number(req.query.gameId) : undefined));
+});
+
+app.post("/api/photos", async (req, res) => {
+  await pool.query(
+    "INSERT INTO session_photos (session_id, title, color) VALUES ($1,$2,$3)",
+    [Number(req.body.session_id), String(req.body.title || "Zdjęcie"), String(req.body.color || "green")]
+  );
+  res.json(await state(Number(req.body.game_id || 0) || undefined));
 });
 
 app.post("/api/stations", async (req, res) => {
