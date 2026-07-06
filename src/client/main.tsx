@@ -220,14 +220,18 @@ function App() {
     flash(data.id ? "Gra zapisana" : "Nowa gra utworzona");
   }
 
-  async function uploadPhoto(sessionId: number, file: File) {
+  async function uploadPhotos(sessionId: number, files: File[]) {
     if (!state) return;
-    const image = await imageFileToDataUrl(file);
-    setState(await api<AppState>("/api/photos", {
-      method: "POST",
-      body: JSON.stringify({ session_id: sessionId, game_id: state.game.id, ...image })
-    }));
-    flash("Zdjęcie zapisane w galerii");
+    let nextState = state;
+    for (const file of files) {
+      const image = await imageFileToDataUrl(file);
+      nextState = await api<AppState>("/api/photos", {
+        method: "POST",
+        body: JSON.stringify({ session_id: sessionId, game_id: state.game.id, ...image })
+      });
+    }
+    setState(nextState);
+    flash(files.length === 1 ? "Zdjęcie zapisane w galerii" : "Zdjęcia zapisane w galerii");
   }
 
   if (auth === "checking") return <div className="loading">Ładowanie panelu...</div>;
@@ -248,7 +252,7 @@ function App() {
       {view === "wards" && <Wards state={state} onAdd={() => { setEditingWard(null); setModal("ward"); }} onEdit={(ward) => { setEditingWard(ward); setModal("ward"); }} onDelete={async (id) => setState(await api<AppState>(`/api/wards/${id}?gameId=${state.game.id}`, { method: "DELETE" }))} />}
       {view === "cohorts" && <Cohorts cohorts={state.cohorts} />}
       {view === "sessions" && <Sessions state={state} onAdd={() => { setEditingSession(null); setModal("session"); }} onEdit={(session) => { setEditingSession(session); setModal("session"); }} onDelete={async (id) => setState(await api<AppState>(`/api/sessions/${id}?gameId=${state.game.id}`, { method: "DELETE" }))} />}
-      {view === "gallery" && <Gallery state={state} onAddGallery={() => { setEditingSession(null); setModal("session"); }} onUploadPhoto={uploadPhoto} onEditPhoto={(photo) => { setEditingPhoto(photo); setModal("photo"); }} onDeletePhoto={async (id) => setState(await api<AppState>(`/api/photos/${id}?gameId=${state.game.id}`, { method: "DELETE" }))} />}
+      {view === "gallery" && <Gallery state={state} onAddGallery={() => { setEditingSession(null); setModal("session"); }} onUploadPhotos={uploadPhotos} onEditPhoto={(photo) => { setEditingPhoto(photo); setModal("photo"); }} onDeletePhoto={async (id) => setState(await api<AppState>(`/api/photos/${id}?gameId=${state.game.id}`, { method: "DELETE" }))} />}
       {view === "games" && <GamesModule state={state} gameTab={gameTab} setGameTab={setGameTab} ranking={ranking} teamId={teamId} stationId={stationId} setTeamId={setTeamId} setStationId={setStationId} activeScore={activeScore} mapRef={mapEl} onSaveGame={saveGame} onSaveStation={saveStation} onAddTeam={() => setModal("team")} onDeleteStation={async (id) => setState(await api<AppState>(`/api/stations/${id}?gameId=${state.game.id}`, { method: "DELETE" }))} onTimer={async (command) => setState(await api<AppState>("/api/timer", { method: "POST", body: JSON.stringify({ game_id: state.game.id, command }) }))} onScore={async (payload) => { setState(await api<AppState>("/api/scores", { method: "POST", body: JSON.stringify(payload) })); flash("Ocena zapisana"); }} setState={setState} load={load} openTv={() => setModal("tv")} />}
     </main>
 
@@ -306,26 +310,89 @@ function Sessions({ state, onAdd, onEdit, onDelete }: { state: AppState; onAdd: 
   </div>;
 }
 
-function Gallery({ state, onAddGallery, onUploadPhoto, onEditPhoto, onDeletePhoto }: { state: AppState; onAddGallery: () => void; onUploadPhoto: (sessionId: number, file: File) => void; onEditPhoto: (photo: Photo) => void; onDeletePhoto: (id: number) => void }) {
+async function sharePhoto(photo: Photo) {
+  const url = photo.share_token ? location.origin + "/share/photo/" + photo.share_token : location.href;
+  if (navigator.share) {
+    await navigator.share({ title: photo.title, url });
+    return;
+  }
+  if (navigator.clipboard) {
+    await navigator.clipboard.writeText(url);
+    return;
+  }
+  const field = document.createElement("textarea");
+  field.value = url;
+  field.style.position = "fixed";
+  field.style.opacity = "0";
+  document.body.appendChild(field);
+  field.focus();
+  field.select();
+  document.execCommand("copy");
+  field.remove();
+}
+
+function Gallery({ state, onAddGallery, onUploadPhotos, onEditPhoto, onDeletePhoto }: { state: AppState; onAddGallery: () => void; onUploadPhotos: (sessionId: number, files: File[]) => void; onEditPhoto: (photo: Photo) => void; onDeletePhoto: (id: number) => void }) {
+  const [openId, setOpenId] = useState<number | null>(null);
+  const photos = state.photos.filter((photo) => photo.image_data);
+  const openIndex = openId ? photos.findIndex((photo) => photo.id === openId) : -1;
+  const openPhoto = openIndex >= 0 ? photos[openIndex] : null;
+  const showPhoto = (photo: Photo) => photo.image_data && setOpenId(photo.id);
+  const move = (direction: number) => {
+    if (!photos.length || openIndex < 0) return;
+    const next = (openIndex + direction + photos.length) % photos.length;
+    setOpenId(photos[next].id);
+  };
+
   return <div>
     <div className="page-head">
-      <div><h1>Galeria</h1><p className="help">Galerie tworzą się automatycznie dla zbiórek. Możesz dodać osobną galerię, zrobić zdjęcie aparatem albo wgrać plik.</p></div>
+      <div><h1>Galeria</h1><p className="help">Galerie tworz? si? automatycznie dla zbi?rek. Zdj?cia mo?na robi? aparatem, dodawa? z telefonu lub komputera, powi?ksza? i udost?pnia?.</p></div>
       <Button variant="primary" onClick={onAddGallery}>Nowa galeria</Button>
     </div>
     {state.sessions.map((session) => {
-      const photos = state.photos.filter((photo) => photo.session_id === session.id);
+      const sessionPhotos = state.photos.filter((photo) => photo.session_id === session.id);
       return <section className="gallery-section" key={session.id}>
-        <div className="gallery-head"><div><h2>{session.title}</h2><span>{dateLabel(session.session_date)} · {photos.length} zdjęć</span></div></div>
+        <div className="gallery-head"><div><h2>{session.title}</h2><span>{dateLabel(session.session_date)} · {sessionPhotos.length} zdjęć</span></div></div>
         <div className="gallery-grid">
-          {photos.map((photo) => <PhotoTile key={photo.id} photo={photo} onEdit={onEditPhoto} onDelete={onDeletePhoto} />)}
-          <label className="photo-tile add">
-            <input type="file" accept="image/*" capture="environment" onChange={(event) => { const file = event.currentTarget.files?.[0]; if (file) onUploadPhoto(session.id, file); event.currentTarget.value = ""; }} />
-            <strong>Zrób lub dodaj zdjęcie</strong>
-            <small>Aparat telefonu albo plik z dysku</small>
-          </label>
+          {sessionPhotos.map((photo) => <PhotoTile key={photo.id} photo={photo} onOpen={showPhoto} onEdit={onEditPhoto} onDelete={onDeletePhoto} />)}
+          <div className="photo-upload-card">
+            <label className="upload-action primary-upload">
+              <input type="file" accept="image/*" capture="environment" onChange={(event) => { const file = event.currentTarget.files?.[0]; if (file) onUploadPhotos(session.id, [file]); event.currentTarget.value = ""; }} />
+              <strong>Zrób zdjęcie</strong>
+              <small>Otwiera aparat telefonu</small>
+            </label>
+            <label className="upload-action">
+              <input type="file" accept="image/*" multiple onChange={(event) => { const files = Array.from(event.currentTarget.files || []); if (files.length) onUploadPhotos(session.id, files); event.currentTarget.value = ""; }} />
+              <strong>Wgraj zdjęcia</strong>
+              <small>Z galerii telefonu lub dysku</small>
+            </label>
+          </div>
         </div>
       </section>;
     })}
+    {openPhoto && <GalleryLightbox photo={openPhoto} current={openIndex + 1} total={photos.length} onClose={() => setOpenId(null)} onPrev={() => move(-1)} onNext={() => move(1)} onShare={() => sharePhoto(openPhoto)} />}
+  </div>;
+}
+
+function GalleryLightbox({ photo, current, total, onClose, onPrev, onNext, onShare }: { photo: Photo; current: number; total: number; onClose: () => void; onPrev: () => void; onNext: () => void; onShare: () => void }) {
+  useEffect(() => {
+    const handler = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+      if (event.key === "ArrowLeft") onPrev();
+      if (event.key === "ArrowRight") onNext();
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [onClose, onPrev, onNext]);
+
+  return <div className="lightbox" role="dialog" aria-modal="true">
+    <button className="lightbox-close" onClick={onClose}>Zamknij</button>
+    <button className="lightbox-nav prev" onClick={onPrev}>?</button>
+    <figure>
+      {photo.image_data && <img src={photo.image_data} alt={photo.title} />}
+      <figcaption><strong>{photo.title}</strong><span>{current}/{total} ? {dateLabel(photo.created_at || photo.session_date)}</span></figcaption>
+    </figure>
+    <button className="lightbox-nav next" onClick={onNext}>?</button>
+    <div className="lightbox-actions"><Button onClick={onShare}>Udostępnij</Button></div>
   </div>;
 }
 
@@ -388,17 +455,19 @@ function SessionCard({ session, actions }: { session: Session; actions?: React.R
   return <article className="session-card"><div className="card-row"><strong>{session.title}</strong><span>{dateLabel(session.session_date)}</span></div><div className="mini-progress"><span style={{ width: `${pct}%` }} /></div><p>Obecność: <strong>{session.attendance}/{session.total}</strong> · {session.location}</p>{actions && <div className="button-row">{actions}</div>}</article>;
 }
 
-function PhotoTile({ photo, onEdit, onDelete }: { photo: Photo; onEdit?: (photo: Photo) => void; onDelete?: (id: number) => void }) {
-  const shareUrl = photo.share_token ? `${location.origin}/share/photo/${photo.share_token}` : "";
-  return <article className={`photo-tile ${photo.image_data ? "has-image" : photo.color}`}>
-    {photo.image_data ? <img src={photo.image_data} alt={photo.title} /> : null}
+function PhotoTile({ photo, onOpen, onEdit, onDelete }: { photo: Photo; onOpen?: (photo: Photo) => void; onEdit?: (photo: Photo) => void; onDelete?: (id: number) => void }) {
+  return <article className={"photo-tile " + (photo.image_data ? "has-image" : photo.color)}>
+    <button className="photo-open" type="button" onClick={() => onOpen?.(photo)} disabled={!photo.image_data}>
+      {photo.image_data ? <img src={photo.image_data} alt={photo.title} /> : null}
+      {!photo.image_data && <span>Brak pliku zdjęcia</span>}
+    </button>
     <div className="photo-meta">
       <strong>{photo.title}</strong>
       <small>{dateLabel(photo.created_at || photo.session_date)}</small>
       {onEdit && <div className="photo-actions">
         <Button onClick={() => onEdit(photo)}>Edytuj</Button>
-        {shareUrl && <Button onClick={() => navigator.clipboard?.writeText(shareUrl)}>Udostępnij</Button>}
-        {onDelete && <Button variant="danger" onClick={() => onDelete(photo.id)}>Usuń</Button>}
+        <Button onClick={() => sharePhoto(photo)}>Udostępnij</Button>
+        {onDelete && <Button variant="danger" onClick={() => onDelete(photo.id)}>Usu?</Button>}
       </div>}
     </div>
   </article>;
