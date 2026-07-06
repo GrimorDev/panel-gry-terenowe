@@ -181,7 +181,16 @@ label { display: grid; gap: 6px; color: var(--text-muted); font-size: 13px; }
 .lightbox-nav { grid-row: 2; align-self: center; width: 54px; height: 72px; border-radius: var(--radius-md); background: rgba(255,255,255,.12); color: #fff; border: 1px solid rgba(255,255,255,.22); font-size: 44px; line-height: 1; }
 .lightbox-nav.prev { grid-column: 1; }
 .lightbox-nav.next { grid-column: 3; }
+.lightbox-nav span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.lightbox-nav::before { content: ""; display: block; width: 18px; height: 18px; margin: 0 auto; border-top: 4px solid currentColor; border-left: 4px solid currentColor; }
+.lightbox-nav.prev::before { transform: rotate(-45deg); }
+.lightbox-nav.next::before { transform: rotate(135deg); }
 .lightbox-actions { grid-column: 2; grid-row: 3; display: flex; justify-content: center; }
+.message-compose { display: grid; grid-template-columns: 220px 220px minmax(260px, 1fr) auto; gap: 12px; align-items: end; }
+.message-list { display: grid; gap: 12px; margin-top: 18px; }
+.message-card { display: grid; gap: 8px; padding: 16px; border: 1px solid var(--border-default); border-radius: var(--radius-md); background: #fff; box-shadow: var(--shadow-card); }
+.message-card small, .message-card span { display: block; color: var(--text-muted); }
+.message-card p { margin: 0; }
 .tv { width: min(980px, calc(100vw - 28px)); min-height: 70vh; padding: 28px; border-radius: var(--radius-lg); background: #0f1714; color: #fff; box-shadow: var(--shadow-lg); }
 .tv .ranking li { border-color: rgba(255,255,255,.16); }
 .tv-timer { text-align: center; color: var(--color-accent); font-size: clamp(72px,12vw,144px); font-weight: 800; }
@@ -189,7 +198,7 @@ label { display: grid; gap: 6px; color: var(--text-muted); font-size: 13px; }
 .loading { min-height: 100vh; display: grid; place-items: center; }
 
 @media (max-width: 1050px) {
-  .login, .app-shell, .builder, .run-grid, .score-grid, .resource-grid, .dashboard-grid, .stat-grid { grid-template-columns: 1fr; }
+  .login, .app-shell, .builder, .run-grid, .score-grid, .resource-grid, .dashboard-grid, .stat-grid, .message-compose { grid-template-columns: 1fr; }
   .sidebar { position: sticky; top: 0; z-index: 900; height: auto; padding: 14px 20px; border-right: 0; border-bottom: 1px solid var(--border-default); }
   .sidebar nav { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 2px; }
   .nav-item { flex: 0 0 auto; }

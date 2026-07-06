@@ -16,10 +16,12 @@ type Station = { id: number; game_id: number; title: string; station_order: numb
 type Score = { team_id: number; station_id: number; points: number; correct: boolean; cooperation: number; comment: string; finished_at: string | null };
 type Material = { id: number; station_id: number; station_title: string; title: string; url: string; notes: string };
 type Question = { id: number; station_id: number; station_title: string; question: string; answer: string; max_points: number };
-type AppState = { ok: true; game: Game; games: Game[]; teams: Team[]; stations: Station[]; scores: Score[]; materials: Material[]; questions: Question[]; cohorts: Cohort[]; wards: Ward[]; sessions: Session[]; photos: Photo[] };
+type InternalShare = { id: number; photo_id: number; photo_title: string; target_type: string; target_id: number | null; cohort_name: string | null; note: string; created_by_name: string | null; created_at: string };
+type Message = { id: number; sender_name: string | null; target_type: string; target_id: number | null; cohort_name: string | null; body: string; photo_id: number | null; photo_title: string | null; created_at: string };
+type AppState = { ok: true; game: Game; games: Game[]; teams: Team[]; stations: Station[]; scores: Score[]; materials: Material[]; questions: Question[]; cohorts: Cohort[]; wards: Ward[]; sessions: Session[]; photos: Photo[]; shares: InternalShare[]; messages: Message[] };
 
 const templates = ["Własna", "Polska", "Włochy", "Olimp"];
-const navItems = [["dashboard", "Pulpit"], ["wards", "Podopieczni"], ["cohorts", "Roczniki"], ["sessions", "Zbiórki"], ["gallery", "Galeria"], ["games", "Gry terenowe"]] as const;
+const navItems = [["dashboard", "Pulpit"], ["wards", "Podopieczni"], ["cohorts", "Roczniki"], ["sessions", "Zbiórki"], ["gallery", "Galeria"], ["messages", "Wiadomo?ci"], ["games", "Gry terenowe"]] as const;
 const gameTabs = [["prepare", "Przygotowanie"], ["run", "Gra"], ["score", "Ocena"], ["teams", "Drużyny"], ["resources", "QR i materiały"]] as const;
 
 async function api<T>(url: string, options?: RequestInit): Promise<T> {
@@ -127,10 +129,11 @@ function App() {
   const [teamId, setTeamId] = useState<number | null>(null);
   const [stationId, setStationId] = useState<number | null>(null);
   const [toast, setToast] = useState("");
-  const [modal, setModal] = useState<null | "ward" | "session" | "team" | "photo" | "account" | "tv">(null);
+  const [modal, setModal] = useState<null | "ward" | "session" | "team" | "photo" | "share" | "account" | "tv">(null);
   const [editingWard, setEditingWard] = useState<Ward | null>(null);
   const [editingSession, setEditingSession] = useState<Session | null>(null);
   const [editingPhoto, setEditingPhoto] = useState<Photo | null>(null);
+  const [sharingPhoto, setSharingPhoto] = useState<Photo | null>(null);
   const mapEl = useRef<HTMLDivElement | null>(null);
   const map = useRef<L.Map | null>(null);
   const markers = useRef<L.LayerGroup | null>(null);
@@ -252,13 +255,15 @@ function App() {
       {view === "wards" && <Wards state={state} onAdd={() => { setEditingWard(null); setModal("ward"); }} onEdit={(ward) => { setEditingWard(ward); setModal("ward"); }} onDelete={async (id) => setState(await api<AppState>(`/api/wards/${id}?gameId=${state.game.id}`, { method: "DELETE" }))} />}
       {view === "cohorts" && <Cohorts cohorts={state.cohorts} />}
       {view === "sessions" && <Sessions state={state} onAdd={() => { setEditingSession(null); setModal("session"); }} onEdit={(session) => { setEditingSession(session); setModal("session"); }} onDelete={async (id) => setState(await api<AppState>(`/api/sessions/${id}?gameId=${state.game.id}`, { method: "DELETE" }))} />}
-      {view === "gallery" && <Gallery state={state} onAddGallery={() => { setEditingSession(null); setModal("session"); }} onUploadPhotos={uploadPhotos} onEditPhoto={(photo) => { setEditingPhoto(photo); setModal("photo"); }} onDeletePhoto={async (id) => setState(await api<AppState>(`/api/photos/${id}?gameId=${state.game.id}`, { method: "DELETE" }))} />}
+      {view === "gallery" && <Gallery state={state} onAddGallery={() => { setEditingSession(null); setModal("session"); }} onUploadPhotos={uploadPhotos} onEditPhoto={(photo) => { setEditingPhoto(photo); setModal("photo"); }} onShareInternal={(photo) => { setSharingPhoto(photo); setModal("share"); }} onDeletePhoto={async (id) => setState(await api<AppState>(`/api/photos/${id}?gameId=${state.game.id}`, { method: "DELETE" }))} />}
+      {view === "messages" && <MessagesView state={state} setState={setState} />}
       {view === "games" && <GamesModule state={state} gameTab={gameTab} setGameTab={setGameTab} ranking={ranking} teamId={teamId} stationId={stationId} setTeamId={setTeamId} setStationId={setStationId} activeScore={activeScore} mapRef={mapEl} onSaveGame={saveGame} onSaveStation={saveStation} onAddTeam={() => setModal("team")} onDeleteStation={async (id) => setState(await api<AppState>(`/api/stations/${id}?gameId=${state.game.id}`, { method: "DELETE" }))} onTimer={async (command) => setState(await api<AppState>("/api/timer", { method: "POST", body: JSON.stringify({ game_id: state.game.id, command }) }))} onScore={async (payload) => { setState(await api<AppState>("/api/scores", { method: "POST", body: JSON.stringify(payload) })); flash("Ocena zapisana"); }} setState={setState} load={load} openTv={() => setModal("tv")} />}
     </main>
 
     {modal === "ward" && <WardDialog state={state} ward={editingWard} onClose={() => setModal(null)} onSaved={(next) => { setState(next); setModal(null); }} />}
     {modal === "session" && <SessionDialog state={state} session={editingSession} onClose={() => setModal(null)} onSaved={(next) => { setState(next); setModal(null); }} />}
     {modal === "photo" && editingPhoto && <PhotoDialog state={state} photo={editingPhoto} onClose={() => setModal(null)} onSaved={(next) => { setState(next); setModal(null); }} />}
+    {modal === "share" && sharingPhoto && <ShareDialog state={state} photo={sharingPhoto} onClose={() => setModal(null)} onSaved={(next) => { setState(next); setModal(null); }} />}
     {modal === "account" && <AccountDialog user={user} onClose={() => setModal(null)} onSaved={(next) => { setUser(next); setModal(null); }} onLogout={() => api("/api/logout", { method: "POST" }).then(() => { setUser(null); setAuth("guest"); setModal(null); })} />}
     {modal === "team" && <TeamDialog gameId={state.game.id} onClose={() => setModal(null)} onSaved={(next) => { setState(next); setModal(null); }} />}
     {modal === "tv" && <TvDialog state={state} ranking={ranking} onClose={() => setModal(null)} />}
@@ -331,7 +336,7 @@ async function sharePhoto(photo: Photo) {
   field.remove();
 }
 
-function Gallery({ state, onAddGallery, onUploadPhotos, onEditPhoto, onDeletePhoto }: { state: AppState; onAddGallery: () => void; onUploadPhotos: (sessionId: number, files: File[]) => void; onEditPhoto: (photo: Photo) => void; onDeletePhoto: (id: number) => void }) {
+function Gallery({ state, onAddGallery, onUploadPhotos, onEditPhoto, onShareInternal, onDeletePhoto }: { state: AppState; onAddGallery: () => void; onUploadPhotos: (sessionId: number, files: File[]) => void; onEditPhoto: (photo: Photo) => void; onShareInternal: (photo: Photo) => void; onDeletePhoto: (id: number) => void }) {
   const [openId, setOpenId] = useState<number | null>(null);
   const photos = state.photos.filter((photo) => photo.image_data);
   const openIndex = openId ? photos.findIndex((photo) => photo.id === openId) : -1;
@@ -345,7 +350,7 @@ function Gallery({ state, onAddGallery, onUploadPhotos, onEditPhoto, onDeletePho
 
   return <div>
     <div className="page-head">
-      <div><h1>Galeria</h1><p className="help">Galerie tworz? si? automatycznie dla zbi?rek. Zdj?cia mo?na robi? aparatem, dodawa? z telefonu lub komputera, powi?ksza? i udost?pnia?.</p></div>
+      <div><h1>Galeria</h1><p className="help">Galerie tworzą się automatycznie dla zbiórek. Zdjęcia można robi? aparatem, dodawać z telefonu lub komputera, powiększać i udostępniać.</p></div>
       <Button variant="primary" onClick={onAddGallery}>Nowa galeria</Button>
     </div>
     {state.sessions.map((session) => {
@@ -353,7 +358,7 @@ function Gallery({ state, onAddGallery, onUploadPhotos, onEditPhoto, onDeletePho
       return <section className="gallery-section" key={session.id}>
         <div className="gallery-head"><div><h2>{session.title}</h2><span>{dateLabel(session.session_date)} · {sessionPhotos.length} zdjęć</span></div></div>
         <div className="gallery-grid">
-          {sessionPhotos.map((photo) => <PhotoTile key={photo.id} photo={photo} onOpen={showPhoto} onEdit={onEditPhoto} onDelete={onDeletePhoto} />)}
+          {sessionPhotos.map((photo) => <PhotoTile key={photo.id} photo={photo} onOpen={showPhoto} onEdit={onEditPhoto} onShareInternal={onShareInternal} onDelete={onDeletePhoto} />)}
           <div className="photo-upload-card">
             <label className="upload-action primary-upload">
               <input type="file" accept="image/*" capture="environment" onChange={(event) => { const file = event.currentTarget.files?.[0]; if (file) onUploadPhotos(session.id, [file]); event.currentTarget.value = ""; }} />
@@ -386,12 +391,12 @@ function GalleryLightbox({ photo, current, total, onClose, onPrev, onNext, onSha
 
   return <div className="lightbox" role="dialog" aria-modal="true">
     <button className="lightbox-close" onClick={onClose}>Zamknij</button>
-    <button className="lightbox-nav prev" onClick={onPrev}>?</button>
+    <button className="lightbox-nav prev" aria-label="Poprzednie zdjęcie" onClick={onPrev}><span>Poprzednie</span></button>
     <figure>
       {photo.image_data && <img src={photo.image_data} alt={photo.title} />}
-      <figcaption><strong>{photo.title}</strong><span>{current}/{total} ? {dateLabel(photo.created_at || photo.session_date)}</span></figcaption>
+      <figcaption><strong>{photo.title}</strong><span>{current}/{total} · {dateLabel(photo.created_at || photo.session_date)}</span></figcaption>
     </figure>
-    <button className="lightbox-nav next" onClick={onNext}>?</button>
+    <button className="lightbox-nav next" aria-label="Następne zdjęcie" onClick={onNext}><span>Następne</span></button>
     <div className="lightbox-actions"><Button onClick={onShare}>Udostępnij</Button></div>
   </div>;
 }
@@ -455,7 +460,7 @@ function SessionCard({ session, actions }: { session: Session; actions?: React.R
   return <article className="session-card"><div className="card-row"><strong>{session.title}</strong><span>{dateLabel(session.session_date)}</span></div><div className="mini-progress"><span style={{ width: `${pct}%` }} /></div><p>Obecność: <strong>{session.attendance}/{session.total}</strong> · {session.location}</p>{actions && <div className="button-row">{actions}</div>}</article>;
 }
 
-function PhotoTile({ photo, onOpen, onEdit, onDelete }: { photo: Photo; onOpen?: (photo: Photo) => void; onEdit?: (photo: Photo) => void; onDelete?: (id: number) => void }) {
+function PhotoTile({ photo, onOpen, onEdit, onShareInternal, onDelete }: { photo: Photo; onOpen?: (photo: Photo) => void; onEdit?: (photo: Photo) => void; onShareInternal?: (photo: Photo) => void; onDelete?: (id: number) => void }) {
   return <article className={"photo-tile " + (photo.image_data ? "has-image" : photo.color)}>
     <button className="photo-open" type="button" onClick={() => onOpen?.(photo)} disabled={!photo.image_data}>
       {photo.image_data ? <img src={photo.image_data} alt={photo.title} /> : null}
@@ -466,8 +471,9 @@ function PhotoTile({ photo, onOpen, onEdit, onDelete }: { photo: Photo; onOpen?:
       <small>{dateLabel(photo.created_at || photo.session_date)}</small>
       {onEdit && <div className="photo-actions">
         <Button onClick={() => onEdit(photo)}>Edytuj</Button>
-        <Button onClick={() => sharePhoto(photo)}>Udostępnij</Button>
-        {onDelete && <Button variant="danger" onClick={() => onDelete(photo.id)}>Usu?</Button>}
+        <Button onClick={() => sharePhoto(photo)}>Link</Button>
+        {onShareInternal && <Button onClick={() => onShareInternal(photo)}>Do hufca</Button>}
+        {onDelete && <Button variant="danger" onClick={() => onDelete(photo.id)}>Usuń</Button>}
       </div>}
     </div>
   </article>;
@@ -491,6 +497,18 @@ function PhotoDialog({ state, photo, onClose, onSaved }: { state: AppState; phot
 
 function AccountDialog({ user, onClose, onSaved, onLogout }: { user: User; onClose: () => void; onSaved: (user: User) => void; onLogout: () => void }) {
   return <Modal title="Konto" onClose={onClose}><form className="stack" onSubmit={async (event) => { event.preventDefault(); const result = await api<{ ok: true; user: User }>("/api/profile", { method: "POST", body: JSON.stringify(Object.fromEntries(new FormData(event.currentTarget).entries())) }); onSaved(result.user); }}><span className="kicker">{user.role}</span><label>Imię i nazwisko<input name="name" defaultValue={user.name} required /></label><label>E-mail<input name="email" type="email" defaultValue={user.email} required /></label><div className="form-actions"><Button variant="primary">Zapisz zmiany</Button></div></form><div className="danger-zone"><Button variant="danger" onClick={onLogout}>Wyloguj się</Button></div></Modal>;
+}
+
+function ShareDialog({ state, photo, onClose, onSaved }: { state: AppState; photo: Photo; onClose: () => void; onSaved: (state: AppState) => void }) {
+  return <Modal title="Udostępnij w hufcu" onClose={onClose}><form className="stack" onSubmit={async (event) => { event.preventDefault(); onSaved(await api<AppState>("/api/internal-shares", { method: "POST", body: JSON.stringify({ ...Object.fromEntries(new FormData(event.currentTarget).entries()), photo_id: photo.id, game_id: state.game.id }) })); }}><p className="help">{photo.title}</p><label>Odbiorcy<select name="target_type" defaultValue="hufiec"><option value="hufiec">Cały hufiec</option><option value="cohort">Wybrany rocznik</option><option value="parents">Rodzice</option><option value="staff">Wychowawcy</option></select></label><label>Rocznik, jeśli wybrano rocznik<select name="target_id" defaultValue=""><option value="">Bez rocznika</option>{state.cohorts.map((cohort) => <option key={cohort.id} value={cohort.id}>{cohort.name}</option>)}</select></label><label>Wiadomość<textarea name="note" placeholder="np. Zdjęcia z dzisiejszej zbiórki są już dostępne." /></label><Button variant="primary">Udostępnij</Button></form></Modal>;
+}
+
+function MessagesView({ state, setState }: { state: AppState; setState: (state: AppState) => void }) {
+  return <div>
+    <div className="page-head"><div><h1>Wiadomości</h1><p className="help">Wewnętrzne wiadomości dla hufca, roczników, rodziców i wychowawców.</p></div></div>
+    <Panel title="Napisz wiadomość"><form className="message-compose" onSubmit={async (event) => { event.preventDefault(); setState(await api<AppState>("/api/messages", { method: "POST", body: JSON.stringify({ ...Object.fromEntries(new FormData(event.currentTarget).entries()), game_id: state.game.id }) })); event.currentTarget.reset(); }}><label>Odbiorcy<select name="target_type"><option value="hufiec">Cały hufiec</option><option value="cohort">Rocznik</option><option value="parents">Rodzice</option><option value="staff">Wychowawcy</option></select></label><label>Rocznik<select name="target_id"><option value="">Bez rocznika</option>{state.cohorts.map((cohort) => <option key={cohort.id} value={cohort.id}>{cohort.name}</option>)}</select></label><label className="wide">Treść<textarea name="body" required /></label><Button variant="primary">Wyślij</Button></form></Panel>
+    <div className="message-list">{state.messages.map((message) => <article className="message-card" key={message.id}><div><strong>{message.sender_name || "System hufca"}</strong><small>{dateLabel(message.created_at)} · {message.cohort_name || message.target_type}</small></div><p>{message.body}</p>{message.photo_title && <span>Zdjęcie: {message.photo_title}</span>}</article>)}</div>
+  </div>;
 }
 
 function TeamDialog({ gameId, onClose, onSaved }: { gameId: number; onClose: () => void; onSaved: (state: AppState) => void }) {

@@ -183,6 +183,26 @@ async function ensureSchema() {
       max_points INTEGER NOT NULL DEFAULT 10,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
+
+    CREATE TABLE IF NOT EXISTS internal_shares (
+      id SERIAL PRIMARY KEY,
+      photo_id INTEGER NOT NULL REFERENCES session_photos(id) ON DELETE CASCADE,
+      target_type VARCHAR(30) NOT NULL DEFAULT 'hufiec',
+      target_id INTEGER,
+      note TEXT NOT NULL DEFAULT '',
+      created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS messages (
+      id SERIAL PRIMARY KEY,
+      sender_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      target_type VARCHAR(30) NOT NULL DEFAULT 'hufiec',
+      target_id INTEGER,
+      body TEXT NOT NULL,
+      photo_id INTEGER REFERENCES session_photos(id) ON DELETE SET NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
   `);
 
   await pool.query("ALTER TABLE session_photos ADD COLUMN IF NOT EXISTS image_data TEXT");
@@ -264,7 +284,7 @@ async function state(gameId?: number) {
   if (!game) throw new Error("Nie znaleziono gry");
   game.remaining_seconds = remaining(game);
 
-  const [teams, stations, scores, materials, questions, games, cohorts, wards, sessions, photos] = await Promise.all([
+  const [teams, stations, scores, materials, questions, games, cohorts, wards, sessions, photos, shares, messages] = await Promise.all([
     pool.query(`
       SELECT t.*,
         COALESCE(SUM(ts.points), 0)::int AS total_points,
@@ -320,6 +340,23 @@ async function state(gameId?: number) {
       FROM session_photos p
       JOIN sessions s ON s.id = p.session_id
       ORDER BY s.session_date DESC, p.id ASC
+    `),
+    pool.query(`
+      SELECT sh.*, p.title AS photo_title, c.name AS cohort_name, u.name AS created_by_name
+      FROM internal_shares sh
+      JOIN session_photos p ON p.id = sh.photo_id
+      LEFT JOIN cohorts c ON c.id = sh.target_id AND sh.target_type='cohort'
+      LEFT JOIN users u ON u.id = sh.created_by
+      ORDER BY sh.created_at DESC
+    `),
+    pool.query(`
+      SELECT m.*, u.name AS sender_name, p.title AS photo_title, c.name AS cohort_name
+      FROM messages m
+      LEFT JOIN users u ON u.id = m.sender_id
+      LEFT JOIN session_photos p ON p.id = m.photo_id
+      LEFT JOIN cohorts c ON c.id = m.target_id AND m.target_type='cohort'
+      ORDER BY m.created_at DESC
+      LIMIT 80
     `)
   ]);
 
@@ -335,7 +372,9 @@ async function state(gameId?: number) {
     cohorts: cohorts.rows,
     wards: wards.rows,
     sessions: sessions.rows,
-    photos: photos.rows
+    photos: photos.rows,
+    shares: shares.rows,
+    messages: messages.rows
   };
 }
 
@@ -490,7 +529,7 @@ app.delete("/api/sessions/:id", async (req, res) => {
 
 app.post("/api/photos", async (req, res) => {
   const id = Number(req.body.id || 0);
-  const title = String(req.body.title || "Zdj?cie").trim();
+  const title = String(req.body.title || "Zdjęcie").trim();
   const sessionId = Number(req.body.session_id);
   const imageData = String(req.body.image_data || "");
   const mimeType = String(req.body.mime_type || "");
@@ -509,6 +548,34 @@ app.delete("/api/photos/:id", async (req, res) => {
   await pool.query("DELETE FROM session_photos WHERE id=$1", [Number(req.params.id)]);
   res.json(await state(req.query.gameId ? Number(req.query.gameId) : undefined));
 });
+app.post("/api/internal-shares", async (req, res) => {
+  const photoId = Number(req.body.photo_id);
+  const targetType = String(req.body.target_type || "hufiec");
+  const targetId = Number(req.body.target_id || 0) || null;
+  const note = String(req.body.note || "");
+  await pool.query(
+    "INSERT INTO internal_shares (photo_id, target_type, target_id, note, created_by) VALUES ($1,$2,$3,$4,$5)",
+    [photoId, targetType, targetId, note, req.user?.id || null]
+  );
+  if (note.trim()) {
+    await pool.query(
+      "INSERT INTO messages (sender_id, target_type, target_id, body, photo_id) VALUES ($1,$2,$3,$4,$5)",
+      [req.user?.id || null, targetType, targetId, note, photoId]
+    );
+  }
+  res.json(await state(Number(req.body.game_id || 0) || undefined));
+});
+
+app.post("/api/messages", async (req, res) => {
+  const body = String(req.body.body || "").trim();
+  if (!body) return res.status(400).json({ ok: false, error: "Wpisz wiadomość" });
+  await pool.query(
+    "INSERT INTO messages (sender_id, target_type, target_id, body, photo_id) VALUES ($1,$2,$3,$4,$5)",
+    [req.user?.id || null, String(req.body.target_type || "hufiec"), Number(req.body.target_id || 0) || null, body, Number(req.body.photo_id || 0) || null]
+  );
+  res.json(await state(Number(req.body.game_id || 0) || undefined));
+});
+
 app.post("/api/stations", async (req, res) => {
   const gameId = Number(req.body.game_id);
   const id = Number(req.body.id || 0);
