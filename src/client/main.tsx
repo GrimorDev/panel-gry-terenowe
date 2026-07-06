@@ -139,8 +139,8 @@ function fileToAttachment(file: File) {
   });
 }
 
-function Button({ children, variant = "secondary", ...props }: React.ButtonHTMLAttributes<HTMLButtonElement> & { variant?: "primary" | "secondary" | "danger" }) {
-  return <button className={`btn btn-${variant}`} {...props}>{children}</button>;
+function Button({ children, variant = "secondary", className = "", ...props }: React.ButtonHTMLAttributes<HTMLButtonElement> & { variant?: "primary" | "secondary" | "danger" }) {
+  return <button className={`btn btn-${variant} ${className}`.trim()} {...props}>{children}</button>;
 }
 
 function Panel({ title, kicker, action, children, className = "" }: { title: string; kicker?: string; action?: React.ReactNode; children: React.ReactNode; className?: string }) {
@@ -174,6 +174,8 @@ function UiIcon({ name }: { name: string }) {
   if (name === "logout") return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9" {...common} /></svg>;
   if (name === "bell") return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 17h12l-1.6-2.3V10a4.4 4.4 0 0 0-8.8 0v4.7L6 17zM10.2 19a1.9 1.9 0 0 0 3.6 0" {...common} /></svg>;
   if (name === "settings") return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z" {...common} /><path d="M19.4 15a1.8 1.8 0 0 0 .36 1.98l.06.06a2.1 2.1 0 1 1-2.98 2.98l-.06-.06A1.8 1.8 0 0 0 14.8 19.6a1.8 1.8 0 0 0-1.08 1.64v.18a2.1 2.1 0 1 1-4.2 0v-.1A1.8 1.8 0 0 0 8.4 19.6a1.8 1.8 0 0 0-1.98.36l-.06.06a2.1 2.1 0 1 1-2.98-2.98l.06-.06A1.8 1.8 0 0 0 3.8 15a1.8 1.8 0 0 0-1.64-1.08H2a2.1 2.1 0 1 1 0-4.2h.1A1.8 1.8 0 0 0 3.8 8.6a1.8 1.8 0 0 0-.36-1.98l-.06-.06a2.1 2.1 0 1 1 2.98-2.98l.06.06A1.8 1.8 0 0 0 8.4 4a1.8 1.8 0 0 0 1.08-1.64V2.2a2.1 2.1 0 1 1 4.2 0v.1A1.8 1.8 0 0 0 14.8 4a1.8 1.8 0 0 0 1.98-.36l.06-.06a2.1 2.1 0 1 1 2.98 2.98l-.06.06A1.8 1.8 0 0 0 19.4 8.6a1.8 1.8 0 0 0 1.64 1.08h.18a2.1 2.1 0 1 1 0 4.2h-.1A1.8 1.8 0 0 0 19.4 15Z" {...common} /></svg>;
+  if (name === "attach") return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21.4 11.2 12 20.6a6 6 0 0 1-8.5-8.5l9.8-9.8a4 4 0 0 1 5.7 5.7l-9.8 9.8a2 2 0 0 1-2.8-2.8l8.9-8.9" {...common} /></svg>;
+  if (name === "send") return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6" {...common} /></svg>;
   if (name === "more") return <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="1.5" fill="currentColor" /><circle cx="12" cy="12" r="1.5" fill="currentColor" /><circle cx="19" cy="12" r="1.5" fill="currentColor" /></svg>;
   return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 21V3M6 4.5c2.8-1.6 4.7 1.4 7.5-.1s4.5 1.3 4.5 1.3v8.1c-2.8 1.6-4.7-1.4-7.5.1S6 12.5 6 12.5v-8z" {...common} /></svg>;
 }
@@ -940,9 +942,10 @@ function MessagesView({ state, user, setState }: { state: AppState; user: User; 
           </div>
           <label className="attach-button">
             <input type="file" onChange={async (event) => { const file = event.currentTarget.files?.[0]; if (file) setAttachment(await fileToAttachment(file)); event.currentTarget.value = ""; }} />
+            <UiIcon name="attach" />
             <span>Załącz</span>
           </label>
-          <Button variant="primary">Wyślij</Button>
+          <Button className="send-button" variant="primary"><UiIcon name="send" /><span>Wyślij</span></Button>
         </form>
       </section>
     </section>
