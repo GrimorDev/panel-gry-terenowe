@@ -367,7 +367,12 @@ async function state(gameId?: number) {
       ORDER BY sh.created_at DESC
     `),
     pool.query(`
-      SELECT m.*, u.name AS sender_name, p.title AS photo_title, c.name AS cohort_name
+      SELECT m.*, u.name AS sender_name,
+        p.title AS photo_title,
+        p.image_data AS photo_image_data,
+        p.mime_type AS photo_mime_type,
+        p.share_token AS photo_share_token,
+        c.name AS cohort_name
       FROM messages m
       LEFT JOIN users u ON u.id = m.sender_id
       LEFT JOIN session_photos p ON p.id = m.photo_id
@@ -635,12 +640,10 @@ app.post("/api/internal-shares", async (req, res) => {
     "INSERT INTO internal_shares (photo_id, target_type, target_id, note, created_by) VALUES ($1,$2,$3,$4,$5)",
     [photoId, targetType, targetId, note, req.user?.id || null]
   );
-  if (note.trim()) {
-    await pool.query(
-      "INSERT INTO messages (sender_id, target_type, target_id, body, photo_id) VALUES ($1,$2,$3,$4,$5)",
-      [req.user?.id || null, targetType, targetId, note, photoId]
-    );
-  }
+  await pool.query(
+    "INSERT INTO messages (sender_id, target_type, target_id, body, photo_id) VALUES ($1,$2,$3,$4,$5)",
+    [req.user?.id || null, targetType, targetId, note.trim() || "Udostępniono zdjęcie", photoId]
+  );
   res.json(await state(Number(req.body.game_id || 0) || undefined));
 });
 

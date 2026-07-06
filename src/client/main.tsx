@@ -18,7 +18,7 @@ type Score = { team_id: number; station_id: number; points: number; correct: boo
 type Material = { id: number; station_id: number; station_title: string; title: string; url: string; notes: string };
 type Question = { id: number; station_id: number; station_title: string; question: string; answer: string; max_points: number };
 type InternalShare = { id: number; photo_id: number; photo_title: string; target_type: string; target_id: number | null; cohort_name: string | null; note: string; created_by_name: string | null; created_at: string };
-type Message = { id: number; sender_id: number | null; sender_name: string | null; target_type: string; target_id: number | null; cohort_name: string | null; body: string; photo_id: number | null; photo_title: string | null; attachment_name: string | null; attachment_mime: string | null; attachment_data: string | null; created_at: string };
+type Message = { id: number; sender_id: number | null; sender_name: string | null; target_type: string; target_id: number | null; cohort_name: string | null; body: string; photo_id: number | null; photo_title: string | null; photo_image_data: string | null; photo_mime_type: string | null; photo_share_token: string | null; attachment_name: string | null; attachment_mime: string | null; attachment_data: string | null; created_at: string };
 type AppState = { ok: true; game: Game; games: Game[]; teams: Team[]; stations: Station[]; scores: Score[]; materials: Material[]; questions: Question[]; cohorts: Cohort[]; wards: Ward[]; sessions: Session[]; photos: Photo[]; shares: InternalShare[]; messages: Message[]; caregivers: Caregiver[] };
 
 const templates = ["Własna", "Polska", "Włochy", "Olimp"];
@@ -141,6 +141,9 @@ function App() {
   const [toast, setToast] = useState("");
   const [modal, setModal] = useState<null | "ward" | "session" | "team" | "photo" | "share" | "account" | "tv">(null);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const navRef = useRef<HTMLElement | null>(null);
+  const navItemRefs = useRef<Map<string, HTMLButtonElement>>(new Map());
+  const [navIndicator, setNavIndicator] = useState({ top: 0, left: 0, width: 0, height: 0, opacity: 0 });
   const [editingWard, setEditingWard] = useState<Ward | null>(null);
   const [editingSession, setEditingSession] = useState<Session | null>(null);
   const [editingPhoto, setEditingPhoto] = useState<Photo | null>(null);
@@ -182,6 +185,26 @@ function App() {
     }, 1000);
     return () => window.clearInterval(timer);
   }, [state?.game.timer_running]);
+
+  useEffect(() => {
+    const update = () => {
+      const nav = navRef.current;
+      const item = navItemRefs.current.get(view);
+      if (!nav || !item) return;
+      const navRect = nav.getBoundingClientRect();
+      const itemRect = item.getBoundingClientRect();
+      setNavIndicator({
+        top: itemRect.top - navRect.top,
+        left: itemRect.left - navRect.left,
+        width: itemRect.width,
+        height: itemRect.height,
+        opacity: 1
+      });
+    };
+    update();
+    window.addEventListener("resize", update);
+    return () => window.removeEventListener("resize", update);
+  }, [view, user?.role, mobileMenuOpen]);
 
   useEffect(() => {
     if (!state || view !== "games" || gameTab !== "prepare" || !mapEl.current) return;
@@ -259,21 +282,26 @@ function App() {
     {mobileMenuOpen && <button className="menu-backdrop" type="button" aria-label="Zamknij menu" onClick={() => setMobileMenuOpen(false)} />}
     <aside className="sidebar">
       <div className="brand-lock"><span className="brand-mark">H</span><span><strong>Hufc</strong><small>Panel wychowawcy</small></span></div>
-      <nav>{visibleNavItems.map(([id, label]) => <button key={id} className={`nav-item ${view === id ? "active" : ""}`} onClick={() => { setView(id); setMobileMenuOpen(false); }}>{label}</button>)}</nav>
+      <nav className="side-nav" ref={navRef}>
+        <span className="nav-indicator" style={{ transform: `translate(${navIndicator.left}px, ${navIndicator.top}px)`, width: navIndicator.width, height: navIndicator.height, opacity: navIndicator.opacity }} />
+        {visibleNavItems.map(([id, label]) => <button key={id} ref={(node) => { if (node) navItemRefs.current.set(id, node); else navItemRefs.current.delete(id); }} className={`nav-item ${view === id ? "active" : ""}`} onClick={() => { setView(id); setMobileMenuOpen(false); }}>{label}</button>)}
+      </nav>
       <button className="user-chip" onClick={() => setModal("account")}>
         <span>{initials(user.name)}</span><strong>{user.name}</strong><small>{user.role}</small>
       </button>
     </aside>
 
     <main className="main full">
-      {view === "dashboard" && <Dashboard state={state} user={user} setView={setView} />}
-      {view === "wards" && <Wards state={state} onAdd={() => { setEditingWard(null); setModal("ward"); }} onEdit={(ward) => { setEditingWard(ward); setModal("ward"); }} onDelete={async (id) => setState(await api<AppState>(`/api/wards/${id}?gameId=${state.game.id}`, { method: "DELETE" }))} />}
-      {view === "cohorts" && <Cohorts cohorts={state.cohorts} />}
-      {view === "sessions" && <Sessions state={state} onAdd={() => { setEditingSession(null); setModal("session"); }} onEdit={(session) => { setEditingSession(session); setModal("session"); }} onDelete={async (id) => setState(await api<AppState>(`/api/sessions/${id}?gameId=${state.game.id}`, { method: "DELETE" }))} />}
-      {view === "gallery" && <Gallery state={state} onAddGallery={() => { setEditingSession(null); setModal("session"); }} onUploadPhotos={uploadPhotos} onEditPhoto={(photo) => { setEditingPhoto(photo); setModal("photo"); }} onShareInternal={(photo) => { setSharingPhoto(photo); setModal("share"); }} onDeletePhoto={async (id) => setState(await api<AppState>(`/api/photos/${id}?gameId=${state.game.id}`, { method: "DELETE" }))} />}
-      {view === "messages" && <MessagesView state={state} user={user} setState={setState} />}
-      {view === "staff" && user.role === "administrator" && <StaffView state={state} setState={setState} />}
-      {view === "games" && <GamesModule state={state} gameTab={gameTab} setGameTab={setGameTab} ranking={ranking} teamId={teamId} stationId={stationId} setTeamId={setTeamId} setStationId={setStationId} activeScore={activeScore} mapRef={mapEl} onSaveGame={saveGame} onSaveStation={saveStation} onAddTeam={() => setModal("team")} onDeleteStation={async (id) => setState(await api<AppState>(`/api/stations/${id}?gameId=${state.game.id}`, { method: "DELETE" }))} onTimer={async (command) => setState(await api<AppState>("/api/timer", { method: "POST", body: JSON.stringify({ game_id: state.game.id, command }) }))} onScore={async (payload) => { setState(await api<AppState>("/api/scores", { method: "POST", body: JSON.stringify(payload) })); flash("Ocena zapisana"); }} setState={setState} load={load} openTv={() => setModal("tv")} />}
+      <div className="view-stage" key={view}>
+        {view === "dashboard" && <Dashboard state={state} user={user} setView={setView} />}
+        {view === "wards" && <Wards state={state} onAdd={() => { setEditingWard(null); setModal("ward"); }} onEdit={(ward) => { setEditingWard(ward); setModal("ward"); }} onDelete={async (id) => setState(await api<AppState>(`/api/wards/${id}?gameId=${state.game.id}`, { method: "DELETE" }))} />}
+        {view === "cohorts" && <Cohorts cohorts={state.cohorts} />}
+        {view === "sessions" && <Sessions state={state} onAdd={() => { setEditingSession(null); setModal("session"); }} onEdit={(session) => { setEditingSession(session); setModal("session"); }} onDelete={async (id) => setState(await api<AppState>(`/api/sessions/${id}?gameId=${state.game.id}`, { method: "DELETE" }))} />}
+        {view === "gallery" && <Gallery state={state} onAddGallery={() => { setEditingSession(null); setModal("session"); }} onUploadPhotos={uploadPhotos} onEditPhoto={(photo) => { setEditingPhoto(photo); setModal("photo"); }} onShareInternal={(photo) => { setSharingPhoto(photo); setModal("share"); }} onDeletePhoto={async (id) => setState(await api<AppState>(`/api/photos/${id}?gameId=${state.game.id}`, { method: "DELETE" }))} />}
+        {view === "messages" && <MessagesView state={state} user={user} setState={setState} />}
+        {view === "staff" && user.role === "administrator" && <StaffView state={state} setState={setState} />}
+        {view === "games" && <GamesModule state={state} gameTab={gameTab} setGameTab={setGameTab} ranking={ranking} teamId={teamId} stationId={stationId} setTeamId={setTeamId} setStationId={setStationId} activeScore={activeScore} mapRef={mapEl} onSaveGame={saveGame} onSaveStation={saveStation} onAddTeam={() => setModal("team")} onDeleteStation={async (id) => setState(await api<AppState>(`/api/stations/${id}?gameId=${state.game.id}`, { method: "DELETE" }))} onTimer={async (command) => setState(await api<AppState>("/api/timer", { method: "POST", body: JSON.stringify({ game_id: state.game.id, command }) }))} onScore={async (payload) => { setState(await api<AppState>("/api/scores", { method: "POST", body: JSON.stringify(payload) })); flash("Ocena zapisana"); }} setState={setState} load={load} openTv={() => setModal("tv")} />}
+      </div>
     </main>
 
     {modal === "ward" && <WardDialog state={state} ward={editingWard} onClose={() => setModal(null)} onSaved={(next) => { setState(next); setModal(null); }} />}
@@ -630,7 +658,11 @@ function MessagesView({ state, user, setState }: { state: AppState; user: User; 
           {thread.map((message) => <article key={message.id} className={"message-bubble " + (message.sender_id === user.id ? "mine" : "")}>
             <small>{message.sender_name || "System hufca"} · {dateLabel(message.created_at)}</small>
             {message.body && <p>{message.body}</p>}
-            {message.photo_title && <span>Zdjęcie: {message.photo_title}</span>}
+            {message.photo_image_data && <a className="message-photo" href={message.photo_share_token ? "/share/photo/" + message.photo_share_token : message.photo_image_data} target="_blank" rel="noreferrer">
+              <img src={message.photo_image_data} alt={message.photo_title || "Zdjęcie z galerii"} />
+              <strong>{message.photo_title || "Zdjęcie z galerii"}</strong>
+            </a>}
+            {!message.photo_image_data && message.photo_title && <span>Zdjęcie: {message.photo_title}</span>}
             {message.attachment_data && <a className="message-attachment" href={message.attachment_data} download={message.attachment_name || "zalacznik"}>
               {message.attachment_mime?.startsWith("image/") && <img src={message.attachment_data} alt={message.attachment_name || "Załącznik"} />}
               <strong>{message.attachment_name || "Załącznik"}</strong>
