@@ -879,8 +879,30 @@ function SessionCard({ session, actions }: { session: Session; actions?: React.R
 function PhotoTile({ photo, onOpen, onEdit, onShareInternal, onDelete }: { photo: Photo; onOpen?: (photo: Photo) => void; onEdit?: (photo: Photo) => void; onShareInternal?: (photo: Photo) => void; onDelete?: (id: number) => void }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [infoOpen, setInfoOpen] = useState(false);
+  const tileRef = useRef<HTMLElement | null>(null);
   const showControls = !!onOpen || !!onEdit;
-  return <article className={"photo-tile " + (photo.image_data ? "has-image" : photo.color) + (menuOpen || infoOpen ? " menu-open" : "")}>
+  useEffect(() => {
+    if (!menuOpen && !infoOpen) return;
+    const close = (event: PointerEvent) => {
+      if (!tileRef.current?.contains(event.target as Node)) {
+        setMenuOpen(false);
+        setInfoOpen(false);
+      }
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setMenuOpen(false);
+        setInfoOpen(false);
+      }
+    };
+    window.addEventListener("pointerdown", close);
+    window.addEventListener("keydown", closeOnEscape);
+    return () => {
+      window.removeEventListener("pointerdown", close);
+      window.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [menuOpen, infoOpen]);
+  return <article ref={tileRef} className={"photo-tile " + (photo.image_data ? "has-image" : photo.color) + (menuOpen || infoOpen ? " menu-open" : "")}>
     <button className="photo-open" type="button" onClick={() => onOpen?.(photo)} disabled={!photo.image_data}>
       {photo.image_data ? <img src={photo.image_data} alt={photo.title} loading="lazy" decoding="async" /> : null}
       {!photo.image_data && <span>Brak zdjęcia</span>}
@@ -893,7 +915,7 @@ function PhotoTile({ photo, onOpen, onEdit, onShareInternal, onDelete }: { photo
       {photo.mime_type && <small>{photo.mime_type}</small>}
     </div>}
     {onEdit && <button className="photo-menu-button" type="button" aria-label="Opcje zdjęcia" onClick={() => { setMenuOpen(!menuOpen); setInfoOpen(false); }}>•••</button>}
-    {onEdit && <div className={"photo-actions-menu " + (menuOpen ? "open" : "")}>
+    {onEdit && menuOpen && <div className="photo-actions-menu open">
       <button type="button" onClick={() => { setMenuOpen(false); onEdit(photo); }}>Edytuj</button>
       <button type="button" onClick={() => { setMenuOpen(false); sharePhoto(photo); }}>Kopiuj link</button>
       {onShareInternal && <button type="button" onClick={() => { setMenuOpen(false); onShareInternal(photo); }}>Udostępnij w hufcu</button>}
