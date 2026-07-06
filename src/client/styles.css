@@ -99,7 +99,7 @@ label { display: grid; gap: 6px; color: var(--text-muted); font-size: 13px; }
 .logout-button { display: flex; align-items: center; gap: 10px; justify-content: flex-start; min-height: 40px; padding: 0 9px; background: transparent; color: rgba(255,255,255,.65); font-size: 13px; font-weight: 700; }
 .logout-button:hover { background: rgba(217,122,82,.16); color: #fff; }
 .sidebar-compact .brand-lock { justify-content: center; padding: 0; }
-.sidebar-compact .brand-lock span:last-child, .sidebar-compact .nav-item span, .sidebar-compact .nav-item em, .sidebar-compact .user-chip strong, .sidebar-compact .user-chip small, .sidebar-compact .logout-button span { display: none; }
+.sidebar-compact .brand-lock span:last-child, .sidebar-compact .nav-item span, .sidebar-compact .user-chip strong, .sidebar-compact .user-chip small, .sidebar-compact .logout-button span { display: none; }
 .sidebar-compact .nav-item { grid-template-columns: 1fr; justify-items: center; padding: 0; }
 .sidebar-compact .user-chip { grid-template-columns: 1fr; justify-items: center; }
 .sidebar-compact .user-chip span { grid-row: auto; }

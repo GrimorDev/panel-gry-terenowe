@@ -20,7 +20,8 @@ type Material = { id: number; station_id: number; station_title: string; title: 
 type Question = { id: number; station_id: number; station_title: string; question: string; answer: string; max_points: number };
 type InternalShare = { id: number; photo_id: number; photo_title: string; target_type: string; target_id: number | null; cohort_name: string | null; note: string; created_by_name: string | null; created_at: string };
 type Message = { id: number; sender_id: number | null; sender_name: string | null; target_type: string; target_id: number | null; cohort_name: string | null; body: string; photo_id: number | null; photo_title: string | null; photo_image_data: string | null; photo_mime_type: string | null; photo_share_token: string | null; attachment_name: string | null; attachment_mime: string | null; attachment_data: string | null; reply_to_id: number | null; reply_body: string | null; reply_sender_name: string | null; reply_photo_title: string | null; reply_attachment_name: string | null; edited_at: string | null; created_at: string };
-type AppState = { ok: true; game: Game; games: Game[]; teams: Team[]; stations: Station[]; scores: Score[]; materials: Material[]; questions: Question[]; cohorts: Cohort[]; wards: Ward[]; sessions: Session[]; photos: Photo[]; shares: InternalShare[]; messages: Message[]; caregivers: Caregiver[] };
+type MessageUnread = { target_type: string; target_id: number; unread_count: number };
+type AppState = { ok: true; game: Game; games: Game[]; teams: Team[]; stations: Station[]; scores: Score[]; materials: Material[]; questions: Question[]; cohorts: Cohort[]; wards: Ward[]; sessions: Session[]; photos: Photo[]; shares: InternalShare[]; messages: Message[]; message_unreads: MessageUnread[]; caregivers: Caregiver[] };
 type NotificationItem = { id: string; title: string; detail: string; time: string; kind: "ward" | "session" | "message" | "today" };
 type AppPrefs = { sidebar: "full" | "compact"; theme: "forest" | "terra" | "cream"; email: boolean; push: boolean };
 type BusyRunner = <T>(label: string, task: () => Promise<T>) => Promise<T>;
@@ -112,6 +113,15 @@ function buildNotifications(state: AppState, user: User): NotificationItem[] {
   }
 
   return notifications.slice(0, 18);
+}
+
+function messageUnreadTotal(state: AppState) {
+  return (state.message_unreads || []).reduce((total, item) => total + Number(item.unread_count || 0), 0);
+}
+
+function messageUnreadFor(state: AppState, targetType: string, targetId: number | null) {
+  const normalizedTargetId = targetId == null ? 0 : Number(targetId);
+  return Number((state.message_unreads || []).find((item) => item.target_type === targetType && Number(item.target_id) === normalizedTargetId)?.unread_count || 0);
 }
 
 async function imageFileToDataUrl(file: File) {
@@ -445,7 +455,7 @@ function App() {
   if (!state) return <div className="loading"><LoadingDots label="Ładowanie danych..." /></div>;
 
   const visibleNavItems = navItems.filter(([id]) => user.role === "administrator" || id !== "staff");
-  const unreadCount = Math.min(99, unreadNotifications.length);
+  const unreadMessagesCount = Math.min(99, messageUnreadTotal(state));
 
   return <div className={`app-shell theme-${prefs.theme} sidebar-${prefs.sidebar} ${mobileMenuOpen ? "menu-open" : ""}`}>
     <button className="mobile-menu-button" type="button" aria-label="Otwórz menu" onClick={() => setMobileMenuOpen(true)}><span /><span /><span /></button>
@@ -457,7 +467,7 @@ function App() {
         {visibleNavItems.map(([id, label]) => <button key={id} ref={(node) => { if (node) navItemRefs.current.set(id, node); else navItemRefs.current.delete(id); }} className={`nav-item ${view === id ? "active" : ""}`} onClick={() => { setView(id); setMobileMenuOpen(false); setNotifOpen(false); }}>
           <UiIcon name={id} />
           <span>{label}</span>
-          {id === "messages" && unreadCount > 0 && <em>{unreadCount}</em>}
+          {id === "messages" && unreadMessagesCount > 0 && <em>{unreadMessagesCount}</em>}
         </button>)}
       </nav>
       <div className="sidebar-footer">
@@ -496,7 +506,7 @@ function App() {
       {(["dashboard", "sessions", "messages", "gallery"] as const).map((id) => <button key={id} className={view === id ? "active" : ""} type="button" onClick={() => { setView(id); setMobileMenuOpen(false); setNotifOpen(false); }}>
         <UiIcon name={id} />
         <span>{id === "dashboard" ? "Pulpit" : viewLabels[id]}</span>
-        {id === "messages" && unreadCount > 0 && <em>{unreadCount}</em>}
+        {id === "messages" && unreadMessagesCount > 0 && <em>{unreadMessagesCount}</em>}
       </button>)}
       <button type="button" onClick={() => setMobileMenuOpen(true)}>
         <UiIcon name="more" />
@@ -547,7 +557,7 @@ function Dashboard({ state, user, setView }: { state: AppState; user: User; setV
     <div className="stat-grid">
       <Panel title="Podopieczni"><strong className="stat-number">{state.wards.length}</strong></Panel>
       <Panel title="Grupy"><strong className="stat-number">{state.cohorts.length}</strong></Panel>
-      <Panel title="Wiadomości"><strong className="stat-number accent">{state.messages.length}</strong></Panel>
+      <Panel title="Wiadomości"><strong className="stat-number accent">{messageUnreadTotal(state)}</strong></Panel>
     </div>
     <div className="dashboard-grid">
       <Panel title="Nadchodzące zbiórki" action={<Button onClick={() => setView("sessions")}>Wszystkie</Button>}>
@@ -920,15 +930,36 @@ function MessagesView({ state, user, setState }: { state: AppState; user: User; 
   ];
   const [activeKey, setActiveKey] = useState(conversations[0]?.key || "hufiec");
   const active = conversations.find((conversation) => conversation.key === activeKey) || conversations[0];
+  function messageBelongsToConversation(message: Message, conversation: Conversation) {
+    if (conversation.target_type === "user") {
+      return message.target_type === "user"
+        && ((Number(message.target_id) === Number(conversation.target_id) && message.sender_id === user.id)
+          || (Number(message.target_id) === user.id && Number(message.sender_id) === Number(conversation.target_id)));
+    }
+    return message.target_type === conversation.target_type && (conversation.target_id == null || Number(message.target_id) === Number(conversation.target_id));
+  }
   const thread = state.messages
-    .filter((message) => message.target_type === active.target_type && (active.target_id == null || Number(message.target_id) === Number(active.target_id)))
+    .filter((message) => messageBelongsToConversation(message, active))
     .slice()
     .reverse();
+  const activeUnreadCount = active ? messageUnreadFor(state, active.target_type, active.target_id) : 0;
 
   useEffect(() => {
     const box = bubbleListRef.current;
     if (box) box.scrollTop = box.scrollHeight;
   }, [activeKey, thread.length]);
+
+  useEffect(() => {
+    if (!active || activeUnreadCount === 0) return;
+    const timer = window.setTimeout(async () => {
+      const next = await api<AppState>("/api/messages/read", {
+        method: "POST",
+        body: JSON.stringify({ target_type: active.target_type, target_id: active.target_id, game_id: state.game.id })
+      });
+      setState(next);
+    }, 350);
+    return () => window.clearTimeout(timer);
+  }, [activeKey, activeUnreadCount, active?.target_type, active?.target_id, state.game.id, setState]);
 
   useEffect(() => {
     setDraft("");
@@ -972,7 +1003,7 @@ function MessagesView({ state, user, setState }: { state: AppState; user: User; 
       <aside className="chat-list">
         <strong>Rozmowy</strong>
         {conversations.map((conversation) => {
-          const count = state.messages.filter((message) => message.target_type === conversation.target_type && (conversation.target_id == null || Number(message.target_id) === Number(conversation.target_id))).length;
+          const count = messageUnreadFor(state, conversation.target_type, conversation.target_id);
           return <button key={conversation.key} className={"conversation-button " + (active.key === conversation.key ? "active" : "")} onClick={() => { setActiveKey(conversation.key); setMobileThreadOpen(true); }}>
             <span>{initials(conversation.label)}</span>
             <div><strong>{conversation.label}</strong><small>{conversation.hint}</small></div>

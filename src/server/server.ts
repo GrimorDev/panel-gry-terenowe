@@ -211,6 +211,15 @@ async function ensureSchema() {
       edited_at TIMESTAMPTZ,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
+
+    CREATE TABLE IF NOT EXISTS message_reads (
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      target_type VARCHAR(30) NOT NULL,
+      target_id INTEGER NOT NULL DEFAULT 0,
+      last_read_message_id INTEGER NOT NULL DEFAULT 0,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (user_id, target_type, target_id)
+    );
   `);
 
   await pool.query("ALTER TABLE session_photos ADD COLUMN IF NOT EXISTS image_data TEXT");
@@ -297,14 +306,14 @@ async function gamesList() {
   return rows.map((game) => ({ ...game, remaining_seconds: remaining(game) }));
 }
 
-async function state(gameId?: number) {
+async function state(gameId?: number, userId?: number) {
   const selectedId = gameId || Number((await pool.query("SELECT id FROM games ORDER BY id DESC LIMIT 1")).rows[0]?.id);
   const gameResult = await pool.query("SELECT * FROM games WHERE id = $1", [selectedId]);
   const game = gameResult.rows[0];
   if (!game) throw new Error("Nie znaleziono gry");
   game.remaining_seconds = remaining(game);
 
-  const [teams, stations, scores, materials, questions, games, cohorts, wards, sessions, photos, shares, messages, caregivers] = await Promise.all([
+  const [teams, stations, scores, materials, questions, games, cohorts, wards, sessions, photos, shares, messages, messageUnreads, caregivers] = await Promise.all([
     pool.query(`
       SELECT t.*,
         COALESCE(SUM(ts.points), 0)::int AS total_points,
@@ -391,6 +400,28 @@ async function state(gameId?: number) {
       ORDER BY m.created_at DESC
       LIMIT 80
     `),
+    userId ? pool.query(`
+      SELECT m.target_type,
+        CASE
+          WHEN m.target_type='user' AND m.target_id=$1 THEN COALESCE(m.sender_id, 0)
+          ELSE COALESCE(m.target_id, 0)
+        END::int AS target_id,
+        COUNT(*)::int AS unread_count
+      FROM messages m
+      LEFT JOIN message_reads r
+        ON r.user_id = $1
+       AND r.target_type = m.target_type
+       AND r.target_id = CASE
+         WHEN m.target_type='user' AND m.target_id=$1 THEN COALESCE(m.sender_id, 0)
+         ELSE COALESCE(m.target_id, 0)
+       END
+      WHERE COALESCE(m.sender_id, 0) <> $1
+        AND m.id > COALESCE(r.last_read_message_id, 0)
+      GROUP BY m.target_type, CASE
+        WHEN m.target_type='user' AND m.target_id=$1 THEN COALESCE(m.sender_id, 0)
+        ELSE COALESCE(m.target_id, 0)
+      END
+    `, [userId]) : Promise.resolve({ rows: [] }),
     pool.query(`
       SELECT u.id, u.email, u.name, u.role, u.created_at,
         COALESCE((SELECT COUNT(*) FROM cohorts c WHERE c.caretaker_user_id = u.id), 0)::int AS group_count
@@ -414,8 +445,13 @@ async function state(gameId?: number) {
     photos: photos.rows,
     shares: shares.rows,
     messages: messages.rows,
+    message_unreads: messageUnreads.rows,
     caregivers: caregivers.rows
   };
+}
+
+function stateFor(req: Request, gameId?: number) {
+  return state(gameId, Number(req.user?.id || 0) || undefined);
 }
 
 function templateStations(template: string) {
@@ -469,7 +505,7 @@ app.post("/api/profile", async (req, res) => {
 
 app.get("/api/state", async (req, res) => {
   try {
-    res.json(await state(req.query.gameId ? Number(req.query.gameId) : undefined));
+    res.json(await stateFor(req, req.query.gameId ? Number(req.query.gameId) : undefined));
   } catch (error) {
     res.status(500).json({ ok: false, error: error instanceof Error ? error.message : "Błąd serwera" });
   }
@@ -489,7 +525,7 @@ app.post("/api/games", async (req, res) => {
        timer_remaining_seconds = CASE WHEN timer_running THEN timer_remaining_seconds ELSE $6 END WHERE id=$7`,
       [name, template, gameDate, startTime, duration, duration * 60, id]
     );
-    return res.json(await state(id));
+    return res.json(await stateFor(req, id));
   }
 
   const result = await pool.query(
@@ -507,22 +543,22 @@ app.post("/api/games", async (req, res) => {
       );
     }
   }
-  return res.json(await state(gameId));
+  return res.json(await stateFor(req, gameId));
 });
 
 app.delete("/api/games/:id", async (req, res) => {
   await pool.query("DELETE FROM games WHERE id = $1", [Number(req.params.id)]);
-  res.json(await state());
+  res.json(await stateFor(req));
 });
 
 app.post("/api/teams", async (req, res) => {
   await pool.query("INSERT INTO teams (game_id, name, color) VALUES ($1,$2,$3)", [Number(req.body.game_id), String(req.body.name), String(req.body.color || "#1e5c46")]);
-  res.json(await state(Number(req.body.game_id)));
+  res.json(await stateFor(req, Number(req.body.game_id)));
 });
 
 app.delete("/api/teams/:id", async (req, res) => {
   const result = await pool.query("DELETE FROM teams WHERE id = $1 RETURNING game_id", [Number(req.params.id)]);
-  res.json(await state(Number(result.rows[0]?.game_id || req.query.gameId)));
+  res.json(await stateFor(req, Number(result.rows[0]?.game_id || req.query.gameId)));
 });
 
 app.post("/api/wards", async (req, res) => {
@@ -534,12 +570,12 @@ app.post("/api/wards", async (req, res) => {
   } else {
     await pool.query("INSERT INTO wards (name, age, parent_name, contact, cohort_id) VALUES ($1,$2,$3,$4,$5)", values);
   }
-  res.json(await state(Number(req.body.game_id || 0) || undefined));
+  res.json(await stateFor(req, Number(req.body.game_id || 0) || undefined));
 });
 
 app.delete("/api/wards/:id", async (req, res) => {
   await pool.query("DELETE FROM wards WHERE id=$1", [Number(req.params.id)]);
-  res.json(await state(req.query.gameId ? Number(req.query.gameId) : undefined));
+  res.json(await stateFor(req, req.query.gameId ? Number(req.query.gameId) : undefined));
 });
 
 app.post("/api/caregivers", async (req, res) => {
@@ -570,7 +606,7 @@ app.post("/api/caregivers", async (req, res) => {
   if (cohortId) {
     await pool.query("UPDATE cohorts SET caretaker_user_id=$1, caretaker=$2 WHERE id=$3", [userId, name, cohortId]);
   }
-  res.json(await state(Number(req.body.game_id || 0) || undefined));
+  res.json(await stateFor(req, Number(req.body.game_id || 0) || undefined));
 });
 
 app.post("/api/cohorts", async (req, res) => {
@@ -587,13 +623,13 @@ app.post("/api/cohorts", async (req, res) => {
   } else {
     await pool.query("INSERT INTO cohorts (name, caretaker, caretaker_user_id) VALUES ($1,$2,$3)", [name, caretaker || "Bez opiekuna", caretakerUserId]);
   }
-  res.json(await state(Number(req.body.game_id || 0) || undefined));
+  res.json(await stateFor(req, Number(req.body.game_id || 0) || undefined));
 });
 
 app.delete("/api/cohorts/:id", async (req, res) => {
   if (req.user?.role !== "administrator") return res.status(403).json({ ok: false, error: "Tylko administrator może usuwać grupy" });
   await pool.query("DELETE FROM cohorts WHERE id=$1", [Number(req.params.id)]);
-  res.json(await state(req.query.gameId ? Number(req.query.gameId) : undefined));
+  res.json(await stateFor(req, req.query.gameId ? Number(req.query.gameId) : undefined));
 });
 
 app.post("/api/sessions", async (req, res) => {
@@ -613,12 +649,12 @@ app.post("/api/sessions", async (req, res) => {
   } else {
     await pool.query("INSERT INTO sessions (title, session_date, location, attendance, total, cohort_id, scope) VALUES ($1,$2,$3,$4,$5,$6,$7)", values);
   }
-  res.json(await state(Number(req.body.game_id || 0) || undefined));
+  res.json(await stateFor(req, Number(req.body.game_id || 0) || undefined));
 });
 
 app.delete("/api/sessions/:id", async (req, res) => {
   await pool.query("DELETE FROM sessions WHERE id=$1", [Number(req.params.id)]);
-  res.json(await state(req.query.gameId ? Number(req.query.gameId) : undefined));
+  res.json(await stateFor(req, req.query.gameId ? Number(req.query.gameId) : undefined));
 });
 
 app.post("/api/photos", async (req, res) => {
@@ -635,12 +671,12 @@ app.post("/api/photos", async (req, res) => {
       [sessionId, title, String(req.body.color || "green"), imageData || null, mimeType || null, crypto.randomBytes(18).toString("hex")]
     );
   }
-  res.json(await state(Number(req.body.game_id || 0) || undefined));
+  res.json(await stateFor(req, Number(req.body.game_id || 0) || undefined));
 });
 
 app.delete("/api/photos/:id", async (req, res) => {
   await pool.query("DELETE FROM session_photos WHERE id=$1", [Number(req.params.id)]);
-  res.json(await state(req.query.gameId ? Number(req.query.gameId) : undefined));
+  res.json(await stateFor(req, req.query.gameId ? Number(req.query.gameId) : undefined));
 });
 app.post("/api/internal-shares", async (req, res) => {
   const photoId = Number(req.body.photo_id);
@@ -655,7 +691,7 @@ app.post("/api/internal-shares", async (req, res) => {
     "INSERT INTO messages (sender_id, target_type, target_id, body, photo_id) VALUES ($1,$2,$3,$4,$5)",
     [req.user?.id || null, targetType, targetId, note.trim() || "Udostępniono zdjęcie", photoId]
   );
-  res.json(await state(Number(req.body.game_id || 0) || undefined));
+  res.json(await stateFor(req, Number(req.body.game_id || 0) || undefined));
 });
 
 app.post("/api/messages", async (req, res) => {
@@ -669,7 +705,36 @@ app.post("/api/messages", async (req, res) => {
     "INSERT INTO messages (sender_id, target_type, target_id, body, photo_id, reply_to_id, attachment_name, attachment_mime, attachment_data) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)",
     [req.user?.id || null, String(req.body.target_type || "hufiec"), Number(req.body.target_id || 0) || null, body, Number(req.body.photo_id || 0) || null, replyToId, attachmentName || null, attachmentMime || null, attachmentData || null]
   );
-  res.json(await state(Number(req.body.game_id || 0) || undefined));
+  res.json(await stateFor(req, Number(req.body.game_id || 0) || undefined));
+});
+
+app.post("/api/messages/read", async (req, res) => {
+  const userId = Number(req.user?.id || 0);
+  if (!userId) return res.status(401).json({ ok: false, error: "Brak sesji" });
+
+  const targetType = String(req.body.target_type || "hufiec");
+  const targetId = Number(req.body.target_id || 0) || 0;
+  const result = targetType === "user"
+    ? await pool.query(
+      "SELECT COALESCE(MAX(id), 0)::int AS last_id FROM messages WHERE target_type='user' AND ((target_id=$1 AND sender_id=$2) OR (target_id=$2 AND sender_id=$1))",
+      [userId, targetId]
+    )
+    : await pool.query(
+      "SELECT COALESCE(MAX(id), 0)::int AS last_id FROM messages WHERE target_type=$1 AND COALESCE(target_id, 0)=$2",
+      [targetType, targetId]
+    );
+  const lastId = Number(result.rows[0]?.last_id || 0);
+
+  await pool.query(`
+    INSERT INTO message_reads (user_id, target_type, target_id, last_read_message_id, updated_at)
+    VALUES ($1, $2, $3, $4, NOW())
+    ON CONFLICT (user_id, target_type, target_id)
+    DO UPDATE SET
+      last_read_message_id = GREATEST(message_reads.last_read_message_id, EXCLUDED.last_read_message_id),
+      updated_at = NOW()
+  `, [userId, targetType, targetId, lastId]);
+
+  res.json(await stateFor(req, Number(req.body.game_id || 0) || undefined));
 });
 
 app.post("/api/messages/:id", async (req, res) => {
@@ -681,7 +746,7 @@ app.post("/api/messages/:id", async (req, res) => {
     [body, id, req.user?.id || 0]
   );
   if (!result.rowCount) return res.status(403).json({ ok: false, error: "Możesz edytować tylko własne wiadomości" });
-  res.json(await state(Number(req.body.game_id || 0) || undefined));
+  res.json(await stateFor(req, Number(req.body.game_id || 0) || undefined));
 });
 
 app.post("/api/stations", async (req, res) => {
@@ -697,12 +762,12 @@ app.post("/api/stations", async (req, res) => {
   } else {
     await pool.query("INSERT INTO stations (game_id, title, station_order, lat, lng, qr_code) VALUES ($1,$2,$3,$4,$5,$6)", [gameId, title, order, lat, lng, `station-${gameId}-${crypto.randomBytes(5).toString("hex")}`]);
   }
-  res.json(await state(gameId));
+  res.json(await stateFor(req, gameId));
 });
 
 app.delete("/api/stations/:id", async (req, res) => {
   const result = await pool.query("DELETE FROM stations WHERE id = $1 RETURNING game_id", [Number(req.params.id)]);
-  res.json(await state(Number(result.rows[0]?.game_id || req.query.gameId)));
+  res.json(await stateFor(req, Number(result.rows[0]?.game_id || req.query.gameId)));
 });
 
 app.post("/api/scores", async (req, res) => {
@@ -715,7 +780,7 @@ app.post("/api/scores", async (req, res) => {
     DO UPDATE SET points=$3, correct=$4, cooperation=$5, finished_at=NOW(), comment=$6
   `, [teamId, stationId, Number(req.body.points || 0), Boolean(req.body.correct), Number(req.body.cooperation || 0), String(req.body.comment || "")]);
   const gameId = Number((await pool.query("SELECT game_id FROM teams WHERE id=$1", [teamId])).rows[0].game_id);
-  res.json(await state(gameId));
+  res.json(await stateFor(req, gameId));
 });
 
 app.post("/api/timer", async (req, res) => {
@@ -729,21 +794,21 @@ app.post("/api/timer", async (req, res) => {
   } else if (req.body.command === "reset") {
     await pool.query("UPDATE games SET timer_running=FALSE, timer_remaining_seconds=duration_minutes*60, timer_updated_at=NOW(), status='draft' WHERE id=$1", [gameId]);
   }
-  res.json(await state(gameId));
+  res.json(await stateFor(req, gameId));
 });
 
 app.post("/api/materials", async (req, res) => {
   const stationId = Number(req.body.station_id);
   await pool.query("INSERT INTO materials (station_id, title, url, notes) VALUES ($1,$2,$3,$4)", [stationId, String(req.body.title), String(req.body.url || ""), String(req.body.notes || "")]);
   const gameId = Number((await pool.query("SELECT game_id FROM stations WHERE id=$1", [stationId])).rows[0].game_id);
-  res.json(await state(gameId));
+  res.json(await stateFor(req, gameId));
 });
 
 app.post("/api/questions", async (req, res) => {
   const stationId = Number(req.body.station_id);
   await pool.query("INSERT INTO questions (station_id, question, answer, max_points) VALUES ($1,$2,$3,$4)", [stationId, String(req.body.question), String(req.body.answer || ""), Number(req.body.max_points || 10)]);
   const gameId = Number((await pool.query("SELECT game_id FROM stations WHERE id=$1", [stationId])).rows[0].game_id);
-  res.json(await state(gameId));
+  res.json(await stateFor(req, gameId));
 });
 
 app.get("/api/station-by-qr", async (req, res) => {
@@ -776,3 +841,4 @@ ensureSchema().then(() => {
   console.error(error);
   process.exit(1);
 });
+
