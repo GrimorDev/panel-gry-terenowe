@@ -174,6 +174,7 @@ function UiIcon({ name }: { name: string }) {
   if (name === "logout") return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9" {...common} /></svg>;
   if (name === "bell") return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 17h12l-1.6-2.3V10a4.4 4.4 0 0 0-8.8 0v4.7L6 17zM10.2 19a1.9 1.9 0 0 0 3.6 0" {...common} /></svg>;
   if (name === "settings") return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z" {...common} /><path d="M19.4 15a1.8 1.8 0 0 0 .36 1.98l.06.06a2.1 2.1 0 1 1-2.98 2.98l-.06-.06A1.8 1.8 0 0 0 14.8 19.6a1.8 1.8 0 0 0-1.08 1.64v.18a2.1 2.1 0 1 1-4.2 0v-.1A1.8 1.8 0 0 0 8.4 19.6a1.8 1.8 0 0 0-1.98.36l-.06.06a2.1 2.1 0 1 1-2.98-2.98l.06-.06A1.8 1.8 0 0 0 3.8 15a1.8 1.8 0 0 0-1.64-1.08H2a2.1 2.1 0 1 1 0-4.2h.1A1.8 1.8 0 0 0 3.8 8.6a1.8 1.8 0 0 0-.36-1.98l-.06-.06a2.1 2.1 0 1 1 2.98-2.98l.06.06A1.8 1.8 0 0 0 8.4 4a1.8 1.8 0 0 0 1.08-1.64V2.2a2.1 2.1 0 1 1 4.2 0v.1A1.8 1.8 0 0 0 14.8 4a1.8 1.8 0 0 0 1.98-.36l.06-.06a2.1 2.1 0 1 1 2.98 2.98l-.06.06A1.8 1.8 0 0 0 19.4 8.6a1.8 1.8 0 0 0 1.64 1.08h.18a2.1 2.1 0 1 1 0 4.2h-.1A1.8 1.8 0 0 0 19.4 15Z" {...common} /></svg>;
+  if (name === "more") return <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="1.5" fill="currentColor" /><circle cx="12" cy="12" r="1.5" fill="currentColor" /><circle cx="19" cy="12" r="1.5" fill="currentColor" /></svg>;
   return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 21V3M6 4.5c2.8-1.6 4.7 1.4 7.5-.1s4.5 1.3 4.5 1.3v8.1c-2.8 1.6-4.7-1.4-7.5.1S6 12.5 6 12.5v-8z" {...common} /></svg>;
 }
 
@@ -465,6 +466,17 @@ function App() {
     {modal === "account" && <AccountDialog user={user} initialTab={settingsTab} prefs={prefs} setPrefs={setPrefs} notifications={notifications} onClose={() => setModal(null)} onSaved={(next) => { setUser(next); setModal(null); }} onLogout={logout} />}
     {modal === "team" && <TeamDialog gameId={state.game.id} onClose={() => setModal(null)} onSaved={(next) => { setState(next); setModal(null); }} />}
     {modal === "tv" && <TvDialog state={state} ranking={ranking} onClose={() => setModal(null)} />}
+    <nav className="mobile-bottom-nav" aria-label="Nawigacja mobilna">
+      {(["dashboard", "sessions", "messages", "gallery"] as const).map((id) => <button key={id} className={view === id ? "active" : ""} type="button" onClick={() => { setView(id); setMobileMenuOpen(false); setNotifOpen(false); }}>
+        <UiIcon name={id} />
+        <span>{id === "dashboard" ? "Pulpit" : viewLabels[id]}</span>
+        {id === "messages" && unreadCount > 0 && <em>{unreadCount}</em>}
+      </button>)}
+      <button type="button" onClick={() => setMobileMenuOpen(true)}>
+        <UiIcon name="more" />
+        <span>Więcej</span>
+      </button>
+    </nav>
     {toast && <div className="toast">{toast}</div>}
   </div>;
 }
@@ -473,6 +485,7 @@ function TopBar({ view, user, notifications, readNotificationIds, notifOpen, set
   const firstName = user.name.split(" ")[0] || user.name;
   const unreadCount = notifications.filter((item) => !readNotificationIds.has(item.id)).length;
   return <header className="topbar">
+    <div className="mobile-top-title"><span className="brand-mark">H</span><strong>{viewLabels[view]}</strong></div>
     <div className="breadcrumb">Panel wychowawcy · {viewLabels[view]}</div>
     <div className="top-actions">
       <div className="notification-wrap">
@@ -856,6 +869,7 @@ type ChatAttachment = { attachment_name: string; attachment_mime: string; attach
 
 function MessagesView({ state, user, setState }: { state: AppState; user: User; setState: (state: AppState) => void }) {
   const [attachment, setAttachment] = useState<ChatAttachment | null>(null);
+  const [mobileThreadOpen, setMobileThreadOpen] = useState(false);
   const bubbleListRef = useRef<HTMLDivElement | null>(null);
   const conversations: Conversation[] = [
     { key: "hufiec", label: "Cały hufiec", hint: "wszyscy wychowawcy i administrator", target_type: "hufiec", target_id: null },
@@ -878,12 +892,12 @@ function MessagesView({ state, user, setState }: { state: AppState; user: User; 
 
   return <div className="messages-page">
     <div className="page-head"><div><h1>Wiadomości</h1><p className="help">Rozmowy z hufcem, grupami, rodzicami i konkretnymi wychowawcami.</p></div></div>
-    <section className="chat-shell">
+    <section className={"chat-shell " + (mobileThreadOpen ? "mobile-thread-open" : "mobile-list-open")}>
       <aside className="chat-list">
         <strong>Rozmowy</strong>
         {conversations.map((conversation) => {
           const count = state.messages.filter((message) => message.target_type === conversation.target_type && (conversation.target_id == null || Number(message.target_id) === Number(conversation.target_id))).length;
-          return <button key={conversation.key} className={"conversation-button " + (active.key === conversation.key ? "active" : "")} onClick={() => setActiveKey(conversation.key)}>
+          return <button key={conversation.key} className={"conversation-button " + (active.key === conversation.key ? "active" : "")} onClick={() => { setActiveKey(conversation.key); setMobileThreadOpen(true); }}>
             <span>{initials(conversation.label)}</span>
             <div><strong>{conversation.label}</strong><small>{conversation.hint}</small></div>
             {count > 0 && <em>{count}</em>}
@@ -891,7 +905,7 @@ function MessagesView({ state, user, setState }: { state: AppState; user: User; 
         })}
       </aside>
       <section className="chat-thread">
-        <div className="chat-head"><div><h2>{active.label}</h2><span>{active.hint}</span></div></div>
+        <div className="chat-head"><button className="chat-back" type="button" aria-label="Wróć do rozmów" onClick={() => setMobileThreadOpen(false)}>‹</button><div><h2>{active.label}</h2><span>{active.hint}</span></div></div>
         <div className="bubble-list" ref={bubbleListRef}>
           {thread.length === 0 && <div className="empty-chat">Nie ma jeszcze wiadomości w tej rozmowie.</div>}
           {thread.map((message) => <article key={message.id} className={"message-bubble " + (message.sender_id === user.id ? "mine" : "")}>
