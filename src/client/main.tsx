@@ -18,7 +18,7 @@ type Score = { team_id: number; station_id: number; points: number; correct: boo
 type Material = { id: number; station_id: number; station_title: string; title: string; url: string; notes: string };
 type Question = { id: number; station_id: number; station_title: string; question: string; answer: string; max_points: number };
 type InternalShare = { id: number; photo_id: number; photo_title: string; target_type: string; target_id: number | null; cohort_name: string | null; note: string; created_by_name: string | null; created_at: string };
-type Message = { id: number; sender_id: number | null; sender_name: string | null; target_type: string; target_id: number | null; cohort_name: string | null; body: string; photo_id: number | null; photo_title: string | null; created_at: string };
+type Message = { id: number; sender_id: number | null; sender_name: string | null; target_type: string; target_id: number | null; cohort_name: string | null; body: string; photo_id: number | null; photo_title: string | null; attachment_name: string | null; attachment_mime: string | null; attachment_data: string | null; created_at: string };
 type AppState = { ok: true; game: Game; games: Game[]; teams: Team[]; stations: Station[]; scores: Score[]; materials: Material[]; questions: Question[]; cohorts: Cohort[]; wards: Ward[]; sessions: Session[]; photos: Photo[]; shares: InternalShare[]; messages: Message[]; caregivers: Caregiver[] };
 
 const templates = ["Własna", "Polska", "Włochy", "Olimp"];
@@ -61,6 +61,15 @@ async function imageFileToDataUrl(file: File) {
     mime_type: mimeType,
     title: file.name.replace(/\.[^.]+$/, "") || "Zdjęcie"
   };
+}
+
+function fileToAttachment(file: File) {
+  return new Promise<{ attachment_name: string; attachment_mime: string; attachment_data: string }>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve({ attachment_name: file.name, attachment_mime: file.type || "application/octet-stream", attachment_data: String(reader.result || "") });
+    reader.onerror = () => reject(new Error("Nie udało się przygotować załącznika"));
+    reader.readAsDataURL(file);
+  });
 }
 
 function Button({ children, variant = "secondary", ...props }: React.ButtonHTMLAttributes<HTMLButtonElement> & { variant?: "primary" | "secondary" | "danger" }) {
@@ -576,13 +585,17 @@ function ShareDialog({ state, photo, onClose, onSaved }: { state: AppState; phot
 
 type Conversation = { key: string; label: string; hint: string; target_type: string; target_id: number | null };
 
+type ChatAttachment = { attachment_name: string; attachment_mime: string; attachment_data: string };
+
 function MessagesView({ state, user, setState }: { state: AppState; user: User; setState: (state: AppState) => void }) {
+  const [attachment, setAttachment] = useState<ChatAttachment | null>(null);
+  const bubbleListRef = useRef<HTMLDivElement | null>(null);
   const conversations: Conversation[] = [
     { key: "hufiec", label: "Cały hufiec", hint: "wszyscy wychowawcy i administrator", target_type: "hufiec", target_id: null },
     { key: "staff", label: "Wychowawcy", hint: "rozmowa kadry", target_type: "staff", target_id: null },
     { key: "parents", label: "Rodzice", hint: "komunikaty i pytania rodziców", target_type: "parents", target_id: null },
-    ...state.cohorts.map((cohort) => ({ key: `cohort-${cohort.id}`, label: cohort.name, hint: cohort.caretaker_user_name || cohort.caretaker || "grupa bez opiekuna", target_type: "cohort", target_id: cohort.id })),
-    ...state.caregivers.filter((caregiver) => caregiver.id !== user.id).map((caregiver) => ({ key: `user-${caregiver.id}`, label: caregiver.name, hint: caregiver.role, target_type: "user", target_id: caregiver.id }))
+    ...state.cohorts.map((cohort) => ({ key: "cohort-" + cohort.id, label: cohort.name, hint: cohort.caretaker_user_name || cohort.caretaker || "grupa bez opiekuna", target_type: "cohort", target_id: cohort.id })),
+    ...state.caregivers.filter((caregiver) => caregiver.id !== user.id).map((caregiver) => ({ key: "user-" + caregiver.id, label: caregiver.name, hint: caregiver.role, target_type: "user", target_id: caregiver.id }))
   ];
   const [activeKey, setActiveKey] = useState(conversations[0]?.key || "hufiec");
   const active = conversations.find((conversation) => conversation.key === activeKey) || conversations[0];
@@ -591,14 +604,19 @@ function MessagesView({ state, user, setState }: { state: AppState; user: User; 
     .slice()
     .reverse();
 
-  return <div>
+  useEffect(() => {
+    const box = bubbleListRef.current;
+    if (box) box.scrollTop = box.scrollHeight;
+  }, [activeKey, thread.length]);
+
+  return <div className="messages-page">
     <div className="page-head"><div><h1>Wiadomości</h1><p className="help">Rozmowy z hufcem, grupami, rodzicami i konkretnymi wychowawcami.</p></div></div>
     <section className="chat-shell">
       <aside className="chat-list">
         <strong>Rozmowy</strong>
         {conversations.map((conversation) => {
           const count = state.messages.filter((message) => message.target_type === conversation.target_type && (conversation.target_id == null || Number(message.target_id) === Number(conversation.target_id))).length;
-          return <button key={conversation.key} className={`conversation-button ${active.key === conversation.key ? "active" : ""}`} onClick={() => setActiveKey(conversation.key)}>
+          return <button key={conversation.key} className={"conversation-button " + (active.key === conversation.key ? "active" : "")} onClick={() => setActiveKey(conversation.key)}>
             <span>{initials(conversation.label)}</span>
             <div><strong>{conversation.label}</strong><small>{conversation.hint}</small></div>
             {count > 0 && <em>{count}</em>}
@@ -607,21 +625,38 @@ function MessagesView({ state, user, setState }: { state: AppState; user: User; 
       </aside>
       <section className="chat-thread">
         <div className="chat-head"><div><h2>{active.label}</h2><span>{active.hint}</span></div></div>
-        <div className="bubble-list">
+        <div className="bubble-list" ref={bubbleListRef}>
           {thread.length === 0 && <div className="empty-chat">Nie ma jeszcze wiadomości w tej rozmowie.</div>}
-          {thread.map((message) => <article key={message.id} className={`message-bubble ${message.sender_id === user.id ? "mine" : ""}`}>
+          {thread.map((message) => <article key={message.id} className={"message-bubble " + (message.sender_id === user.id ? "mine" : "")}>
             <small>{message.sender_name || "System hufca"} · {dateLabel(message.created_at)}</small>
-            <p>{message.body}</p>
+            {message.body && <p>{message.body}</p>}
             {message.photo_title && <span>Zdjęcie: {message.photo_title}</span>}
+            {message.attachment_data && <a className="message-attachment" href={message.attachment_data} download={message.attachment_name || "zalacznik"}>
+              {message.attachment_mime?.startsWith("image/") && <img src={message.attachment_data} alt={message.attachment_name || "Załącznik"} />}
+              <strong>{message.attachment_name || "Załącznik"}</strong>
+              <small>{message.attachment_mime || "plik"}</small>
+            </a>}
           </article>)}
         </div>
         <form className="chat-compose" onSubmit={async (event) => {
           event.preventDefault();
           const form = event.currentTarget;
-          setState(await api<AppState>("/api/messages", { method: "POST", body: JSON.stringify({ body: form.body.value, target_type: active.target_type, target_id: active.target_id, game_id: state.game.id }) }));
+          setState(await api<AppState>("/api/messages", { method: "POST", body: JSON.stringify({ body: form.body.value, target_type: active.target_type, target_id: active.target_id, game_id: state.game.id, ...(attachment || {}) }) }));
+          setAttachment(null);
           form.reset();
         }}>
-          <textarea name="body" placeholder={`Napisz do: ${active.label}`} required />
+          <div className="compose-field">
+            <textarea name="body" placeholder={"Napisz do: " + active.label} />
+            {attachment && <div className="attachment-preview">
+              {attachment.attachment_mime.startsWith("image/") && <img src={attachment.attachment_data} alt={attachment.attachment_name} />}
+              <span><strong>{attachment.attachment_name}</strong><small>{attachment.attachment_mime || "plik"}</small></span>
+              <button type="button" onClick={() => setAttachment(null)}>Usuń</button>
+            </div>}
+          </div>
+          <label className="attach-button">
+            <input type="file" onChange={async (event) => { const file = event.currentTarget.files?.[0]; if (file) setAttachment(await fileToAttachment(file)); event.currentTarget.value = ""; }} />
+            <span>Załącz</span>
+          </label>
           <Button variant="primary">Wyślij</Button>
         </form>
       </section>

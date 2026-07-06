@@ -204,6 +204,9 @@ async function ensureSchema() {
       target_id INTEGER,
       body TEXT NOT NULL,
       photo_id INTEGER REFERENCES session_photos(id) ON DELETE SET NULL,
+      attachment_name VARCHAR(240),
+      attachment_mime VARCHAR(120),
+      attachment_data TEXT,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
   `);
@@ -212,6 +215,9 @@ async function ensureSchema() {
   await pool.query("ALTER TABLE session_photos ADD COLUMN IF NOT EXISTS mime_type VARCHAR(80)");
   await pool.query("ALTER TABLE session_photos ADD COLUMN IF NOT EXISTS share_token VARCHAR(80) UNIQUE");
   await pool.query("ALTER TABLE cohorts ADD COLUMN IF NOT EXISTS caretaker_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL");
+  await pool.query("ALTER TABLE messages ADD COLUMN IF NOT EXISTS attachment_name VARCHAR(240)");
+  await pool.query("ALTER TABLE messages ADD COLUMN IF NOT EXISTS attachment_mime VARCHAR(120)");
+  await pool.query("ALTER TABLE messages ADD COLUMN IF NOT EXISTS attachment_data TEXT");
   await pool.query("UPDATE cohorts SET caretaker='Bez opiekuna' WHERE caretaker_user_id IS NULL AND caretaker <> 'Bez opiekuna'");
 
   await pool.query(
@@ -640,10 +646,13 @@ app.post("/api/internal-shares", async (req, res) => {
 
 app.post("/api/messages", async (req, res) => {
   const body = String(req.body.body || "").trim();
-  if (!body) return res.status(400).json({ ok: false, error: "Wpisz wiadomość" });
+  const attachmentName = String(req.body.attachment_name || "").trim();
+  const attachmentMime = String(req.body.attachment_mime || "").trim();
+  const attachmentData = String(req.body.attachment_data || "");
+  if (!body && !attachmentData) return res.status(400).json({ ok: false, error: "Wpisz wiadomość albo dodaj załącznik" });
   await pool.query(
-    "INSERT INTO messages (sender_id, target_type, target_id, body, photo_id) VALUES ($1,$2,$3,$4,$5)",
-    [req.user?.id || null, String(req.body.target_type || "hufiec"), Number(req.body.target_id || 0) || null, body, Number(req.body.photo_id || 0) || null]
+    "INSERT INTO messages (sender_id, target_type, target_id, body, photo_id, attachment_name, attachment_mime, attachment_data) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)",
+    [req.user?.id || null, String(req.body.target_type || "hufiec"), Number(req.body.target_id || 0) || null, body, Number(req.body.photo_id || 0) || null, attachmentName || null, attachmentMime || null, attachmentData || null]
   );
   res.json(await state(Number(req.body.game_id || 0) || undefined));
 });
