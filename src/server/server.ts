@@ -204,9 +204,11 @@ async function ensureSchema() {
       target_id INTEGER,
       body TEXT NOT NULL,
       photo_id INTEGER REFERENCES session_photos(id) ON DELETE SET NULL,
+      reply_to_id INTEGER REFERENCES messages(id) ON DELETE SET NULL,
       attachment_name VARCHAR(240),
       attachment_mime VARCHAR(120),
       attachment_data TEXT,
+      edited_at TIMESTAMPTZ,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
   `);
@@ -218,6 +220,8 @@ async function ensureSchema() {
   await pool.query("ALTER TABLE messages ADD COLUMN IF NOT EXISTS attachment_name VARCHAR(240)");
   await pool.query("ALTER TABLE messages ADD COLUMN IF NOT EXISTS attachment_mime VARCHAR(120)");
   await pool.query("ALTER TABLE messages ADD COLUMN IF NOT EXISTS attachment_data TEXT");
+  await pool.query("ALTER TABLE messages ADD COLUMN IF NOT EXISTS reply_to_id INTEGER REFERENCES messages(id) ON DELETE SET NULL");
+  await pool.query("ALTER TABLE messages ADD COLUMN IF NOT EXISTS edited_at TIMESTAMPTZ");
   await pool.query("UPDATE cohorts SET caretaker='Bez opiekuna' WHERE caretaker_user_id IS NULL AND caretaker <> 'Bez opiekuna'");
 
   await pool.query(
@@ -372,11 +376,18 @@ async function state(gameId?: number) {
         p.image_data AS photo_image_data,
         p.mime_type AS photo_mime_type,
         p.share_token AS photo_share_token,
-        c.name AS cohort_name
+        c.name AS cohort_name,
+        rm.body AS reply_body,
+        ru.name AS reply_sender_name,
+        rp.title AS reply_photo_title,
+        rm.attachment_name AS reply_attachment_name
       FROM messages m
       LEFT JOIN users u ON u.id = m.sender_id
       LEFT JOIN session_photos p ON p.id = m.photo_id
       LEFT JOIN cohorts c ON c.id = m.target_id AND m.target_type='cohort'
+      LEFT JOIN messages rm ON rm.id = m.reply_to_id
+      LEFT JOIN users ru ON ru.id = rm.sender_id
+      LEFT JOIN session_photos rp ON rp.id = rm.photo_id
       ORDER BY m.created_at DESC
       LIMIT 80
     `),
@@ -652,11 +663,24 @@ app.post("/api/messages", async (req, res) => {
   const attachmentName = String(req.body.attachment_name || "").trim();
   const attachmentMime = String(req.body.attachment_mime || "").trim();
   const attachmentData = String(req.body.attachment_data || "");
+  const replyToId = Number(req.body.reply_to_id || 0) || null;
   if (!body && !attachmentData) return res.status(400).json({ ok: false, error: "Wpisz wiadomość albo dodaj załącznik" });
   await pool.query(
-    "INSERT INTO messages (sender_id, target_type, target_id, body, photo_id, attachment_name, attachment_mime, attachment_data) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)",
-    [req.user?.id || null, String(req.body.target_type || "hufiec"), Number(req.body.target_id || 0) || null, body, Number(req.body.photo_id || 0) || null, attachmentName || null, attachmentMime || null, attachmentData || null]
+    "INSERT INTO messages (sender_id, target_type, target_id, body, photo_id, reply_to_id, attachment_name, attachment_mime, attachment_data) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)",
+    [req.user?.id || null, String(req.body.target_type || "hufiec"), Number(req.body.target_id || 0) || null, body, Number(req.body.photo_id || 0) || null, replyToId, attachmentName || null, attachmentMime || null, attachmentData || null]
   );
+  res.json(await state(Number(req.body.game_id || 0) || undefined));
+});
+
+app.post("/api/messages/:id", async (req, res) => {
+  const id = Number(req.params.id);
+  const body = String(req.body.body || "").trim();
+  if (!id || !body) return res.status(400).json({ ok: false, error: "Wpisz treść wiadomości" });
+  const result = await pool.query(
+    "UPDATE messages SET body=$1, edited_at=NOW() WHERE id=$2 AND sender_id=$3 RETURNING id",
+    [body, id, req.user?.id || 0]
+  );
+  if (!result.rowCount) return res.status(403).json({ ok: false, error: "Możesz edytować tylko własne wiadomości" });
   res.json(await state(Number(req.body.game_id || 0) || undefined));
 });
 

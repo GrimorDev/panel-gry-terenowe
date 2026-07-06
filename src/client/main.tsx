@@ -18,7 +18,7 @@ type Score = { team_id: number; station_id: number; points: number; correct: boo
 type Material = { id: number; station_id: number; station_title: string; title: string; url: string; notes: string };
 type Question = { id: number; station_id: number; station_title: string; question: string; answer: string; max_points: number };
 type InternalShare = { id: number; photo_id: number; photo_title: string; target_type: string; target_id: number | null; cohort_name: string | null; note: string; created_by_name: string | null; created_at: string };
-type Message = { id: number; sender_id: number | null; sender_name: string | null; target_type: string; target_id: number | null; cohort_name: string | null; body: string; photo_id: number | null; photo_title: string | null; photo_image_data: string | null; photo_mime_type: string | null; photo_share_token: string | null; attachment_name: string | null; attachment_mime: string | null; attachment_data: string | null; created_at: string };
+type Message = { id: number; sender_id: number | null; sender_name: string | null; target_type: string; target_id: number | null; cohort_name: string | null; body: string; photo_id: number | null; photo_title: string | null; photo_image_data: string | null; photo_mime_type: string | null; photo_share_token: string | null; attachment_name: string | null; attachment_mime: string | null; attachment_data: string | null; reply_to_id: number | null; reply_body: string | null; reply_sender_name: string | null; reply_photo_title: string | null; reply_attachment_name: string | null; edited_at: string | null; created_at: string };
 type AppState = { ok: true; game: Game; games: Game[]; teams: Team[]; stations: Station[]; scores: Score[]; materials: Material[]; questions: Question[]; cohorts: Cohort[]; wards: Ward[]; sessions: Session[]; photos: Photo[]; shares: InternalShare[]; messages: Message[]; caregivers: Caregiver[] };
 type NotificationItem = { id: string; title: string; detail: string; time: string; kind: "ward" | "session" | "message" | "today" };
 type AppPrefs = { sidebar: "full" | "compact"; theme: "forest" | "terra" | "cream"; email: boolean; push: boolean };
@@ -868,11 +868,19 @@ function ShareDialog({ state, photo, onClose, onSaved }: { state: AppState; phot
 type Conversation = { key: string; label: string; hint: string; target_type: string; target_id: number | null };
 
 type ChatAttachment = { attachment_name: string; attachment_mime: string; attachment_data: string };
+type MediaPreview = { src: string; title: string; mime?: string | null };
 
 function MessagesView({ state, user, setState }: { state: AppState; user: User; setState: (state: AppState) => void }) {
   const [attachment, setAttachment] = useState<ChatAttachment | null>(null);
+  const [draft, setDraft] = useState("");
+  const [sending, setSending] = useState(false);
+  const [replyTo, setReplyTo] = useState<Message | null>(null);
+  const [editingMessage, setEditingMessage] = useState<Message | null>(null);
+  const [messageMenuId, setMessageMenuId] = useState<number | null>(null);
+  const [preview, setPreview] = useState<MediaPreview | null>(null);
   const [mobileThreadOpen, setMobileThreadOpen] = useState(false);
   const bubbleListRef = useRef<HTMLDivElement | null>(null);
+  const longPressRef = useRef<number | null>(null);
   const conversations: Conversation[] = [
     { key: "hufiec", label: "Cały hufiec", hint: "wszyscy wychowawcy i administrator", target_type: "hufiec", target_id: null },
     { key: "staff", label: "Wychowawcy", hint: "rozmowa kadry", target_type: "staff", target_id: null },
@@ -892,6 +900,42 @@ function MessagesView({ state, user, setState }: { state: AppState; user: User; 
     if (box) box.scrollTop = box.scrollHeight;
   }, [activeKey, thread.length]);
 
+  useEffect(() => {
+    setDraft("");
+    setAttachment(null);
+    setReplyTo(null);
+    setEditingMessage(null);
+    setMessageMenuId(null);
+  }, [activeKey]);
+
+  function clearLongPress() {
+    if (longPressRef.current) window.clearTimeout(longPressRef.current);
+    longPressRef.current = null;
+  }
+
+  function startReply(message: Message) {
+    setReplyTo(message);
+    setEditingMessage(null);
+    setMessageMenuId(null);
+  }
+
+  function startEdit(message: Message) {
+    setDraft(message.body || "");
+    setEditingMessage(message);
+    setReplyTo(null);
+    setMessageMenuId(null);
+  }
+
+  function quoteText(message: Message | null) {
+    if (!message) return "";
+    return message.body || message.photo_title || message.attachment_name || "Załącznik";
+  }
+
+  function openMedia(src: string | null | undefined, title: string | null | undefined, mime?: string | null) {
+    if (!src) return;
+    setPreview({ src, title: title || "Podgląd", mime });
+  }
+
   return <div className="messages-page">
     <div className="page-head"><div><h1>Wiadomości</h1><p className="help">Rozmowy z hufcem, grupami, rodzicami i konkretnymi wychowawcami.</p></div></div>
     <section className={"chat-shell " + (mobileThreadOpen ? "mobile-thread-open" : "mobile-list-open")}>
@@ -910,45 +954,108 @@ function MessagesView({ state, user, setState }: { state: AppState; user: User; 
         <div className="chat-head"><button className="chat-back" type="button" aria-label="Wróć do rozmów" onClick={() => setMobileThreadOpen(false)}>‹</button><div><h2>{active.label}</h2><span>{active.hint}</span></div></div>
         <div className="bubble-list" ref={bubbleListRef}>
           {thread.length === 0 && <div className="empty-chat">Nie ma jeszcze wiadomości w tej rozmowie.</div>}
-          {thread.map((message) => <article key={message.id} className={"message-bubble " + (message.sender_id === user.id ? "mine" : "")}>
-            <small>{message.sender_name || "System hufca"} · {dateLabel(message.created_at)}</small>
-            {message.body && <p>{message.body}</p>}
-            {message.photo_image_data && <a className="message-photo" href={message.photo_share_token ? "/share/photo/" + message.photo_share_token : message.photo_image_data} target="_blank" rel="noreferrer">
-              <img src={message.photo_image_data} alt={message.photo_title || "Zdjęcie z galerii"} />
-              <strong>{message.photo_title || "Zdjęcie z galerii"}</strong>
-            </a>}
-            {!message.photo_image_data && message.photo_title && <span>Zdjęcie: {message.photo_title}</span>}
-            {message.attachment_data && <a className="message-attachment" href={message.attachment_data} download={message.attachment_name || "zalacznik"}>
-              {message.attachment_mime?.startsWith("image/") && <img src={message.attachment_data} alt={message.attachment_name || "Załącznik"} />}
-              <strong>{message.attachment_name || "Załącznik"}</strong>
-              <small>{message.attachment_mime || "plik"}</small>
-            </a>}
-          </article>)}
+          {thread.map((message) => {
+            const mine = message.sender_id === user.id;
+            const attachmentIsMedia = !!message.attachment_data && (!!message.attachment_mime?.startsWith("image/") || !!message.attachment_mime?.startsWith("video/"));
+            return <article
+              key={message.id}
+              className={"message-bubble " + (mine ? "mine" : "")}
+              onContextMenu={(event) => { event.preventDefault(); setMessageMenuId(message.id); }}
+              onPointerDown={() => { clearLongPress(); longPressRef.current = window.setTimeout(() => setMessageMenuId(message.id), 520); }}
+              onPointerUp={clearLongPress}
+              onPointerLeave={clearLongPress}
+            >
+              <small>{message.sender_name || "System hufca"} · {dateLabel(message.created_at)}{message.edited_at && <em>edytowane *</em>}</small>
+              {message.reply_to_id && <button className="message-quote" type="button">
+                <span>{message.reply_sender_name || "Wiadomość"}</span>
+                <strong>{message.reply_body || message.reply_photo_title || message.reply_attachment_name || "Załącznik"}</strong>
+              </button>}
+              {message.body && <p>{message.body}</p>}
+              {message.photo_image_data && <button className="message-photo" type="button" onClick={() => openMedia(message.photo_image_data, message.photo_title || "Zdjęcie z galerii", message.photo_mime_type)}>
+                <img src={message.photo_image_data} alt={message.photo_title || "Zdjęcie z galerii"} />
+                <strong>{message.photo_title || "Zdjęcie z galerii"}</strong>
+              </button>}
+              {!message.photo_image_data && message.photo_title && <span>Zdjęcie: {message.photo_title}</span>}
+              {attachmentIsMedia && <button className="message-attachment" type="button" onClick={() => openMedia(message.attachment_data, message.attachment_name || "Załącznik", message.attachment_mime)}>
+                {message.attachment_mime?.startsWith("image/") && <img src={message.attachment_data || ""} alt={message.attachment_name || "Załącznik"} />}
+                {message.attachment_mime?.startsWith("video/") && <video src={message.attachment_data || ""} muted playsInline />}
+                <strong>{message.attachment_name || "Załącznik"}</strong>
+                <small>{message.attachment_mime || "plik"}</small>
+              </button>}
+              {message.attachment_data && !attachmentIsMedia && <a className="message-attachment" href={message.attachment_data} download={message.attachment_name || "zalacznik"}>
+                <strong>{message.attachment_name || "Załącznik"}</strong>
+                <small>{message.attachment_mime || "plik"}</small>
+              </a>}
+              {messageMenuId === message.id && <div className="message-actions-popover">
+                <button type="button" onClick={() => startReply(message)}>Odpowiedz</button>
+                {mine && message.body && <button type="button" onClick={() => startEdit(message)}>Edytuj</button>}
+                <button type="button" onClick={() => setMessageMenuId(null)}>Zamknij</button>
+              </div>}
+            </article>;
+          })}
         </div>
-        <form className="chat-compose" onSubmit={async (event) => {
+        <form className={"chat-compose " + (sending ? "sending" : "")} onSubmit={async (event) => {
           event.preventDefault();
-          const form = event.currentTarget;
-          setState(await api<AppState>("/api/messages", { method: "POST", body: JSON.stringify({ body: form.body.value, target_type: active.target_type, target_id: active.target_id, game_id: state.game.id, ...(attachment || {}) }) }));
-          setAttachment(null);
-          form.reset();
+          if (sending) return;
+          const body = draft.trim();
+          if (!body && !attachment) return;
+          setSending(true);
+          try {
+            const path = editingMessage ? `/api/messages/${editingMessage.id}` : "/api/messages";
+            setState(await api<AppState>(path, {
+              method: "POST",
+              body: JSON.stringify({
+                body,
+                target_type: active.target_type,
+                target_id: active.target_id,
+                game_id: state.game.id,
+                reply_to_id: replyTo?.id || null,
+                ...(editingMessage ? {} : attachment || {})
+              })
+            }));
+            setDraft("");
+            setAttachment(null);
+            setReplyTo(null);
+            setEditingMessage(null);
+          } finally {
+            setSending(false);
+          }
         }}>
           <div className="compose-field">
-            <textarea name="body" placeholder={"Napisz do: " + active.label} />
+            {(replyTo || editingMessage) && <div className="compose-context">
+              <span>{editingMessage ? "Edytujesz wiadomość" : `Odpowiedź do: ${replyTo?.sender_name || "Wiadomość"}`}</span>
+              <strong>{editingMessage ? editingMessage.body : quoteText(replyTo)}</strong>
+              <button type="button" onClick={() => { setReplyTo(null); setEditingMessage(null); setDraft(editingMessage ? "" : draft); }}>×</button>
+            </div>}
+            <textarea name="body" value={draft} onChange={(event) => setDraft(event.target.value)} placeholder={editingMessage ? "Edytuj wiadomość" : "Napisz do: " + active.label} disabled={sending} />
+            {sending && <div className="sending-status">{attachment ? "Wysyłanie pliku..." : "Wysyłanie wiadomości..."}</div>}
             {attachment && <div className="attachment-preview">
               {attachment.attachment_mime.startsWith("image/") && <img src={attachment.attachment_data} alt={attachment.attachment_name} />}
               <span><strong>{attachment.attachment_name}</strong><small>{attachment.attachment_mime || "plik"}</small></span>
-              <button type="button" onClick={() => setAttachment(null)}>Usuń</button>
+              <button type="button" onClick={() => setAttachment(null)} disabled={sending}>Usuń</button>
             </div>}
           </div>
           <label className="attach-button">
-            <input type="file" onChange={async (event) => { const file = event.currentTarget.files?.[0]; if (file) setAttachment(await fileToAttachment(file)); event.currentTarget.value = ""; }} />
+            <input type="file" accept="image/*,video/*,.gif" disabled={sending || !!editingMessage} onChange={async (event) => { const file = event.currentTarget.files?.[0]; if (file) setAttachment(await fileToAttachment(file)); event.currentTarget.value = ""; }} />
             <UiIcon name="attach" />
             <span>Załącz</span>
           </label>
-          <Button className="send-button" variant="primary"><UiIcon name="send" /><span>Wyślij</span></Button>
+          <Button className="send-button" variant="primary" disabled={sending || (!draft.trim() && !attachment)}><UiIcon name="send" /><span>{sending ? "Wysyłanie" : "Wyślij"}</span></Button>
         </form>
       </section>
     </section>
+    {preview && <MediaLightbox media={preview} onClose={() => setPreview(null)} />}
+  </div>;
+}
+
+function MediaLightbox({ media, onClose }: { media: MediaPreview; onClose: () => void }) {
+  const isVideo = media.mime?.startsWith("video/");
+  return <div className="lightbox media-lightbox" role="dialog" aria-modal="true" onClick={onClose}>
+    <button className="lightbox-close" onClick={onClose}>Zamknij</button>
+    <figure onClick={(event) => event.stopPropagation()}>
+      {isVideo ? <video src={media.src} controls autoPlay /> : <img src={media.src} alt={media.title} />}
+      <figcaption><strong>{media.title}</strong><span>{media.mime || "plik"}</span></figcaption>
+    </figure>
   </div>;
 }
 
