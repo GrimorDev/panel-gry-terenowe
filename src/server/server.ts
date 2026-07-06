@@ -416,6 +416,7 @@ async function state(gameId?: number, userId?: number) {
          ELSE COALESCE(m.target_id, 0)
        END
       WHERE COALESCE(m.sender_id, 0) <> $1
+        AND (m.target_type <> 'user' OR m.target_id = $1)
         AND m.id > COALESCE(r.last_read_message_id, 0)
       GROUP BY m.target_type, CASE
         WHEN m.target_type='user' AND m.target_id=$1 THEN COALESCE(m.sender_id, 0)
