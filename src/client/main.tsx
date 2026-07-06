@@ -880,7 +880,7 @@ function PhotoTile({ photo, onOpen, onEdit, onShareInternal, onDelete }: { photo
   const [menuOpen, setMenuOpen] = useState(false);
   const [infoOpen, setInfoOpen] = useState(false);
   const showControls = !!onOpen || !!onEdit;
-  return <article className={"photo-tile " + (photo.image_data ? "has-image" : photo.color)}>
+  return <article className={"photo-tile " + (photo.image_data ? "has-image" : photo.color) + (menuOpen || infoOpen ? " menu-open" : "")}>
     <button className="photo-open" type="button" onClick={() => onOpen?.(photo)} disabled={!photo.image_data}>
       {photo.image_data ? <img src={photo.image_data} alt={photo.title} loading="lazy" decoding="async" /> : null}
       {!photo.image_data && <span>Brak zdjęcia</span>}
