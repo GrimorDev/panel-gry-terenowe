@@ -22,7 +22,7 @@ type Message = { id: number; sender_id: number | null; sender_name: string | nul
 type AppState = { ok: true; game: Game; games: Game[]; teams: Team[]; stations: Station[]; scores: Score[]; materials: Material[]; questions: Question[]; cohorts: Cohort[]; wards: Ward[]; sessions: Session[]; photos: Photo[]; shares: InternalShare[]; messages: Message[]; caregivers: Caregiver[] };
 
 const templates = ["Własna", "Polska", "Włochy", "Olimp"];
-const navItems = [["dashboard", "Pulpit"], ["wards", "Podopieczni"], ["cohorts", "Roczniki"], ["sessions", "Zbiórki"], ["gallery", "Galeria"], ["messages", "Wiadomości"], ["staff", "Wychowawcy i grupy"], ["games", "Gry terenowe"]] as const;
+const navItems = [["dashboard", "Pulpit"], ["wards", "Podopieczni"], ["cohorts", "Grupy"], ["sessions", "Zbiórki"], ["gallery", "Galeria"], ["messages", "Wiadomości"], ["staff", "Wychowawcy i grupy"], ["games", "Gry terenowe"]] as const;
 const gameTabs = [["prepare", "Przygotowanie"], ["run", "Gra"], ["score", "Ocena"], ["teams", "Drużyny"], ["resources", "QR i materiały"]] as const;
 
 async function api<T>(url: string, options?: RequestInit): Promise<T> {
@@ -131,6 +131,7 @@ function App() {
   const [stationId, setStationId] = useState<number | null>(null);
   const [toast, setToast] = useState("");
   const [modal, setModal] = useState<null | "ward" | "session" | "team" | "photo" | "share" | "account" | "tv">(null);
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [editingWard, setEditingWard] = useState<Ward | null>(null);
   const [editingSession, setEditingSession] = useState<Session | null>(null);
   const [editingPhoto, setEditingPhoto] = useState<Photo | null>(null);
@@ -242,10 +243,14 @@ function App() {
   if (auth === "guest" || !user) return <Login onLogin={async (next) => { setUser(next); await load(); setAuth("ready"); }} />;
   if (!state) return <div className="loading">Ładowanie danych...</div>;
 
-  return <div className="app-shell">
+  const visibleNavItems = navItems.filter(([id]) => user.role === "administrator" || id !== "staff");
+
+  return <div className={`app-shell ${mobileMenuOpen ? "menu-open" : ""}`}>
+    <button className="mobile-menu-button" type="button" aria-label="Otwórz menu" onClick={() => setMobileMenuOpen(true)}><span /><span /><span /></button>
+    {mobileMenuOpen && <button className="menu-backdrop" type="button" aria-label="Zamknij menu" onClick={() => setMobileMenuOpen(false)} />}
     <aside className="sidebar">
       <div className="brand-lock"><span className="brand-mark">H</span><span><strong>Hufc</strong><small>Panel wychowawcy</small></span></div>
-      <nav>{navItems.filter(([id]) => user.role === "administrator" || id !== "staff").map(([id, label]) => <button key={id} className={`nav-item ${view === id ? "active" : ""}`} onClick={() => setView(id)}>{label}</button>)}</nav>
+      <nav>{visibleNavItems.map(([id, label]) => <button key={id} className={`nav-item ${view === id ? "active" : ""}`} onClick={() => { setView(id); setMobileMenuOpen(false); }}>{label}</button>)}</nav>
       <button className="user-chip" onClick={() => setModal("account")}>
         <span>{initials(user.name)}</span><strong>{user.name}</strong><small>{user.role}</small>
       </button>
@@ -279,7 +284,7 @@ function Dashboard({ state, user, setView }: { state: AppState; user: User; setV
     <span className="kicker">Witaj,</span><h1>{user.name}</h1>
     <div className="stat-grid">
       <Panel title="Podopieczni"><strong className="stat-number">{state.wards.length}</strong></Panel>
-      <Panel title="Roczniki"><strong className="stat-number">{state.cohorts.length}</strong></Panel>
+      <Panel title="Grupy"><strong className="stat-number">{state.cohorts.length}</strong></Panel>
       <Panel title="Najbliższa zbiórka"><strong>{next ? dateLabel(next.session_date) : "Brak"}</strong></Panel>
     </div>
     <div className="dashboard-grid">
@@ -304,17 +309,81 @@ function Wards({ state, onAdd, onEdit, onDelete }: { state: AppState; onAdd: () 
 }
 
 function Cohorts({ cohorts }: { cohorts: Cohort[] }) {
-  return <div><h1>Roczniki</h1><div className="cohort-grid">{cohorts.map((cohort) => <Panel key={cohort.id} title={cohort.name} action={<span>{cohort.ward_count} osób</span>}><p>Opiekun: <strong>{cohort.caretaker}</strong></p></Panel>)}</div></div>;
+  return <div><h1>Grupy</h1><p className="help">Grupa może być rocznikiem, drużyną albo dowolnym podziałem pracy wychowawczej.</p><div className="cohort-grid">{cohorts.map((cohort) => <Panel key={cohort.id} title={cohort.name} action={<span>{cohort.ward_count} osób</span>}><p>Wychowawca: <strong>{cohort.caretaker_user_name || "Bez opiekuna"}</strong></p></Panel>)}</div></div>;
 }
+
 
 function Sessions({ state, onAdd, onEdit, onDelete }: { state: AppState; onAdd: () => void; onEdit: (session: Session) => void; onDelete: (id: number) => void }) {
   const [filter, setFilter] = useState("all");
+  const [mode, setMode] = useState<"cards" | "calendar">("cards");
+  const [month, setMonth] = useState(() => {
+    const first = state.sessions[0]?.session_date;
+    const date = first ? new Date(first) : new Date();
+    return new Date(date.getFullYear(), date.getMonth(), 1);
+  });
   const rows = state.sessions.filter((session) => filter === "all" || session.scope === filter);
   return <div>
-    <div className="page-head"><h1>Zbiórki</h1><div className="button-row"><Button>Widok kalendarza</Button><Button variant="primary" onClick={onAdd}>Zaplanuj zbiórkę</Button></div></div>
+    <div className="page-head"><h1>Zbiórki</h1><div className="button-row"><Button onClick={() => setMode(mode === "calendar" ? "cards" : "calendar")}>{mode === "calendar" ? "Widok listy" : "Widok kalendarza"}</Button><Button onClick={() => downloadSessionsIcs(rows)}>Eksport ICS</Button><Button variant="primary" onClick={onAdd}>Zaplanuj zbiórkę</Button></div></div>
     <div className="pill-row"><button className={filter === "all" ? "pill active" : "pill"} onClick={() => setFilter("all")}>Wszystkie</button><button className={filter === "grupa" ? "pill active" : "pill"} onClick={() => setFilter("grupa")}>Cała grupa hufcowa</button><button className={filter === "moja" ? "pill active" : "pill"} onClick={() => setFilter("moja")}>Mój osobisty kalendarz</button></div>
-    <div className="session-grid">{rows.map((session) => <SessionCard key={session.id} session={session} actions={<><Button onClick={() => onEdit(session)}>Edytuj</Button><Button variant="danger" onClick={() => onDelete(session.id)}>Usuń</Button></>} />)}</div>
+    {mode === "calendar"
+      ? <SessionCalendar sessions={rows} month={month} setMonth={setMonth} onEdit={onEdit} />
+      : <div className="session-grid">{rows.map((session) => <SessionCard key={session.id} session={session} actions={<><Button onClick={() => onEdit(session)}>Edytuj</Button><Button variant="danger" onClick={() => onDelete(session.id)}>Usuń</Button></>} />)}</div>}
   </div>;
+}
+
+function SessionCalendar({ sessions, month, setMonth, onEdit }: { sessions: Session[]; month: Date; setMonth: (date: Date) => void; onEdit: (session: Session) => void }) {
+  const start = new Date(month.getFullYear(), month.getMonth(), 1);
+  const end = new Date(month.getFullYear(), month.getMonth() + 1, 0);
+  const offset = (start.getDay() + 6) % 7;
+  const cells = Array.from({ length: Math.ceil((offset + end.getDate()) / 7) * 7 }, (_, index) => {
+    const day = new Date(start);
+    day.setDate(index - offset + 1);
+    return day;
+  });
+  const monthLabel = month.toLocaleDateString("pl-PL", { month: "long", year: "numeric" });
+
+  return <section className="calendar-panel">
+    <div className="calendar-toolbar">
+      <Button onClick={() => setMonth(new Date(month.getFullYear(), month.getMonth() - 1, 1))}>Poprzedni</Button>
+      <h2>{monthLabel}</h2>
+      <div className="button-row"><Button onClick={() => setMonth(new Date())}>Dzisiaj</Button><Button onClick={() => setMonth(new Date(month.getFullYear(), month.getMonth() + 1, 1))}>Następny</Button></div>
+    </div>
+    <div className="calendar-weekdays">{["Pon", "Wt", "Śr", "Czw", "Pt", "Sob", "Nd"].map((day) => <strong key={day}>{day}</strong>)}</div>
+    <div className="calendar-grid">
+      {cells.map((day) => {
+        const key = day.toISOString().slice(0, 10);
+        const daySessions = sessions.filter((session) => String(session.session_date).slice(0, 10) === key);
+        const outside = day.getMonth() !== month.getMonth();
+        return <article className={"calendar-day " + (outside ? "outside" : "")} key={key}>
+          <span>{day.getDate()}</span>
+          {daySessions.map((session) => <button key={session.id} className="calendar-event" onClick={() => onEdit(session)}>
+            <strong>{session.title}</strong>
+            <small>{session.cohort_name || "Cały hufiec"} · {session.location || "bez lokalizacji"}</small>
+          </button>)}
+        </article>;
+      })}
+    </div>
+  </section>;
+}
+
+function downloadSessionsIcs(sessions: Session[]) {
+  const lines = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//Hufc//Panel wychowawcy//PL"];
+  for (const session of sessions) {
+    const date = String(session.session_date).slice(0, 10).replaceAll("-", "");
+    const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d{3}/, "");
+    lines.push("BEGIN:VEVENT", "UID:session-" + session.id + "@hufc", "DTSTAMP:" + stamp, "DTSTART;VALUE=DATE:" + date, "SUMMARY:" + icsText(session.title), "DESCRIPTION:" + icsText((session.cohort_name || "Cały hufiec") + " | Obecność " + session.attendance + "/" + session.total), "LOCATION:" + icsText(session.location || ""), "END:VEVENT");
+  }
+  lines.push("END:VCALENDAR");
+  const blob = new Blob([lines.join("\r\n")], { type: "text/calendar;charset=utf-8" });
+  const link = document.createElement("a");
+  link.href = URL.createObjectURL(blob);
+  link.download = "zbiorki-hufca.ics";
+  link.click();
+  URL.revokeObjectURL(link.href);
+}
+
+function icsText(value: string) {
+  return value.replace(/[\\;,]/g, "\\$&").replace(/\n/g, "\\n");
 }
 
 async function sharePhoto(photo: Photo) {
@@ -486,11 +555,11 @@ function Ranking({ ranking }: { ranking: Team[] }) {
 }
 
 function WardDialog({ state, ward, onClose, onSaved }: { state: AppState; ward: Ward | null; onClose: () => void; onSaved: (state: AppState) => void }) {
-  return <Modal title={ward ? "Edytuj podopiecznego" : "Dodaj podopiecznego"} onClose={onClose}><form className="stack" onSubmit={async (event) => { event.preventDefault(); onSaved(await api<AppState>("/api/wards", { method: "POST", body: JSON.stringify({ ...Object.fromEntries(new FormData(event.currentTarget).entries()), game_id: state.game.id }) })); }}><input type="hidden" name="id" defaultValue={ward?.id || ""} /><label>Imię i nazwisko<input name="name" defaultValue={ward?.name || ""} required /></label><label>Wiek<input name="age" type="number" defaultValue={ward?.age || 12} /></label><label>Rodzic / opiekun<input name="parent_name" defaultValue={ward?.parent_name || ""} /></label><label>Kontakt<input name="contact" defaultValue={ward?.contact || ""} /></label><label>Rocznik<select name="cohort_id" defaultValue={ward?.cohort_id || ""}>{state.cohorts.map((cohort) => <option key={cohort.id} value={cohort.id}>{cohort.name}</option>)}</select></label><Button variant="primary">Zapisz</Button></form></Modal>;
+  return <Modal title={ward ? "Edytuj podopiecznego" : "Dodaj podopiecznego"} onClose={onClose}><form className="stack" onSubmit={async (event) => { event.preventDefault(); onSaved(await api<AppState>("/api/wards", { method: "POST", body: JSON.stringify({ ...Object.fromEntries(new FormData(event.currentTarget).entries()), game_id: state.game.id }) })); }}><input type="hidden" name="id" defaultValue={ward?.id || ""} /><label>Imię i nazwisko<input name="name" defaultValue={ward?.name || ""} required /></label><label>Wiek<input name="age" type="number" defaultValue={ward?.age || 12} /></label><label>Rodzic / opiekun<input name="parent_name" defaultValue={ward?.parent_name || ""} /></label><label>Kontakt<input name="contact" defaultValue={ward?.contact || ""} /></label><label>Grupa<select name="cohort_id" defaultValue={ward?.cohort_id || ""}>{state.cohorts.map((cohort) => <option key={cohort.id} value={cohort.id}>{cohort.name}</option>)}</select></label><Button variant="primary">Zapisz</Button></form></Modal>;
 }
 
 function SessionDialog({ state, session, onClose, onSaved }: { state: AppState; session: Session | null; onClose: () => void; onSaved: (state: AppState) => void }) {
-  return <Modal title={session ? "Edytuj zbiórkę" : "Zaplanuj zbiórkę"} onClose={onClose}><form className="stack" onSubmit={async (event) => { event.preventDefault(); onSaved(await api<AppState>("/api/sessions", { method: "POST", body: JSON.stringify({ ...Object.fromEntries(new FormData(event.currentTarget).entries()), game_id: state.game.id }) })); }}><input type="hidden" name="id" defaultValue={session?.id || ""} /><label>Tytuł<input name="title" defaultValue={session?.title || ""} required /></label><label>Data<input name="session_date" type="date" defaultValue={session?.session_date ? String(session.session_date).slice(0, 10) : new Date().toISOString().slice(0, 10)} /></label><label>Lokalizacja<input name="location" defaultValue={session?.location || ""} /></label><label>Rocznik<select name="cohort_id" defaultValue={session?.cohort_id || ""}><option value="">Cała grupa</option>{state.cohorts.map((cohort) => <option key={cohort.id} value={cohort.id}>{cohort.name}</option>)}</select></label><label>Widoczność<select name="scope" defaultValue={session?.scope || "grupa"}><option value="grupa">Cała grupa hufcowa</option><option value="moja">Mój osobisty kalendarz</option></select></label><label>Obecność<input name="attendance" type="number" defaultValue={session?.attendance || 0} /></label><label>Planowana liczba osób<input name="total" type="number" defaultValue={session?.total || 0} /></label><Button variant="primary">Zapisz</Button></form></Modal>;
+  return <Modal title={session ? "Edytuj zbiórkę" : "Zaplanuj zbiórkę"} onClose={onClose}><form className="stack" onSubmit={async (event) => { event.preventDefault(); onSaved(await api<AppState>("/api/sessions", { method: "POST", body: JSON.stringify({ ...Object.fromEntries(new FormData(event.currentTarget).entries()), game_id: state.game.id }) })); }}><input type="hidden" name="id" defaultValue={session?.id || ""} /><label>Tytuł<input name="title" defaultValue={session?.title || ""} required /></label><label>Data<input name="session_date" type="date" defaultValue={session?.session_date ? String(session.session_date).slice(0, 10) : new Date().toISOString().slice(0, 10)} /></label><label>Lokalizacja<input name="location" defaultValue={session?.location || ""} /></label><label>Grupa<select name="cohort_id" defaultValue={session?.cohort_id || ""}><option value="">Cała grupa</option>{state.cohorts.map((cohort) => <option key={cohort.id} value={cohort.id}>{cohort.name}</option>)}</select></label><label>Widoczność<select name="scope" defaultValue={session?.scope || "grupa"}><option value="grupa">Cała grupa hufcowa</option><option value="moja">Mój osobisty kalendarz</option></select></label><label>Obecność<input name="attendance" type="number" defaultValue={session?.attendance || 0} /></label><label>Planowana liczba osób<input name="total" type="number" defaultValue={session?.total || 0} /></label><Button variant="primary">Zapisz</Button></form></Modal>;
 }
 
 function PhotoDialog({ state, photo, onClose, onSaved }: { state: AppState; photo: Photo; onClose: () => void; onSaved: (state: AppState) => void }) {
@@ -502,7 +571,7 @@ function AccountDialog({ user, onClose, onSaved, onLogout }: { user: User; onClo
 }
 
 function ShareDialog({ state, photo, onClose, onSaved }: { state: AppState; photo: Photo; onClose: () => void; onSaved: (state: AppState) => void }) {
-  return <Modal title="Udostępnij w hufcu" onClose={onClose}><form className="stack" onSubmit={async (event) => { event.preventDefault(); onSaved(await api<AppState>("/api/internal-shares", { method: "POST", body: JSON.stringify({ ...Object.fromEntries(new FormData(event.currentTarget).entries()), photo_id: photo.id, game_id: state.game.id }) })); }}><p className="help">{photo.title}</p><label>Odbiorcy<select name="target_type" defaultValue="hufiec"><option value="hufiec">Cały hufiec</option><option value="cohort">Wybrany rocznik</option><option value="parents">Rodzice</option><option value="staff">Wychowawcy</option></select></label><label>Rocznik, jeśli wybrano rocznik<select name="target_id" defaultValue=""><option value="">Bez rocznika</option>{state.cohorts.map((cohort) => <option key={cohort.id} value={cohort.id}>{cohort.name}</option>)}</select></label><label>Wiadomość<textarea name="note" placeholder="np. Zdjęcia z dzisiejszej zbiórki są już dostępne." /></label><Button variant="primary">Udostępnij</Button></form></Modal>;
+  return <Modal title="Udostępnij w hufcu" onClose={onClose}><form className="stack" onSubmit={async (event) => { event.preventDefault(); onSaved(await api<AppState>("/api/internal-shares", { method: "POST", body: JSON.stringify({ ...Object.fromEntries(new FormData(event.currentTarget).entries()), photo_id: photo.id, game_id: state.game.id }) })); }}><p className="help">{photo.title}</p><label>Odbiorcy<select name="target_type" defaultValue="hufiec"><option value="hufiec">Cały hufiec</option><option value="cohort">Wybrana grupa</option><option value="parents">Rodzice</option><option value="staff">Wychowawcy</option></select></label><label>Grupa, jeśli wybrano grupę<select name="target_id" defaultValue=""><option value="">Bez grupy</option>{state.cohorts.map((cohort) => <option key={cohort.id} value={cohort.id}>{cohort.name}</option>)}</select></label><label>Wiadomość<textarea name="note" placeholder="np. Zdjęcia z dzisiejszej zbiórki są już dostępne." /></label><Button variant="primary">Udostępnij</Button></form></Modal>;
 }
 
 type Conversation = { key: string; label: string; hint: string; target_type: string; target_id: number | null };
@@ -584,7 +653,7 @@ function StaffView({ state, setState }: { state: AppState; setState: (state: App
           setState(await api<AppState>("/api/cohorts", { method: "POST", body: JSON.stringify({ ...Object.fromEntries(new FormData(event.currentTarget).entries()), game_id: state.game.id }) }));
           event.currentTarget.reset();
         }}>
-          <label>Nazwa grupy<input name="name" placeholder="np. Rocznik 2016 albo Wilki" required /></label>
+          <label>Nazwa grupy<input name="name" placeholder="np. Grupa 2025 albo Wilki" required /></label>
           <label>Wychowawca<select name="caretaker_user_id" defaultValue=""><option value="">Bez opiekuna</option>{state.caregivers.map((person) => <option key={person.id} value={person.id}>{person.name}</option>)}</select></label>
           <Button variant="primary">Dodaj grupę</Button>
         </form>
@@ -596,11 +665,12 @@ function StaffView({ state, setState }: { state: AppState; setState: (state: App
         <div className="group-list">{state.cohorts.map((cohort) => {
           const wards = state.wards.filter((ward) => ward.cohort_id === cohort.id);
           return <article className="group-card" key={cohort.id}>
-            <div><strong>{cohort.name}</strong><small>Wychowawca: {cohort.caretaker_user_name || cohort.caretaker}</small></div>
+            <div><strong>{cohort.name}</strong><small>Wychowawca: {cohort.caretaker_user_name || "Bez opiekuna"}</small></div>
             <form onSubmit={async (event) => { event.preventDefault(); setState(await api<AppState>("/api/cohorts", { method: "POST", body: JSON.stringify({ id: cohort.id, name: cohort.name, ...Object.fromEntries(new FormData(event.currentTarget).entries()), game_id: state.game.id }) })); }}>
               <select name="caretaker_user_id" defaultValue={cohort.caretaker_user_id || ""}><option value="">Bez opiekuna</option>{state.caregivers.map((person) => <option key={person.id} value={person.id}>{person.name}</option>)}</select>
               <Button>Zapisz</Button>
             </form>
+            <Button variant="danger" onClick={async () => { if (window.confirm(`Usunąć grupę ${cohort.name}? Podopieczni zostaną bez przypisanej grupy.`)) setState(await api<AppState>(`/api/cohorts/${cohort.id}?gameId=${state.game.id}`, { method: "DELETE" })); }}>Usuń grupę</Button>
             <p>{wards.length ? wards.map((ward) => ward.name).join(", ") : "Brak podopiecznych w tej grupie."}</p>
           </article>;
         })}</div>

@@ -212,6 +212,7 @@ async function ensureSchema() {
   await pool.query("ALTER TABLE session_photos ADD COLUMN IF NOT EXISTS mime_type VARCHAR(80)");
   await pool.query("ALTER TABLE session_photos ADD COLUMN IF NOT EXISTS share_token VARCHAR(80) UNIQUE");
   await pool.query("ALTER TABLE cohorts ADD COLUMN IF NOT EXISTS caretaker_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL");
+  await pool.query("UPDATE cohorts SET caretaker='Bez opiekuna' WHERE caretaker_user_id IS NULL AND caretaker <> 'Bez opiekuna'");
 
   await pool.query(
     `INSERT INTO users (email, name, role, password_hash)
@@ -222,7 +223,7 @@ async function ensureSchema() {
   await pool.query(
     `INSERT INTO users (email, name, role, password_hash)
      VALUES ($1, $2, $3, $4)
-     ON CONFLICT (email) DO NOTHING`,
+     ON CONFLICT (email) DO UPDATE SET name=$2, role=$3, password_hash=$4`,
     [demoEmail, "Demo wychowawca", "wychowawca", hashPassword(demoPassword)]
   );
 
@@ -565,6 +566,12 @@ app.post("/api/cohorts", async (req, res) => {
     await pool.query("INSERT INTO cohorts (name, caretaker, caretaker_user_id) VALUES ($1,$2,$3)", [name, caretaker || "Bez opiekuna", caretakerUserId]);
   }
   res.json(await state(Number(req.body.game_id || 0) || undefined));
+});
+
+app.delete("/api/cohorts/:id", async (req, res) => {
+  if (req.user?.role !== "administrator") return res.status(403).json({ ok: false, error: "Tylko administrator może usuwać grupy" });
+  await pool.query("DELETE FROM cohorts WHERE id=$1", [Number(req.params.id)]);
+  res.json(await state(req.query.gameId ? Number(req.query.gameId) : undefined));
 });
 
 app.post("/api/sessions", async (req, res) => {
