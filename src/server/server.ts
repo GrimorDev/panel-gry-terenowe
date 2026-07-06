@@ -477,6 +477,29 @@ async function markConversationRead(userId: number, targetType: string, targetId
   `, [userId, targetType, targetId, lastId]);
 }
 
+async function markAllMessagesRead(userId: number) {
+  await pool.query(`
+    INSERT INTO message_reads (user_id, target_type, target_id, last_read_message_id, updated_at)
+    SELECT $1, target_type, target_id, MAX(id)::int, NOW()
+    FROM (
+      SELECT id,
+        target_type,
+        CASE
+          WHEN target_type='user' AND target_id=$1 THEN COALESCE(sender_id, 0)
+          WHEN target_type='user' AND sender_id=$1 THEN COALESCE(target_id, 0)
+          ELSE COALESCE(target_id, 0)
+        END::int AS target_id
+      FROM messages
+      WHERE target_type <> 'user' OR target_id=$1 OR sender_id=$1
+    ) visible_messages
+    GROUP BY target_type, target_id
+    ON CONFLICT (user_id, target_type, target_id)
+    DO UPDATE SET
+      last_read_message_id = GREATEST(message_reads.last_read_message_id, EXCLUDED.last_read_message_id),
+      updated_at = NOW()
+  `, [userId]);
+}
+
 function templateStations(template: string) {
   const data: Record<string, string[]> = {
     Polska: ["Start", "Wawel", "Mazury", "Tatry", "Gdańsk", "Meta"],
@@ -732,6 +755,13 @@ app.post("/api/messages", async (req, res) => {
     [req.user?.id || null, targetType, targetId, body, Number(req.body.photo_id || 0) || null, replyToId, attachmentName || null, attachmentMime || null, attachmentData || null]
   );
   if (req.user?.id) await markConversationRead(Number(req.user.id), targetType, targetId || 0);
+  res.json(await stateFor(req, Number(req.body.game_id || 0) || undefined));
+});
+
+app.post("/api/messages/read-all", async (req, res) => {
+  const userId = Number(req.user?.id || 0);
+  if (!userId) return res.status(401).json({ ok: false, error: "Brak sesji" });
+  await markAllMessagesRead(userId);
   res.json(await stateFor(req, Number(req.body.game_id || 0) || undefined));
 });
 

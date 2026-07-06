@@ -124,6 +124,16 @@ function messageUnreadFor(state: AppState, targetType: string, targetId: number 
   return Number((state.message_unreads || []).find((item) => item.target_type === targetType && Number(item.target_id) === normalizedTargetId)?.unread_count || 0);
 }
 
+function newestMessageId(messages: Message[]) {
+  return messages.reduce((max, message) => Math.max(max, Number(message.id || 0)), 0);
+}
+
+function newestIncomingMessage(messages: Message[], userId: number, afterId: number) {
+  return messages
+    .filter((message) => Number(message.id) > afterId && message.sender_id !== userId)
+    .sort((a, b) => Number(b.id) - Number(a.id))[0] || null;
+}
+
 async function imageFileToDataUrl(file: File) {
   const bitmap = await createImageBitmap(file);
   const max = 1600;
@@ -262,6 +272,8 @@ function App() {
   const mapEl = useRef<HTMLDivElement | null>(null);
   const map = useRef<L.Map | null>(null);
   const markers = useRef<L.LayerGroup | null>(null);
+  const lastMessageIdRef = useRef(0);
+  const readAllInFlightRef = useRef(false);
 
   const ranking = useMemo(() => [...(state?.teams || [])].sort((a, b) => b.total_points - a.total_points), [state]);
   const activeScore = state?.scores.find((score) => score.team_id === teamId && score.station_id === stationId) || null;
@@ -348,11 +360,49 @@ function App() {
     api<{ ok: true; user: User }>("/api/me")
       .then(async (result) => {
         setUser(result.user);
-        await load();
+        const data = await load();
+        lastMessageIdRef.current = newestMessageId(data.messages);
         setAuth("ready");
       })
       .catch(() => setAuth("guest"));
   }, []);
+
+  useEffect(() => {
+    if (auth !== "ready" || !state || !user) return;
+    if (!lastMessageIdRef.current) lastMessageIdRef.current = newestMessageId(state.messages);
+    const timer = window.setInterval(async () => {
+      try {
+        const previousMessageId = lastMessageIdRef.current;
+        const next = await api<AppState>(`/api/state?gameId=${state.game.id}`);
+        const incoming = newestIncomingMessage(next.messages, user.id, previousMessageId);
+        setState(next);
+        lastMessageIdRef.current = newestMessageId(next.messages);
+        if (!incoming || !prefs.push || !("Notification" in window) || Notification.permission !== "granted") return;
+        const title = incoming.sender_name ? `Nowa wiadomość od ${incoming.sender_name}` : "Nowa wiadomość w Hufcu";
+        const body = incoming.body || incoming.photo_title || incoming.attachment_name || "Nowa wiadomość";
+        new Notification(title, { body, tag: `hufc-message-${incoming.id}` });
+      } catch {
+        // Ciche odświeżanie nie powinno przeszkadzać w pracy panelu.
+      }
+    }, 7000);
+    return () => window.clearInterval(timer);
+  }, [auth, state?.game.id, user?.id, prefs.push]);
+
+  useEffect(() => {
+    if (!state || view !== "messages" || messageUnreadTotal(state) === 0 || readAllInFlightRef.current) return;
+    readAllInFlightRef.current = true;
+    window.setTimeout(async () => {
+      try {
+        const next = await api<AppState>("/api/messages/read-all", {
+          method: "POST",
+          body: JSON.stringify({ game_id: state.game.id })
+        });
+        setState(next);
+      } finally {
+        readAllInFlightRef.current = false;
+      }
+    }, 350);
+  }, [view, state?.game.id, state?.message_unreads]);
 
   useEffect(() => {
     if (!state?.game.timer_running) return;
