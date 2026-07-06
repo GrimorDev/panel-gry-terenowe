@@ -2,6 +2,7 @@ import "leaflet/dist/leaflet.css";
 import "./styles.css";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
+import { createPortal } from "react-dom";
 import L from "leaflet";
 import { QRCodeSVG } from "qrcode.react";
 
@@ -972,13 +973,13 @@ function MessagesView({ state, user, setState }: { state: AppState; user: User; 
               </button>}
               {message.body && <p>{message.body}</p>}
               {message.photo_image_data && <button className="message-photo" type="button" onClick={() => openMedia(message.photo_image_data, message.photo_title || "Zdjęcie z galerii", message.photo_mime_type)}>
-                <img src={message.photo_image_data} alt={message.photo_title || "Zdjęcie z galerii"} />
+                <img src={message.photo_image_data} alt={message.photo_title || "Zdjęcie z galerii"} loading="lazy" decoding="async" />
                 <strong>{message.photo_title || "Zdjęcie z galerii"}</strong>
               </button>}
               {!message.photo_image_data && message.photo_title && <span>Zdjęcie: {message.photo_title}</span>}
               {attachmentIsMedia && <button className="message-attachment" type="button" onClick={() => openMedia(message.attachment_data, message.attachment_name || "Załącznik", message.attachment_mime)}>
-                {message.attachment_mime?.startsWith("image/") && <img src={message.attachment_data || ""} alt={message.attachment_name || "Załącznik"} />}
-                {message.attachment_mime?.startsWith("video/") && <video src={message.attachment_data || ""} muted playsInline />}
+                {message.attachment_mime?.startsWith("image/") && <img src={message.attachment_data || ""} alt={message.attachment_name || "Załącznik"} loading="lazy" decoding="async" />}
+                {message.attachment_mime?.startsWith("video/") && <video src={message.attachment_data || ""} muted playsInline preload="metadata" />}
                 <strong>{message.attachment_name || "Załącznik"}</strong>
                 <small>{message.attachment_mime || "plik"}</small>
               </button>}
@@ -1050,13 +1051,13 @@ function MessagesView({ state, user, setState }: { state: AppState; user: User; 
 
 function MediaLightbox({ media, onClose }: { media: MediaPreview; onClose: () => void }) {
   const isVideo = media.mime?.startsWith("video/");
-  return <div className="lightbox media-lightbox" role="dialog" aria-modal="true" onClick={onClose}>
+  return createPortal(<div className="lightbox media-lightbox" role="dialog" aria-modal="true" onClick={onClose}>
     <button className="lightbox-close" onClick={onClose}>Zamknij</button>
     <figure onClick={(event) => event.stopPropagation()}>
-      {isVideo ? <video src={media.src} controls autoPlay /> : <img src={media.src} alt={media.title} />}
+      {isVideo ? <video src={media.src} controls autoPlay /> : <img src={media.src} alt={media.title} decoding="async" />}
       <figcaption><strong>{media.title}</strong><span>{media.mime || "plik"}</span></figcaption>
     </figure>
-  </div>;
+  </div>, document.body);
 }
 
 function StaffView({ state, setState }: { state: AppState; setState: (state: AppState) => void }) {
