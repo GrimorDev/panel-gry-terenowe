@@ -169,7 +169,7 @@ label { display: grid; gap: 6px; color: var(--text-muted); font-size: 13px; }
 .session-card-grid, .photo-preview-grid, .cohort-grid, .session-grid { display: grid; gap: 14px; }
 .session-card-grid { grid-template-columns: repeat(2, minmax(260px, 1fr)); }
 .photo-preview-grid { grid-template-columns: repeat(2, minmax(160px, 1fr)); }
-.gallery-grid { grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); }
+.gallery-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .cohort-layout { display: grid; grid-template-columns: minmax(280px, .8fr) minmax(420px, 1.2fr); gap: 18px; align-items: start; }
 .cohort-grid { grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); }
 .cohort-card { min-height: 126px; display: grid; gap: 9px; align-content: start; padding: 18px; border: 1px solid var(--border-default); border-radius: var(--radius-lg); background: #fff; text-align: left; box-shadow: var(--shadow-card); transition: transform .18s ease, box-shadow .18s ease, border-color .18s ease; }
@@ -209,28 +209,30 @@ label { display: grid; gap: 6px; color: var(--text-muted); font-size: 13px; }
 .gallery-head h2 { margin-bottom: 2px; }
 .gallery-head span { color: var(--text-muted); font-size: 13px; }
 .gallery-grid { display: grid; gap: 12px; }
-.photo-tile { position: relative; min-height: 250px; display: grid; grid-template-rows: 1fr auto; border: 1px solid var(--border-default); border-radius: var(--radius-md); background: var(--gray-100); color: var(--gray-800); font-weight: 700; text-align: left; overflow: hidden; transition: transform .18s ease, box-shadow .18s ease, border-color .18s ease; }
+.photo-tile { position: relative; aspect-ratio: 1; min-height: 0; display: block; border: 1px solid var(--border-default); border-radius: var(--radius-md); background: var(--gray-100); color: var(--gray-800); font-weight: 700; text-align: left; overflow: visible; transition: transform .18s ease, box-shadow .18s ease, border-color .18s ease; }
 .photo-tile.green { background: oklch(91% 0.045 150); }
 .photo-tile.accent { background: oklch(91% 0.055 45); }
 .photo-tile.sand { background: oklch(89% 0.015 85); }
 .photo-tile.has-image { background: #111; }
 .panel:hover, .session-card:hover, .photo-tile:hover, .person-row:hover { transform: translateY(-1px); box-shadow: var(--shadow-lg); }
-.photo-open { position: relative; min-height: 174px; padding: 0; border-radius: 0; background: transparent; border: 0; overflow: hidden; }
+.photo-open { position: absolute; inset: 0; width: 100%; height: 100%; min-height: 0; padding: 0; border-radius: inherit; background: transparent; border: 0; overflow: hidden; }
 .photo-open:disabled { cursor: default; }
 .photo-open img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; transition: transform .18s ease; }
 .photo-open:hover img { transform: scale(1.03); }
 .photo-open span { display: grid; place-items: center; height: 100%; color: var(--text-muted); }
 .photo-tile input { display: none; }
-.photo-meta { position: relative; z-index: 1; width: 100%; display: grid; gap: 6px; padding: 12px; background: rgba(255,255,255,.94); }
-.photo-meta small { color: var(--text-muted); }
-.photo-menu-button { position: absolute; right: 10px; top: 10px; z-index: 3; width: 38px; height: 34px; min-height: 34px; display: grid; place-items: center; padding: 0; border: 1px solid rgba(255,255,255,.48); border-radius: 12px; background: rgba(15,20,18,.62); color: #fff; letter-spacing: 1px; opacity: 0; transform: translateY(-4px); transition: opacity .16s ease, transform .16s ease, background .16s ease; }
-.photo-tile:hover .photo-menu-button, .photo-tile:focus-within .photo-menu-button { opacity: 1; transform: translateY(0); }
-.photo-actions-menu { position: absolute; top: 50px; right: 10px; z-index: 4; min-width: 180px; display: grid; gap: 4px; padding: 6px; border: 1px solid var(--border-default); border-radius: 14px; background: #fff; box-shadow: var(--shadow-lg); opacity: 0; transform: translateY(-6px); pointer-events: none; transition: opacity .16s ease, transform .16s ease; }
-.photo-tile:hover .photo-actions-menu, .photo-tile:focus-within .photo-actions-menu, .photo-actions-menu.open { opacity: 1; transform: translateY(0); pointer-events: auto; }
+.photo-info-button, .photo-menu-button { position: absolute; top: 10px; z-index: 3; width: 34px; height: 34px; min-height: 34px; display: grid; place-items: center; padding: 0; border: 1px solid rgba(255,255,255,.55); border-radius: 12px; background: rgba(15,20,18,.62); color: #fff; box-shadow: 0 8px 22px rgba(0,0,0,.18); }
+.photo-info-button { left: 10px; font-family: Georgia, serif; font-size: 18px; font-style: italic; }
+.photo-menu-button { right: 10px; letter-spacing: 1px; }
+.photo-info-menu, .photo-actions-menu { position: absolute; top: 52px; z-index: 4; min-width: min(220px, calc(100vw - 28px)); display: grid; gap: 5px; padding: 10px; border: 1px solid var(--border-default); border-radius: 14px; background: #fff; box-shadow: var(--shadow-lg); color: var(--text-primary); }
+.photo-info-menu { left: 10px; }
+.photo-info-menu span, .photo-info-menu small { color: var(--text-muted); font-size: 12.5px; }
+.photo-actions-menu { right: 10px; gap: 4px; padding: 6px; opacity: 0; transform: translateY(-6px); pointer-events: none; transition: opacity .16s ease, transform .16s ease; }
+.photo-actions-menu.open { opacity: 1; transform: translateY(0); pointer-events: auto; }
 .photo-actions-menu button { min-height: 36px; padding: 0 10px; background: transparent; text-align: left; color: var(--text-primary); font-size: 12.5px; }
 .photo-actions-menu button:hover { background: var(--surface-muted); }
 .photo-actions-menu button.danger { color: var(--color-danger); }
-.photo-upload-card { min-height: 250px; display: grid; grid-template-columns: 1fr 1fr; gap: 10px; padding: 10px; border: 1px dashed var(--border-default); border-radius: var(--radius-md); background: rgba(255,255,255,.55); }
+.photo-upload-card { aspect-ratio: 1; min-height: 0; display: grid; grid-template-columns: 1fr 1fr; gap: 10px; padding: 10px; border: 1px dashed var(--border-default); border-radius: var(--radius-md); background: rgba(255,255,255,.55); }
 .upload-action { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; min-height: 100%; padding: 16px; border: 1px solid var(--border-default); border-radius: var(--radius-sm); background: #fff; text-align: center; cursor: pointer; }
 .upload-action.primary-upload { background: var(--color-brand); color: #fff; border-color: var(--color-brand); }
 .upload-action input { display: none; }
@@ -439,7 +441,8 @@ label { display: grid; gap: 6px; color: var(--text-muted); font-size: 13px; }
 }
 
 @media (max-width: 680px) {
-  .form-grid, .action-grid, .session-card-grid, .photo-preview-grid, .gallery-grid { grid-template-columns: 1fr; }
+  .form-grid, .action-grid, .session-card-grid, .photo-preview-grid { grid-template-columns: 1fr; }
+  .gallery-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 7px; }
   .form-grid .check, .form-actions { grid-column: auto; }
   .page-head, .card-row { flex-direction: column; align-items: stretch; }
   .sidebar { padding: 14px; gap: 14px; }
@@ -467,8 +470,13 @@ label { display: grid; gap: 6px; color: var(--text-muted); font-size: 13px; }
   .panel { padding: 16px; border-radius: var(--radius-md); }
   .person-row { grid-template-columns: 42px 1fr; }
   .person-row em, .person-row button { grid-column: 1 / -1; }
-  .photo-tile, .photo-upload-card { min-height: 210px; }
-  .photo-upload-card { grid-template-columns: 1fr; }
+  .photo-tile { border-radius: 12px; }
+  .photo-info-button, .photo-menu-button { top: 6px; width: 28px; height: 28px; min-height: 28px; border-radius: 10px; }
+  .photo-info-button { left: 6px; font-size: 15px; }
+  .photo-menu-button { right: 6px; }
+  .photo-info-menu, .photo-actions-menu { top: 38px; }
+  .photo-upload-card { grid-column: 1 / -1; aspect-ratio: auto; min-height: 112px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .upload-action { min-height: 92px; padding: 10px; }
   .lightbox { grid-template-columns: 1fr 1fr; grid-template-rows: auto minmax(0, 1fr) auto auto; padding: 10px; }
   .lightbox figure { grid-column: 1 / -1; }
   .lightbox-close { grid-column: 1 / -1; justify-self: end; }

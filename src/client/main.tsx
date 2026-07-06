@@ -794,22 +794,27 @@ function SessionCard({ session, actions }: { session: Session; actions?: React.R
 
 function PhotoTile({ photo, onOpen, onEdit, onShareInternal, onDelete }: { photo: Photo; onOpen?: (photo: Photo) => void; onEdit?: (photo: Photo) => void; onShareInternal?: (photo: Photo) => void; onDelete?: (id: number) => void }) {
   const [menuOpen, setMenuOpen] = useState(false);
+  const [infoOpen, setInfoOpen] = useState(false);
+  const showControls = !!onOpen || !!onEdit;
   return <article className={"photo-tile " + (photo.image_data ? "has-image" : photo.color)}>
     <button className="photo-open" type="button" onClick={() => onOpen?.(photo)} disabled={!photo.image_data}>
-      {photo.image_data ? <img src={photo.image_data} alt={photo.title} /> : null}
-      {!photo.image_data && <span>Brak pliku zdjęcia</span>}
+      {photo.image_data ? <img src={photo.image_data} alt={photo.title} loading="lazy" decoding="async" /> : null}
+      {!photo.image_data && <span>Brak zdjęcia</span>}
     </button>
-    {onEdit && <button className="photo-menu-button" type="button" aria-label="Opcje zdjęcia" onClick={() => setMenuOpen(!menuOpen)}>•••</button>}
+    {showControls && <button className="photo-info-button" type="button" aria-label="Informacje o zdjęciu" onClick={() => { setInfoOpen(!infoOpen); setMenuOpen(false); }}>i</button>}
+    {infoOpen && <div className="photo-info-menu">
+      <strong>{photo.title}</strong>
+      <span>{dateLabel(photo.created_at || photo.session_date)}</span>
+      <span>{photo.session_title}</span>
+      {photo.mime_type && <small>{photo.mime_type}</small>}
+    </div>}
+    {onEdit && <button className="photo-menu-button" type="button" aria-label="Opcje zdjęcia" onClick={() => { setMenuOpen(!menuOpen); setInfoOpen(false); }}>•••</button>}
     {onEdit && <div className={"photo-actions-menu " + (menuOpen ? "open" : "")}>
       <button type="button" onClick={() => { setMenuOpen(false); onEdit(photo); }}>Edytuj</button>
       <button type="button" onClick={() => { setMenuOpen(false); sharePhoto(photo); }}>Kopiuj link</button>
       {onShareInternal && <button type="button" onClick={() => { setMenuOpen(false); onShareInternal(photo); }}>Udostępnij w hufcu</button>}
       {onDelete && <button className="danger" type="button" onClick={() => { setMenuOpen(false); onDelete(photo.id); }}>Usuń</button>}
     </div>}
-    <div className="photo-meta">
-      <strong>{photo.title}</strong>
-      <small>{dateLabel(photo.created_at || photo.session_date)}</small>
-    </div>
   </article>;
 }
 
