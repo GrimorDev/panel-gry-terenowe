@@ -23,6 +23,7 @@ type Message = { id: number; sender_id: number | null; sender_name: string | nul
 type AppState = { ok: true; game: Game; games: Game[]; teams: Team[]; stations: Station[]; scores: Score[]; materials: Material[]; questions: Question[]; cohorts: Cohort[]; wards: Ward[]; sessions: Session[]; photos: Photo[]; shares: InternalShare[]; messages: Message[]; caregivers: Caregiver[] };
 type NotificationItem = { id: string; title: string; detail: string; time: string; kind: "ward" | "session" | "message" | "today" };
 type AppPrefs = { sidebar: "full" | "compact"; theme: "forest" | "terra" | "cream"; email: boolean; push: boolean };
+type BusyRunner = <T>(label: string, task: () => Promise<T>) => Promise<T>;
 
 const templates = ["Własna", "Polska", "Włochy", "Olimp"];
 const navItems = [["dashboard", "Pulpit"], ["wards", "Podopieczni"], ["cohorts", "Grupy"], ["sessions", "Zbiórki"], ["gallery", "Galeria"], ["messages", "Wiadomości"], ["staff", "Wychowawcy i grupy"], ["games", "Gry terenowe"]] as const;
@@ -163,6 +164,13 @@ function Modal({ title, children, onClose }: { title: string; children: React.Re
   </div>;
 }
 
+function LoadingDots({ label = "Przetwarzanie..." }: { label?: string }) {
+  return <div className="loading-dots-wrap" role="status" aria-live="polite">
+    <div className="loading-dots" aria-hidden="true"><div /><div /><div /></div>
+    <span>{label}</span>
+  </div>;
+}
+
 function UiIcon({ name }: { name: string }) {
   const common = { fill: "none", stroke: "currentColor", strokeWidth: 1.9, strokeLinecap: "round" as const, strokeLinejoin: "round" as const };
   if (name === "dashboard") return <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="8" height="8" rx="2" {...common} /><rect x="13" y="3" width="8" height="8" rx="2" {...common} /><rect x="3" y="13" width="8" height="8" rx="2" {...common} /><rect x="13" y="13" width="8" height="8" rx="2" {...common} /></svg>;
@@ -175,6 +183,7 @@ function UiIcon({ name }: { name: string }) {
   if (name === "logout") return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9" {...common} /></svg>;
   if (name === "bell") return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 17h12l-1.6-2.3V10a4.4 4.4 0 0 0-8.8 0v4.7L6 17zM10.2 19a1.9 1.9 0 0 0 3.6 0" {...common} /></svg>;
   if (name === "settings") return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z" {...common} /><path d="M19.4 15a1.8 1.8 0 0 0 .36 1.98l.06.06a2.1 2.1 0 1 1-2.98 2.98l-.06-.06A1.8 1.8 0 0 0 14.8 19.6a1.8 1.8 0 0 0-1.08 1.64v.18a2.1 2.1 0 1 1-4.2 0v-.1A1.8 1.8 0 0 0 8.4 19.6a1.8 1.8 0 0 0-1.98.36l-.06.06a2.1 2.1 0 1 1-2.98-2.98l.06-.06A1.8 1.8 0 0 0 3.8 15a1.8 1.8 0 0 0-1.64-1.08H2a2.1 2.1 0 1 1 0-4.2h.1A1.8 1.8 0 0 0 3.8 8.6a1.8 1.8 0 0 0-.36-1.98l-.06-.06a2.1 2.1 0 1 1 2.98-2.98l.06.06A1.8 1.8 0 0 0 8.4 4a1.8 1.8 0 0 0 1.08-1.64V2.2a2.1 2.1 0 1 1 4.2 0v.1A1.8 1.8 0 0 0 14.8 4a1.8 1.8 0 0 0 1.98-.36l.06-.06a2.1 2.1 0 1 1 2.98 2.98l-.06.06A1.8 1.8 0 0 0 19.4 8.6a1.8 1.8 0 0 0 1.64 1.08h.18a2.1 2.1 0 1 1 0 4.2h-.1A1.8 1.8 0 0 0 19.4 15Z" {...common} /></svg>;
+  if (name === "edit") return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20h9" {...common} /><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L8 18l-4 1 1-4L16.5 3.5z" {...common} /></svg>;
   if (name === "attach") return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21.4 11.2 12 20.6a6 6 0 0 1-8.5-8.5l9.8-9.8a4 4 0 0 1 5.7 5.7l-9.8 9.8a2 2 0 0 1-2.8-2.8l8.9-8.9" {...common} /></svg>;
   if (name === "send") return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6" {...common} /></svg>;
   if (name === "more") return <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="1.5" fill="currentColor" /><circle cx="12" cy="12" r="1.5" fill="currentColor" /><circle cx="19" cy="12" r="1.5" fill="currentColor" /></svg>;
@@ -225,6 +234,7 @@ function App() {
   const [teamId, setTeamId] = useState<number | null>(null);
   const [stationId, setStationId] = useState<number | null>(null);
   const [toast, setToast] = useState("");
+  const [busyLabel, setBusyLabel] = useState("");
   const [modal, setModal] = useState<null | "ward" | "session" | "team" | "photo" | "share" | "account" | "tv">(null);
   const [settingsTab, setSettingsTab] = useState<"profil" | "wyglad" | "powiadomienia" | "konto">("profil");
   const [notifOpen, setNotifOpen] = useState(false);
@@ -265,6 +275,15 @@ function App() {
   function flash(message: string) {
     setToast(message);
     window.setTimeout(() => setToast(""), 2200);
+  }
+
+  async function runBusy<T>(label: string, task: () => Promise<T>) {
+    setBusyLabel(label);
+    try {
+      return await task();
+    } finally {
+      setBusyLabel("");
+    }
   }
 
   function openAccount(tab: "profil" | "wyglad" | "powiadomienia" | "konto") {
@@ -309,7 +328,7 @@ function App() {
   }
 
   async function logout() {
-    await api("/api/logout", { method: "POST" });
+    await runBusy("Wylogowywanie...", () => api("/api/logout", { method: "POST" }));
     setUser(null);
     setAuth("guest");
     setModal(null);
@@ -394,33 +413,36 @@ function App() {
 
   async function saveStation(payload: Partial<Station>) {
     if (!state) return;
-    setState(await api<AppState>("/api/stations", { method: "POST", body: JSON.stringify({ ...payload, game_id: state.game.id }) }));
+    setState(await runBusy("Zapisywanie stacji...", () => api<AppState>("/api/stations", { method: "POST", body: JSON.stringify({ ...payload, game_id: state.game.id }) })));
     flash("Stacja zapisana");
   }
 
   async function saveGame(form: HTMLFormElement) {
     const data = Object.fromEntries(new FormData(form).entries());
-    setState(await api<AppState>("/api/games", { method: "POST", body: JSON.stringify({ ...data, use_template: form.use_template.checked }) }));
+    setState(await runBusy("Zapisywanie gry...", () => api<AppState>("/api/games", { method: "POST", body: JSON.stringify({ ...data, use_template: form.use_template.checked }) })));
     flash(data.id ? "Gra zapisana" : "Nowa gra utworzona");
   }
 
   async function uploadPhotos(sessionId: number, files: File[]) {
     if (!state) return;
-    let nextState = state;
-    for (const file of files) {
-      const image = await imageFileToDataUrl(file);
-      nextState = await api<AppState>("/api/photos", {
-        method: "POST",
-        body: JSON.stringify({ session_id: sessionId, game_id: state.game.id, ...image })
-      });
-    }
+    const nextState = await runBusy(files.length === 1 ? "Wgrywanie zdjęcia..." : "Wgrywanie zdjęć...", async () => {
+      let next = state;
+      for (const file of files) {
+        const image = await imageFileToDataUrl(file);
+        next = await api<AppState>("/api/photos", {
+          method: "POST",
+          body: JSON.stringify({ session_id: sessionId, game_id: state.game.id, ...image })
+        });
+      }
+      return next;
+    });
     setState(nextState);
     flash(files.length === 1 ? "Zdjęcie zapisane w galerii" : "Zdjęcia zapisane w galerii");
   }
 
-  if (auth === "checking") return <div className="loading">Ładowanie panelu...</div>;
+  if (auth === "checking") return <div className="loading"><LoadingDots label="Ładowanie panelu..." /></div>;
   if (auth === "guest" || !user) return <Login onLogin={async (next) => { setUser(next); await load(); setAuth("ready"); }} />;
-  if (!state) return <div className="loading">Ładowanie danych...</div>;
+  if (!state) return <div className="loading"><LoadingDots label="Ładowanie danych..." /></div>;
 
   const visibleNavItems = navItems.filter(([id]) => user.role === "administrator" || id !== "staff");
   const unreadCount = Math.min(99, unreadNotifications.length);
@@ -451,24 +473,25 @@ function App() {
       <div className="main-content">
         <div className="view-stage" key={view}>
           {view === "dashboard" && <Dashboard state={state} user={user} setView={setView} />}
-          {view === "wards" && <Wards state={state} onAdd={() => { setEditingWard(null); setModal("ward"); }} onEdit={(ward) => { setEditingWard(ward); setModal("ward"); }} onDelete={async (id) => setState(await api<AppState>(`/api/wards/${id}?gameId=${state.game.id}`, { method: "DELETE" }))} />}
+          {view === "wards" && <Wards state={state} onAdd={() => { setEditingWard(null); setModal("ward"); }} onEdit={(ward) => { setEditingWard(ward); setModal("ward"); }} />}
           {view === "cohorts" && <Cohorts state={state} />}
-          {view === "sessions" && <Sessions state={state} onAdd={() => { setEditingSession(null); setModal("session"); }} onEdit={(session) => { setEditingSession(session); setModal("session"); }} onDelete={async (id) => setState(await api<AppState>(`/api/sessions/${id}?gameId=${state.game.id}`, { method: "DELETE" }))} />}
-          {view === "gallery" && <Gallery state={state} onAddGallery={() => { setEditingSession(null); setModal("session"); }} onUploadPhotos={uploadPhotos} onEditPhoto={(photo) => { setEditingPhoto(photo); setModal("photo"); }} onShareInternal={(photo) => { setSharingPhoto(photo); setModal("share"); }} onDeletePhoto={async (id) => setState(await api<AppState>(`/api/photos/${id}?gameId=${state.game.id}`, { method: "DELETE" }))} />}
+          {view === "sessions" && <Sessions state={state} onAdd={() => { setEditingSession(null); setModal("session"); }} onEdit={(session) => { setEditingSession(session); setModal("session"); }} onDelete={async (id) => setState(await runBusy("Usuwanie zbiórki...", () => api<AppState>(`/api/sessions/${id}?gameId=${state.game.id}`, { method: "DELETE" })))} />}
+          {view === "gallery" && <Gallery state={state} onAddGallery={() => { setEditingSession(null); setModal("session"); }} onUploadPhotos={uploadPhotos} onEditPhoto={(photo) => { setEditingPhoto(photo); setModal("photo"); }} onShareInternal={(photo) => { setSharingPhoto(photo); setModal("share"); }} onDeletePhoto={async (id) => setState(await runBusy("Usuwanie zdjęcia...", () => api<AppState>(`/api/photos/${id}?gameId=${state.game.id}`, { method: "DELETE" })))} />}
           {view === "messages" && <MessagesView state={state} user={user} setState={setState} />}
           {view === "staff" && user.role === "administrator" && <StaffView state={state} setState={setState} />}
-          {view === "games" && <GamesModule state={state} gameTab={gameTab} setGameTab={setGameTab} ranking={ranking} teamId={teamId} stationId={stationId} setTeamId={setTeamId} setStationId={setStationId} activeScore={activeScore} mapRef={mapEl} onSaveGame={saveGame} onSaveStation={saveStation} onAddTeam={() => setModal("team")} onDeleteStation={async (id) => setState(await api<AppState>(`/api/stations/${id}?gameId=${state.game.id}`, { method: "DELETE" }))} onTimer={async (command) => setState(await api<AppState>("/api/timer", { method: "POST", body: JSON.stringify({ game_id: state.game.id, command }) }))} onScore={async (payload) => { setState(await api<AppState>("/api/scores", { method: "POST", body: JSON.stringify(payload) })); flash("Ocena zapisana"); }} setState={setState} load={load} openTv={() => setModal("tv")} />}
+          {view === "games" && <GamesModule state={state} gameTab={gameTab} setGameTab={setGameTab} ranking={ranking} teamId={teamId} stationId={stationId} setTeamId={setTeamId} setStationId={setStationId} activeScore={activeScore} mapRef={mapEl} onSaveGame={saveGame} onSaveStation={saveStation} onAddTeam={() => setModal("team")} onDeleteStation={async (id) => setState(await runBusy("Usuwanie stacji...", () => api<AppState>(`/api/stations/${id}?gameId=${state.game.id}`, { method: "DELETE" })))} onTimer={async (command) => setState(await runBusy("Aktualizowanie timera...", () => api<AppState>("/api/timer", { method: "POST", body: JSON.stringify({ game_id: state.game.id, command }) })))} onScore={async (payload) => { setState(await runBusy("Zapisywanie oceny...", () => api<AppState>("/api/scores", { method: "POST", body: JSON.stringify(payload) }))); flash("Ocena zapisana"); }} setState={setState} load={(gameId?: number) => runBusy("Przełączanie gry...", () => load(gameId))} openTv={() => setModal("tv")} />}
         </div>
       </div>
     </main>
 
-    {modal === "ward" && <WardDialog state={state} ward={editingWard} onClose={() => setModal(null)} onSaved={(next) => { setState(next); setModal(null); }} />}
-    {modal === "session" && <SessionDialog state={state} session={editingSession} onClose={() => setModal(null)} onSaved={(next) => { setState(next); setModal(null); }} />}
-    {modal === "photo" && editingPhoto && <PhotoDialog state={state} photo={editingPhoto} onClose={() => setModal(null)} onSaved={(next) => { setState(next); setModal(null); }} />}
-    {modal === "share" && sharingPhoto && <ShareDialog state={state} photo={sharingPhoto} onClose={() => setModal(null)} onSaved={(next) => { setState(next); setModal(null); }} />}
+    {modal === "ward" && <WardDialog state={state} ward={editingWard} onClose={() => setModal(null)} onSaved={(next) => { setState(next); setModal(null); }} onDelete={async (id) => { setState(await runBusy("Usuwanie podopiecznego...", () => api<AppState>(`/api/wards/${id}?gameId=${state.game.id}`, { method: "DELETE" }))); setModal(null); }} runBusy={runBusy} />}
+    {modal === "session" && <SessionDialog state={state} session={editingSession} onClose={() => setModal(null)} onSaved={(next) => { setState(next); setModal(null); }} runBusy={runBusy} />}
+    {modal === "photo" && editingPhoto && <PhotoDialog state={state} photo={editingPhoto} onClose={() => setModal(null)} onSaved={(next) => { setState(next); setModal(null); }} runBusy={runBusy} />}
+    {modal === "share" && sharingPhoto && <ShareDialog state={state} photo={sharingPhoto} onClose={() => setModal(null)} onSaved={(next) => { setState(next); setModal(null); }} runBusy={runBusy} />}
     {modal === "account" && <AccountDialog user={user} initialTab={settingsTab} prefs={prefs} setPrefs={setPrefs} notifications={notifications} onClose={() => setModal(null)} onSaved={(next) => { setUser(next); setModal(null); }} onLogout={logout} />}
     {modal === "team" && <TeamDialog gameId={state.game.id} onClose={() => setModal(null)} onSaved={(next) => { setState(next); setModal(null); }} />}
     {modal === "tv" && <TvDialog state={state} ranking={ranking} onClose={() => setModal(null)} />}
+    {busyLabel && <div className="busy-overlay"><LoadingDots label={busyLabel} /></div>}
     <nav className="mobile-bottom-nav" aria-label="Nawigacja mobilna">
       {(["dashboard", "sessions", "messages", "gallery"] as const).map((id) => <button key={id} className={view === id ? "active" : ""} type="button" onClick={() => { setView(id); setMobileMenuOpen(false); setNotifOpen(false); }}>
         <UiIcon name={id} />
@@ -537,13 +560,13 @@ function Dashboard({ state, user, setView }: { state: AppState; user: User; setV
   </div>;
 }
 
-function Wards({ state, onAdd, onEdit, onDelete }: { state: AppState; onAdd: () => void; onEdit: (ward: Ward) => void; onDelete: (id: number) => void }) {
+function Wards({ state, onAdd, onEdit }: { state: AppState; onAdd: () => void; onEdit: (ward: Ward) => void }) {
   const [query, setQuery] = useState("");
   const rows = state.wards.filter((ward) => ward.name.toLowerCase().includes(query.toLowerCase()));
   return <div>
     <div className="page-head"><h1>Podopieczni</h1><Button variant="primary" onClick={onAdd}>Dodaj podopiecznego</Button></div>
     <label className="search">Szukaj<input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Imię i nazwisko" /></label>
-    <div className="rows">{rows.map((ward) => <article className="person-row" key={ward.id}><span>{initials(ward.name)}</span><div><strong>{ward.name}</strong><small>{ward.age} lat · rodzic: {ward.parent_name} · {ward.contact}</small></div><em>{ward.cohort_name}</em><Button onClick={() => onEdit(ward)}>Edytuj</Button><Button variant="danger" onClick={() => onDelete(ward.id)}>Usuń</Button></article>)}</div>
+    <div className="rows">{rows.map((ward) => <article className="person-row" key={ward.id}><span>{initials(ward.name)}</span><div><strong>{ward.name}</strong><small>{ward.age} lat · rodzic: {ward.parent_name} · {ward.contact}</small></div><em>{ward.cohort_name}</em><button className="row-icon-button" type="button" aria-label={`Edytuj ${ward.name}`} onClick={() => onEdit(ward)}><UiIcon name="edit" /></button></article>)}</div>
   </div>;
 }
 
@@ -575,7 +598,7 @@ function Cohorts({ state }: { state: AppState }) {
 
 
 function Sessions({ state, onAdd, onEdit, onDelete }: { state: AppState; onAdd: () => void; onEdit: (session: Session) => void; onDelete: (id: number) => void }) {
-  const [filter, setFilter] = useState("all");
+  const [filter, setFilter] = useState<"all" | "grupa" | "moja">("all");
   const [mode, setMode] = useState<"cards" | "calendar">("cards");
   const [month, setMonth] = useState(() => {
     const first = state.sessions[0]?.session_date;
@@ -584,8 +607,9 @@ function Sessions({ state, onAdd, onEdit, onDelete }: { state: AppState; onAdd: 
   });
   const rows = state.sessions.filter((session) => filter === "all" || session.scope === filter);
   return <div>
-    <div className="page-head"><h1>Zbiórki</h1><div className="button-row"><Button onClick={() => setMode(mode === "calendar" ? "cards" : "calendar")}>{mode === "calendar" ? "Widok listy" : "Widok kalendarza"}</Button><Button onClick={() => downloadSessionsIcs(rows)}>Eksport ICS</Button><Button variant="primary" onClick={onAdd}>Zaplanuj zbiórkę</Button></div></div>
-    <div className="pill-row"><button className={filter === "all" ? "pill active" : "pill"} onClick={() => setFilter("all")}>Wszystkie</button><button className={filter === "grupa" ? "pill active" : "pill"} onClick={() => setFilter("grupa")}>Cała grupa hufcowa</button><button className={filter === "moja" ? "pill active" : "pill"} onClick={() => setFilter("moja")}>Mój osobisty kalendarz</button></div>
+    <div className="page-head session-head"><h1>Zbiórki</h1><div className="button-row session-actions"><Button onClick={() => setMode(mode === "calendar" ? "cards" : "calendar")}>{mode === "calendar" ? "Lista" : "Kalendarz"}</Button><Button onClick={() => downloadSessionsIcs(rows)}>ICS</Button><Button variant="primary" onClick={onAdd}>Zaplanuj</Button></div></div>
+    <label className="mobile-filter-select">Widok<select value={filter} onChange={(event) => setFilter(event.target.value as typeof filter)}><option value="all">Wszystkie zbiórki</option><option value="grupa">Cała grupa hufcowa</option><option value="moja">Mój osobisty kalendarz</option></select></label>
+    <div className="pill-row session-filter-pills"><button className={filter === "all" ? "pill active" : "pill"} onClick={() => setFilter("all")}>Wszystkie</button><button className={filter === "grupa" ? "pill active" : "pill"} onClick={() => setFilter("grupa")}>Cała grupa hufcowa</button><button className={filter === "moja" ? "pill active" : "pill"} onClick={() => setFilter("moja")}>Mój osobisty kalendarz</button></div>
     {mode === "calendar"
       ? <SessionCalendar sessions={rows} month={month} setMonth={setMonth} onEdit={onEdit} />
       : <div className="session-grid">{rows.map((session) => <SessionCard key={session.id} session={session} actions={<><Button onClick={() => onEdit(session)}>Edytuj</Button><Button variant="danger" onClick={() => onDelete(session.id)}>Usuń</Button></>} />)}</div>}
@@ -822,16 +846,16 @@ function Ranking({ ranking }: { ranking: Team[] }) {
   return <ol className="ranking">{ranking.map((team, index) => <li key={team.id}><span>{index + 1}</span><strong>{team.name}</strong><b>{team.total_points} pkt</b></li>)}</ol>;
 }
 
-function WardDialog({ state, ward, onClose, onSaved }: { state: AppState; ward: Ward | null; onClose: () => void; onSaved: (state: AppState) => void }) {
-  return <Modal title={ward ? "Edytuj podopiecznego" : "Dodaj podopiecznego"} onClose={onClose}><form className="stack" onSubmit={async (event) => { event.preventDefault(); onSaved(await api<AppState>("/api/wards", { method: "POST", body: JSON.stringify({ ...Object.fromEntries(new FormData(event.currentTarget).entries()), game_id: state.game.id }) })); }}><input type="hidden" name="id" defaultValue={ward?.id || ""} /><label>Imię i nazwisko<input name="name" defaultValue={ward?.name || ""} required /></label><label>Wiek<input name="age" type="number" defaultValue={ward?.age || 12} /></label><label>Rodzic / opiekun<input name="parent_name" defaultValue={ward?.parent_name || ""} /></label><label>Kontakt<input name="contact" defaultValue={ward?.contact || ""} /></label><label>Grupa<select name="cohort_id" defaultValue={ward?.cohort_id || ""}>{state.cohorts.map((cohort) => <option key={cohort.id} value={cohort.id}>{cohort.name}</option>)}</select></label><Button variant="primary">Zapisz</Button></form></Modal>;
+function WardDialog({ state, ward, onClose, onSaved, onDelete, runBusy }: { state: AppState; ward: Ward | null; onClose: () => void; onSaved: (state: AppState) => void; onDelete: (id: number) => void; runBusy: BusyRunner }) {
+  return <Modal title={ward ? "Edytuj podopiecznego" : "Dodaj podopiecznego"} onClose={onClose}><form className="stack" onSubmit={async (event) => { event.preventDefault(); onSaved(await runBusy("Zapisywanie podopiecznego...", () => api<AppState>("/api/wards", { method: "POST", body: JSON.stringify({ ...Object.fromEntries(new FormData(event.currentTarget).entries()), game_id: state.game.id }) }))); }}><input type="hidden" name="id" defaultValue={ward?.id || ""} /><label>Imię i nazwisko<input name="name" defaultValue={ward?.name || ""} required /></label><label>Wiek<input name="age" type="number" defaultValue={ward?.age || 12} /></label><label>Rodzic / opiekun<input name="parent_name" defaultValue={ward?.parent_name || ""} /></label><label>Kontakt<input name="contact" defaultValue={ward?.contact || ""} /></label><label>Grupa<select name="cohort_id" defaultValue={ward?.cohort_id || ""}>{state.cohorts.map((cohort) => <option key={cohort.id} value={cohort.id}>{cohort.name}</option>)}</select></label><Button variant="primary">Zapisz</Button>{ward && <div className="danger-zone"><strong>Usunięcie podopiecznego</strong><p className="help">Ta akcja usunie osobę z listy i historii przypisań w panelu.</p><Button variant="danger" type="button" onClick={() => { if (window.confirm(`Usunąć podopiecznego ${ward.name}?`)) onDelete(ward.id); }}>Usuń podopiecznego</Button></div>}</form></Modal>;
 }
 
-function SessionDialog({ state, session, onClose, onSaved }: { state: AppState; session: Session | null; onClose: () => void; onSaved: (state: AppState) => void }) {
-  return <Modal title={session ? "Edytuj zbiórkę" : "Zaplanuj zbiórkę"} onClose={onClose}><form className="stack" onSubmit={async (event) => { event.preventDefault(); onSaved(await api<AppState>("/api/sessions", { method: "POST", body: JSON.stringify({ ...Object.fromEntries(new FormData(event.currentTarget).entries()), game_id: state.game.id }) })); }}><input type="hidden" name="id" defaultValue={session?.id || ""} /><label>Tytuł<input name="title" defaultValue={session?.title || ""} required /></label><label>Data<input name="session_date" type="date" defaultValue={session?.session_date ? String(session.session_date).slice(0, 10) : new Date().toISOString().slice(0, 10)} /></label><label>Lokalizacja<input name="location" defaultValue={session?.location || ""} /></label><label>Grupa<select name="cohort_id" defaultValue={session?.cohort_id || ""}><option value="">Cała grupa</option>{state.cohorts.map((cohort) => <option key={cohort.id} value={cohort.id}>{cohort.name}</option>)}</select></label><label>Widoczność<select name="scope" defaultValue={session?.scope || "grupa"}><option value="grupa">Cała grupa hufcowa</option><option value="moja">Mój osobisty kalendarz</option></select></label><label>Obecność<input name="attendance" type="number" defaultValue={session?.attendance || 0} /></label><label>Planowana liczba osób<input name="total" type="number" defaultValue={session?.total || 0} /></label><Button variant="primary">Zapisz</Button></form></Modal>;
+function SessionDialog({ state, session, onClose, onSaved, runBusy }: { state: AppState; session: Session | null; onClose: () => void; onSaved: (state: AppState) => void; runBusy: BusyRunner }) {
+  return <Modal title={session ? "Edytuj zbiórkę" : "Zaplanuj zbiórkę"} onClose={onClose}><form className="stack" onSubmit={async (event) => { event.preventDefault(); onSaved(await runBusy("Zapisywanie zbiórki...", () => api<AppState>("/api/sessions", { method: "POST", body: JSON.stringify({ ...Object.fromEntries(new FormData(event.currentTarget).entries()), game_id: state.game.id }) }))); }}><input type="hidden" name="id" defaultValue={session?.id || ""} /><label>Tytuł<input name="title" defaultValue={session?.title || ""} required /></label><label>Data<input name="session_date" type="date" defaultValue={session?.session_date ? String(session.session_date).slice(0, 10) : new Date().toISOString().slice(0, 10)} /></label><label>Lokalizacja<input name="location" defaultValue={session?.location || ""} /></label><label>Grupa<select name="cohort_id" defaultValue={session?.cohort_id || ""}><option value="">Cała grupa</option>{state.cohorts.map((cohort) => <option key={cohort.id} value={cohort.id}>{cohort.name}</option>)}</select></label><label>Widoczność<select name="scope" defaultValue={session?.scope || "grupa"}><option value="grupa">Cała grupa hufcowa</option><option value="moja">Mój osobisty kalendarz</option></select></label><label>Obecność<input name="attendance" type="number" defaultValue={session?.attendance || 0} /></label><label>Planowana liczba osób<input name="total" type="number" defaultValue={session?.total || 0} /></label><Button variant="primary">Zapisz</Button></form></Modal>;
 }
 
-function PhotoDialog({ state, photo, onClose, onSaved }: { state: AppState; photo: Photo; onClose: () => void; onSaved: (state: AppState) => void }) {
-  return <Modal title="Edytuj zdjęcie" onClose={onClose}><form className="stack" onSubmit={async (event) => { event.preventDefault(); onSaved(await api<AppState>("/api/photos", { method: "POST", body: JSON.stringify({ ...Object.fromEntries(new FormData(event.currentTarget).entries()), game_id: state.game.id }) })); }}><input type="hidden" name="id" defaultValue={photo.id} /><label>Nazwa zdjęcia<input name="title" defaultValue={photo.title} required /></label>{photo.image_data && <img className="dialog-photo" src={photo.image_data} alt={photo.title} />}<Button variant="primary">Zapisz</Button></form></Modal>;
+function PhotoDialog({ state, photo, onClose, onSaved, runBusy }: { state: AppState; photo: Photo; onClose: () => void; onSaved: (state: AppState) => void; runBusy: BusyRunner }) {
+  return <Modal title="Edytuj zdjęcie" onClose={onClose}><form className="stack" onSubmit={async (event) => { event.preventDefault(); onSaved(await runBusy("Zapisywanie zdjęcia...", () => api<AppState>("/api/photos", { method: "POST", body: JSON.stringify({ ...Object.fromEntries(new FormData(event.currentTarget).entries()), game_id: state.game.id }) }))); }}><input type="hidden" name="id" defaultValue={photo.id} /><label>Nazwa zdjęcia<input name="title" defaultValue={photo.title} required /></label>{photo.image_data && <img className="dialog-photo" src={photo.image_data} alt={photo.title} />}<Button variant="primary">Zapisz</Button></form></Modal>;
 }
 
 function AccountDialog({ user, initialTab, prefs, setPrefs, notifications, onClose, onSaved, onLogout }: { user: User; initialTab: "profil" | "wyglad" | "powiadomienia" | "konto"; prefs: AppPrefs; setPrefs: (prefs: AppPrefs) => void; notifications: NotificationItem[]; onClose: () => void; onSaved: (user: User) => void; onLogout: () => void }) {
@@ -867,8 +891,8 @@ function AccountDialog({ user, initialTab, prefs, setPrefs, notifications, onClo
   </Modal>;
 }
 
-function ShareDialog({ state, photo, onClose, onSaved }: { state: AppState; photo: Photo; onClose: () => void; onSaved: (state: AppState) => void }) {
-  return <Modal title="Udostępnij w hufcu" onClose={onClose}><form className="stack" onSubmit={async (event) => { event.preventDefault(); onSaved(await api<AppState>("/api/internal-shares", { method: "POST", body: JSON.stringify({ ...Object.fromEntries(new FormData(event.currentTarget).entries()), photo_id: photo.id, game_id: state.game.id }) })); }}><p className="help">{photo.title}</p><label>Odbiorcy<select name="target_type" defaultValue="hufiec"><option value="hufiec">Cały hufiec</option><option value="cohort">Wybrana grupa</option><option value="parents">Rodzice</option><option value="staff">Wychowawcy</option></select></label><label>Grupa, jeśli wybrano grupę<select name="target_id" defaultValue=""><option value="">Bez grupy</option>{state.cohorts.map((cohort) => <option key={cohort.id} value={cohort.id}>{cohort.name}</option>)}</select></label><label>Wiadomość<textarea name="note" placeholder="np. Zdjęcia z dzisiejszej zbiórki są już dostępne." /></label><Button variant="primary">Udostępnij</Button></form></Modal>;
+function ShareDialog({ state, photo, onClose, onSaved, runBusy }: { state: AppState; photo: Photo; onClose: () => void; onSaved: (state: AppState) => void; runBusy: BusyRunner }) {
+  return <Modal title="Udostępnij w hufcu" onClose={onClose}><form className="stack" onSubmit={async (event) => { event.preventDefault(); onSaved(await runBusy("Udostępnianie zdjęcia...", () => api<AppState>("/api/internal-shares", { method: "POST", body: JSON.stringify({ ...Object.fromEntries(new FormData(event.currentTarget).entries()), photo_id: photo.id, game_id: state.game.id }) }))); }}><p className="help">{photo.title}</p><label>Odbiorcy<select name="target_type" defaultValue="hufiec"><option value="hufiec">Cały hufiec</option><option value="cohort">Wybrana grupa</option><option value="parents">Rodzice</option><option value="staff">Wychowawcy</option></select></label><label>Grupa, jeśli wybrano grupę<select name="target_id" defaultValue=""><option value="">Bez grupy</option>{state.cohorts.map((cohort) => <option key={cohort.id} value={cohort.id}>{cohort.name}</option>)}</select></label><label>Wiadomość<textarea name="note" placeholder="np. Zdjęcia z dzisiejszej zbiórki są już dostępne." /></label><Button variant="primary">Udostępnij</Button></form></Modal>;
 }
 
 type Conversation = { key: string; label: string; hint: string; target_type: string; target_id: number | null };
