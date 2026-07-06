@@ -455,6 +455,28 @@ function stateFor(req: Request, gameId?: number) {
   return state(gameId, Number(req.user?.id || 0) || undefined);
 }
 
+async function markConversationRead(userId: number, targetType: string, targetId: number) {
+  const result = targetType === "user"
+    ? await pool.query(
+      "SELECT COALESCE(MAX(id), 0)::int AS last_id FROM messages WHERE target_type='user' AND ((target_id=$1 AND sender_id=$2) OR (target_id=$2 AND sender_id=$1))",
+      [userId, targetId]
+    )
+    : await pool.query(
+      "SELECT COALESCE(MAX(id), 0)::int AS last_id FROM messages WHERE target_type=$1 AND COALESCE(target_id, 0)=$2",
+      [targetType, targetId]
+    );
+  const lastId = Number(result.rows[0]?.last_id || 0);
+
+  await pool.query(`
+    INSERT INTO message_reads (user_id, target_type, target_id, last_read_message_id, updated_at)
+    VALUES ($1, $2, $3, $4, NOW())
+    ON CONFLICT (user_id, target_type, target_id)
+    DO UPDATE SET
+      last_read_message_id = GREATEST(message_reads.last_read_message_id, EXCLUDED.last_read_message_id),
+      updated_at = NOW()
+  `, [userId, targetType, targetId, lastId]);
+}
+
 function templateStations(template: string) {
   const data: Record<string, string[]> = {
     Polska: ["Start", "Wawel", "Mazury", "Tatry", "Gdańsk", "Meta"],
@@ -692,6 +714,7 @@ app.post("/api/internal-shares", async (req, res) => {
     "INSERT INTO messages (sender_id, target_type, target_id, body, photo_id) VALUES ($1,$2,$3,$4,$5)",
     [req.user?.id || null, targetType, targetId, note.trim() || "Udostępniono zdjęcie", photoId]
   );
+  if (req.user?.id) await markConversationRead(Number(req.user.id), targetType, targetId || 0);
   res.json(await stateFor(req, Number(req.body.game_id || 0) || undefined));
 });
 
@@ -701,11 +724,14 @@ app.post("/api/messages", async (req, res) => {
   const attachmentMime = String(req.body.attachment_mime || "").trim();
   const attachmentData = String(req.body.attachment_data || "");
   const replyToId = Number(req.body.reply_to_id || 0) || null;
+  const targetType = String(req.body.target_type || "hufiec");
+  const targetId = Number(req.body.target_id || 0) || null;
   if (!body && !attachmentData) return res.status(400).json({ ok: false, error: "Wpisz wiadomość albo dodaj załącznik" });
   await pool.query(
     "INSERT INTO messages (sender_id, target_type, target_id, body, photo_id, reply_to_id, attachment_name, attachment_mime, attachment_data) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)",
-    [req.user?.id || null, String(req.body.target_type || "hufiec"), Number(req.body.target_id || 0) || null, body, Number(req.body.photo_id || 0) || null, replyToId, attachmentName || null, attachmentMime || null, attachmentData || null]
+    [req.user?.id || null, targetType, targetId, body, Number(req.body.photo_id || 0) || null, replyToId, attachmentName || null, attachmentMime || null, attachmentData || null]
   );
+  if (req.user?.id) await markConversationRead(Number(req.user.id), targetType, targetId || 0);
   res.json(await stateFor(req, Number(req.body.game_id || 0) || undefined));
 });
 
@@ -715,25 +741,7 @@ app.post("/api/messages/read", async (req, res) => {
 
   const targetType = String(req.body.target_type || "hufiec");
   const targetId = Number(req.body.target_id || 0) || 0;
-  const result = targetType === "user"
-    ? await pool.query(
-      "SELECT COALESCE(MAX(id), 0)::int AS last_id FROM messages WHERE target_type='user' AND ((target_id=$1 AND sender_id=$2) OR (target_id=$2 AND sender_id=$1))",
-      [userId, targetId]
-    )
-    : await pool.query(
-      "SELECT COALESCE(MAX(id), 0)::int AS last_id FROM messages WHERE target_type=$1 AND COALESCE(target_id, 0)=$2",
-      [targetType, targetId]
-    );
-  const lastId = Number(result.rows[0]?.last_id || 0);
-
-  await pool.query(`
-    INSERT INTO message_reads (user_id, target_type, target_id, last_read_message_id, updated_at)
-    VALUES ($1, $2, $3, $4, NOW())
-    ON CONFLICT (user_id, target_type, target_id)
-    DO UPDATE SET
-      last_read_message_id = GREATEST(message_reads.last_read_message_id, EXCLUDED.last_read_message_id),
-      updated_at = NOW()
-  `, [userId, targetType, targetId, lastId]);
+  await markConversationRead(userId, targetType, targetId);
 
   res.json(await stateFor(req, Number(req.body.game_id || 0) || undefined));
 });
