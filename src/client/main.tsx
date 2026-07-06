@@ -57,6 +57,19 @@ function loadPrefs(): AppPrefs {
   }
 }
 
+function loadIdSet(key: string) {
+  try {
+    const value = JSON.parse(localStorage.getItem(key) || "[]");
+    return new Set<string>(Array.isArray(value) ? value : []);
+  } catch {
+    return new Set<string>();
+  }
+}
+
+function saveIdSet(key: string, ids: Set<string>) {
+  localStorage.setItem(key, JSON.stringify([...ids]));
+}
+
 function buildNotifications(state: AppState, user: User): NotificationItem[] {
   const todayKey = new Date().toISOString().slice(0, 10);
   const ownedCohortIds = new Set(state.cohorts.filter((cohort) => user.role === "administrator" || cohort.caretaker_user_id === user.id).map((cohort) => cohort.id));
@@ -211,6 +224,8 @@ function App() {
   const [modal, setModal] = useState<null | "ward" | "session" | "team" | "photo" | "share" | "account" | "tv">(null);
   const [settingsTab, setSettingsTab] = useState<"profil" | "wyglad" | "powiadomienia" | "konto">("profil");
   const [notifOpen, setNotifOpen] = useState(false);
+  const [readNotificationIds, setReadNotificationIds] = useState<Set<string>>(() => loadIdSet("hufc-read-notifications"));
+  const [clearedNotificationIds, setClearedNotificationIds] = useState<Set<string>>(() => loadIdSet("hufc-cleared-notifications"));
   const [prefs, setPrefsState] = useState<AppPrefs>(() => loadPrefs());
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const navRef = useRef<HTMLElement | null>(null);
@@ -227,6 +242,8 @@ function App() {
   const ranking = useMemo(() => [...(state?.teams || [])].sort((a, b) => b.total_points - a.total_points), [state]);
   const activeScore = state?.scores.find((score) => score.team_id === teamId && score.station_id === stationId) || null;
   const notifications = useMemo(() => state && user ? buildNotifications(state, user) : [], [state, user]);
+  const visibleNotifications = useMemo(() => notifications.filter((item) => !clearedNotificationIds.has(item.id)), [notifications, clearedNotificationIds]);
+  const unreadNotifications = useMemo(() => visibleNotifications.filter((item) => !readNotificationIds.has(item.id)), [visibleNotifications, readNotificationIds]);
 
   function setPrefs(next: AppPrefs) {
     setPrefsState(next);
@@ -250,6 +267,41 @@ function App() {
     setSettingsTab(tab);
     setNotifOpen(false);
     setModal("account");
+  }
+
+  function setNotificationsOpen(open: boolean) {
+    setNotifOpen(open);
+    if (!open || visibleNotifications.length === 0) return;
+    const next = new Set(readNotificationIds);
+    visibleNotifications.forEach((item) => next.add(item.id));
+    setReadNotificationIds(next);
+    saveIdSet("hufc-read-notifications", next);
+  }
+
+  function clearNotification(id: string) {
+    const nextCleared = new Set(clearedNotificationIds);
+    nextCleared.add(id);
+    setClearedNotificationIds(nextCleared);
+    saveIdSet("hufc-cleared-notifications", nextCleared);
+
+    const nextRead = new Set(readNotificationIds);
+    nextRead.add(id);
+    setReadNotificationIds(nextRead);
+    saveIdSet("hufc-read-notifications", nextRead);
+  }
+
+  function clearAllNotifications() {
+    const nextCleared = new Set(clearedNotificationIds);
+    const nextRead = new Set(readNotificationIds);
+    visibleNotifications.forEach((item) => {
+      nextCleared.add(item.id);
+      nextRead.add(item.id);
+    });
+    setClearedNotificationIds(nextCleared);
+    setReadNotificationIds(nextRead);
+    saveIdSet("hufc-cleared-notifications", nextCleared);
+    saveIdSet("hufc-read-notifications", nextRead);
+    setNotifOpen(false);
   }
 
   async function logout() {
@@ -367,7 +419,7 @@ function App() {
   if (!state) return <div className="loading">Ładowanie danych...</div>;
 
   const visibleNavItems = navItems.filter(([id]) => user.role === "administrator" || id !== "staff");
-  const unreadCount = Math.min(99, notifications.length);
+  const unreadCount = Math.min(99, unreadNotifications.length);
 
   return <div className={`app-shell theme-${prefs.theme} sidebar-${prefs.sidebar} ${mobileMenuOpen ? "menu-open" : ""}`}>
     <button className="mobile-menu-button" type="button" aria-label="Otwórz menu" onClick={() => setMobileMenuOpen(true)}><span /><span /><span /></button>
@@ -391,12 +443,12 @@ function App() {
     </aside>
 
     <main className="main full">
-      <TopBar view={view} user={user} notifications={notifications} notifOpen={notifOpen} setNotifOpen={setNotifOpen} openAccount={openAccount} />
+      <TopBar view={view} user={user} notifications={visibleNotifications} readNotificationIds={readNotificationIds} notifOpen={notifOpen} setNotifOpen={setNotificationsOpen} onClearNotification={clearNotification} onClearAllNotifications={clearAllNotifications} openAccount={openAccount} />
       <div className="main-content">
         <div className="view-stage" key={view}>
           {view === "dashboard" && <Dashboard state={state} user={user} setView={setView} />}
           {view === "wards" && <Wards state={state} onAdd={() => { setEditingWard(null); setModal("ward"); }} onEdit={(ward) => { setEditingWard(ward); setModal("ward"); }} onDelete={async (id) => setState(await api<AppState>(`/api/wards/${id}?gameId=${state.game.id}`, { method: "DELETE" }))} />}
-          {view === "cohorts" && <Cohorts cohorts={state.cohorts} />}
+          {view === "cohorts" && <Cohorts state={state} />}
           {view === "sessions" && <Sessions state={state} onAdd={() => { setEditingSession(null); setModal("session"); }} onEdit={(session) => { setEditingSession(session); setModal("session"); }} onDelete={async (id) => setState(await api<AppState>(`/api/sessions/${id}?gameId=${state.game.id}`, { method: "DELETE" }))} />}
           {view === "gallery" && <Gallery state={state} onAddGallery={() => { setEditingSession(null); setModal("session"); }} onUploadPhotos={uploadPhotos} onEditPhoto={(photo) => { setEditingPhoto(photo); setModal("photo"); }} onShareInternal={(photo) => { setSharingPhoto(photo); setModal("share"); }} onDeletePhoto={async (id) => setState(await api<AppState>(`/api/photos/${id}?gameId=${state.game.id}`, { method: "DELETE" }))} />}
           {view === "messages" && <MessagesView state={state} user={user} setState={setState} />}
@@ -417,9 +469,9 @@ function App() {
   </div>;
 }
 
-function TopBar({ view, user, notifications, notifOpen, setNotifOpen, openAccount }: { view: (typeof navItems)[number][0]; user: User; notifications: NotificationItem[]; notifOpen: boolean; setNotifOpen: (open: boolean) => void; openAccount: (tab: "profil" | "wyglad" | "powiadomienia" | "konto") => void }) {
+function TopBar({ view, user, notifications, readNotificationIds, notifOpen, setNotifOpen, onClearNotification, onClearAllNotifications, openAccount }: { view: (typeof navItems)[number][0]; user: User; notifications: NotificationItem[]; readNotificationIds: Set<string>; notifOpen: boolean; setNotifOpen: (open: boolean) => void; onClearNotification: (id: string) => void; onClearAllNotifications: () => void; openAccount: (tab: "profil" | "wyglad" | "powiadomienia" | "konto") => void }) {
   const firstName = user.name.split(" ")[0] || user.name;
-  const unreadCount = notifications.length;
+  const unreadCount = notifications.filter((item) => !readNotificationIds.has(item.id)).length;
   return <header className="topbar">
     <div className="breadcrumb">Panel wychowawcy · {viewLabels[view]}</div>
     <div className="top-actions">
@@ -429,9 +481,13 @@ function TopBar({ view, user, notifications, notifOpen, setNotifOpen, openAccoun
           {unreadCount > 0 && <span className="notif-dot" />}
         </button>
         {notifOpen && <div className="notification-menu">
-          <strong>Powiadomienia</strong>
-          {notifications.length === 0 && <p className="notification-empty">Brak nowych powiadomień.</p>}
-          {notifications.slice(0, 8).map((item) => <div className={`notification-row ${item.kind}`} key={item.id}><span /><div><b>{item.title}</b><small>{item.detail}</small><small>{item.time}</small></div></div>)}
+          <div className="notification-head"><strong>Powiadomienia</strong>{notifications.length > 0 && <button type="button" onClick={onClearAllNotifications}>Wyczyść</button>}</div>
+          {notifications.length === 0 && <p className="notification-empty">Brak powiadomień.</p>}
+          {notifications.slice(0, 10).map((item) => <div className={`notification-row ${item.kind} ${readNotificationIds.has(item.id) ? "read" : "unread"}`} key={item.id}>
+            <span />
+            <div><b>{item.title}</b><small>{item.detail}</small><small>{item.time}</small></div>
+            <button className="notification-remove" type="button" aria-label="Usuń powiadomienie" onClick={(event) => { event.stopPropagation(); onClearNotification(item.id); }}>Usuń</button>
+          </div>)}
         </div>}
       </div>
       <button className="icon-button" type="button" aria-label="Ustawienia" onClick={() => openAccount("wyglad")}><UiIcon name="settings" /></button>
@@ -475,8 +531,30 @@ function Wards({ state, onAdd, onEdit, onDelete }: { state: AppState; onAdd: () 
   </div>;
 }
 
-function Cohorts({ cohorts }: { cohorts: Cohort[] }) {
-  return <div><h1>Grupy</h1><p className="help">Grupa może być rocznikiem, drużyną albo dowolnym podziałem pracy wychowawczej.</p><div className="cohort-grid">{cohorts.map((cohort) => <Panel key={cohort.id} title={cohort.name} action={<span>{cohort.ward_count} osób</span>}><p>Wychowawca: <strong>{cohort.caretaker_user_name || "Bez opiekuna"}</strong></p></Panel>)}</div></div>;
+function Cohorts({ state }: { state: AppState }) {
+  const [selectedId, setSelectedId] = useState(state.cohorts[0]?.id || 0);
+  const selected = state.cohorts.find((cohort) => cohort.id === selectedId) || state.cohorts[0];
+  const members = selected ? state.wards.filter((ward) => ward.cohort_id === selected.id) : [];
+  return <div>
+    <div className="page-head"><div><h1>Grupy</h1><p className="help">Kliknij grupę, żeby zobaczyć wychowawcę, członków i dane organizacyjne.</p></div></div>
+    <div className="cohort-layout">
+      <div className="cohort-grid">{state.cohorts.map((cohort) => <button key={cohort.id} className={"cohort-card " + (selected?.id === cohort.id ? "active" : "")} onClick={() => setSelectedId(cohort.id)}>
+        <span>{cohort.ward_count} osób</span>
+        <strong>{cohort.name}</strong>
+        <small>Wychowawca: {cohort.caretaker_user_name || "Bez opiekuna"}</small>
+      </button>)}</div>
+      <Panel title={selected?.name || "Brak grup"} kicker="szczegóły grupy" className="cohort-details">
+        {selected ? <>
+          <div className="detail-lines">
+            <p><span>Wychowawca</span><strong>{selected.caretaker_user_name || "Bez opiekuna"}</strong></p>
+            <p><span>E-mail</span><strong>{selected.caretaker_email || "brak"}</strong></p>
+            <p><span>Podopieczni</span><strong>{members.length}</strong></p>
+          </div>
+          <div className="member-list">{members.length ? members.map((ward) => <article key={ward.id} className="member-row"><span>{initials(ward.name)}</span><div><strong>{ward.name}</strong><small>{ward.age} lat · rodzic: {ward.parent_name || "brak danych"}</small></div></article>) : <p className="empty">Ta grupa nie ma jeszcze przypisanych podopiecznych.</p>}</div>
+        </> : <p className="empty">Najpierw utwórz grupę w panelu administratora.</p>}
+      </Panel>
+    </div>
+  </div>;
 }
 
 
@@ -699,20 +777,22 @@ function SessionCard({ session, actions }: { session: Session; actions?: React.R
 }
 
 function PhotoTile({ photo, onOpen, onEdit, onShareInternal, onDelete }: { photo: Photo; onOpen?: (photo: Photo) => void; onEdit?: (photo: Photo) => void; onShareInternal?: (photo: Photo) => void; onDelete?: (id: number) => void }) {
+  const [menuOpen, setMenuOpen] = useState(false);
   return <article className={"photo-tile " + (photo.image_data ? "has-image" : photo.color)}>
     <button className="photo-open" type="button" onClick={() => onOpen?.(photo)} disabled={!photo.image_data}>
       {photo.image_data ? <img src={photo.image_data} alt={photo.title} /> : null}
       {!photo.image_data && <span>Brak pliku zdjęcia</span>}
     </button>
+    {onEdit && <button className="photo-menu-button" type="button" aria-label="Opcje zdjęcia" onClick={() => setMenuOpen(!menuOpen)}>•••</button>}
+    {onEdit && <div className={"photo-actions-menu " + (menuOpen ? "open" : "")}>
+      <button type="button" onClick={() => { setMenuOpen(false); onEdit(photo); }}>Edytuj</button>
+      <button type="button" onClick={() => { setMenuOpen(false); sharePhoto(photo); }}>Kopiuj link</button>
+      {onShareInternal && <button type="button" onClick={() => { setMenuOpen(false); onShareInternal(photo); }}>Udostępnij w hufcu</button>}
+      {onDelete && <button className="danger" type="button" onClick={() => { setMenuOpen(false); onDelete(photo.id); }}>Usuń</button>}
+    </div>}
     <div className="photo-meta">
       <strong>{photo.title}</strong>
       <small>{dateLabel(photo.created_at || photo.session_date)}</small>
-      {onEdit && <div className="photo-actions">
-        <Button onClick={() => onEdit(photo)}>Edytuj</Button>
-        <Button onClick={() => sharePhoto(photo)}>Link</Button>
-        {onShareInternal && <Button onClick={() => onShareInternal(photo)}>Do hufca</Button>}
-        {onDelete && <Button variant="danger" onClick={() => onDelete(photo.id)}>Usuń</Button>}
-      </div>}
     </div>
   </article>;
 }
@@ -857,6 +937,13 @@ function MessagesView({ state, user, setState }: { state: AppState; user: User; 
 
 function StaffView({ state, setState }: { state: AppState; setState: (state: AppState) => void }) {
   const [tab, setTab] = useState<"create" | "accounts" | "groups">("create");
+  const [editingCaregiver, setEditingCaregiver] = useState<Caregiver | null>(null);
+  async function saveCaregiver(form: HTMLFormElement, person: Caregiver) {
+    const data = Object.fromEntries(new FormData(form).entries());
+    if (!data.password) delete data.password;
+    setState(await api<AppState>("/api/caregivers", { method: "POST", body: JSON.stringify({ ...data, id: person.id, game_id: state.game.id }) }));
+    setEditingCaregiver(null);
+  }
   return <div className="staff-page">
     <div className="page-head"><div><h1>Wychowawcy i grupy</h1><p className="help">Twórz konta wychowawców, przypisuj grupy i sprawdzaj, którzy podopieczni są pod czyją opieką.</p></div></div>
     <div className="admin-tabs"><button className={tab === "create" ? "active" : ""} onClick={() => setTab("create")}>Tworzenie</button><button className={tab === "accounts" ? "active" : ""} onClick={() => setTab("accounts")}>Konta wychowawców</button><button className={tab === "groups" ? "active" : ""} onClick={() => setTab("groups")}>Grupy i podopieczni</button></div>
@@ -864,7 +951,19 @@ function StaffView({ state, setState }: { state: AppState; setState: (state: App
       <Panel title="Dodaj wychowawcę" kicker="konto logowania"><form className="stack" onSubmit={async (event) => { event.preventDefault(); setState(await api<AppState>("/api/caregivers", { method: "POST", body: JSON.stringify({ ...Object.fromEntries(new FormData(event.currentTarget).entries()), game_id: state.game.id }) })); event.currentTarget.reset(); }}><label>Imię i nazwisko<input name="name" required /></label><label>E-mail<input name="email" type="email" required /></label><label>Hasło startowe<input name="password" type="text" placeholder="ustaw hasło dla konta" required /></label><label>Rola<select name="role" defaultValue="wychowawca"><option value="wychowawca">Wychowawca</option><option value="administrator">Administrator</option></select></label><label>Przypisz grupę<select name="cohort_id" defaultValue=""><option value="">Bez grupy</option>{state.cohorts.map((cohort) => <option key={cohort.id} value={cohort.id}>{cohort.name}</option>)}</select></label><Button variant="primary">Utwórz konto</Button></form></Panel>
       <Panel title="Nowa grupa" kicker="rocznik lub drużyna"><form className="stack" onSubmit={async (event) => { event.preventDefault(); setState(await api<AppState>("/api/cohorts", { method: "POST", body: JSON.stringify({ ...Object.fromEntries(new FormData(event.currentTarget).entries()), game_id: state.game.id }) })); event.currentTarget.reset(); }}><label>Nazwa grupy<input name="name" placeholder="np. Grupa 2025 albo Wilki" required /></label><label>Wychowawca<select name="caretaker_user_id" defaultValue=""><option value="">Bez opiekuna</option>{state.caregivers.map((person) => <option key={person.id} value={person.id}>{person.name}</option>)}</select></label><Button variant="primary">Dodaj grupę</Button></form></Panel>
     </div>}
-    {tab === "accounts" && <Panel title="Konta wychowawców"><div className="staff-list staff-list-wide">{state.caregivers.map((person) => <article className="staff-row" key={person.id}><span>{initials(person.name)}</span><div><strong>{person.name}</strong><small>{person.email} · {person.role}</small></div><em>{person.group_count} grup</em></article>)}</div></Panel>}
+    {tab === "accounts" && <div className="staff-manage-grid">
+      <Panel title="Konta wychowawców"><div className="staff-list staff-list-wide">{state.caregivers.map((person) => <article className="staff-row" key={person.id}><span>{initials(person.name)}</span><div><strong>{person.name}</strong><small>{person.email} · {person.role}</small></div><em>{person.group_count} grup</em><Button onClick={() => setEditingCaregiver(person)}>Edytuj</Button></article>)}</div></Panel>
+      {editingCaregiver && <Panel title="Edytuj konto" kicker="administrator">
+        <form className="stack" onSubmit={(event) => { event.preventDefault(); saveCaregiver(event.currentTarget, editingCaregiver); }}>
+          <label>Imię i nazwisko<input name="name" defaultValue={editingCaregiver.name} required /></label>
+          <label>E-mail<input name="email" type="email" defaultValue={editingCaregiver.email} required /></label>
+          <label>Rola<select name="role" defaultValue={editingCaregiver.role}><option value="wychowawca">Wychowawca</option><option value="administrator">Administrator</option></select></label>
+          <label>Przypisz grupę<select name="cohort_id" defaultValue=""><option value="">Bez zmiany / bez grupy</option>{state.cohorts.map((cohort) => <option key={cohort.id} value={cohort.id}>{cohort.name}</option>)}</select></label>
+          <label>Nowe hasło<input name="password" type="text" placeholder="zostaw puste, jeśli bez zmiany" /></label>
+          <div className="button-row"><Button variant="primary">Zapisz konto</Button><Button type="button" onClick={() => setEditingCaregiver(null)}>Anuluj</Button></div>
+        </form>
+      </Panel>}
+    </div>}
     {tab === "groups" && <Panel title="Grupy i podopieczni"><div className="group-list">{state.cohorts.map((cohort) => {
       const wards = state.wards.filter((ward) => ward.cohort_id === cohort.id);
       return <article className="group-card" key={cohort.id}><div><strong>{cohort.name}</strong><small>Wychowawca: {cohort.caretaker_user_name || "Bez opiekuna"}</small></div><form onSubmit={async (event) => { event.preventDefault(); setState(await api<AppState>("/api/cohorts", { method: "POST", body: JSON.stringify({ id: cohort.id, name: cohort.name, ...Object.fromEntries(new FormData(event.currentTarget).entries()), game_id: state.game.id }) })); }}><select name="caretaker_user_id" defaultValue={cohort.caretaker_user_id || ""}><option value="">Bez opiekuna</option>{state.caregivers.map((person) => <option key={person.id} value={person.id}>{person.name}</option>)}</select><Button>Zapisz</Button></form><Button variant="danger" onClick={async () => { if (window.confirm(`Usunąć grupę ${cohort.name}? Podopieczni zostaną bez przypisanej grupy.`)) setState(await api<AppState>(`/api/cohorts/${cohort.id}?gameId=${state.game.id}`, { method: "DELETE" })); }}>Usuń grupę</Button><p>{wards.length ? wards.map((ward) => ward.name).join(", ") : "Brak podopiecznych w tej grupie."}</p></article>;
