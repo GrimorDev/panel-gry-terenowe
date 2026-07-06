@@ -8,8 +8,10 @@ const { Pool } = pg;
 
 const port = Number(process.env.PORT || 80);
 const sessionSecret = process.env.SESSION_SECRET || "change-this-secret-in-portainer";
-const adminEmail = process.env.ADMIN_EMAIL || "admin@hufc.local";
-const adminPassword = process.env.ADMIN_PASSWORD || "hufc1234";
+const adminEmail = process.env.ADMIN_EMAIL || "grimordev@gmail.com";
+const adminPassword = process.env.ADMIN_PASSWORD || "PrywatnieNr7!";
+const demoEmail = process.env.DEMO_EMAIL || "admin@hufc.local";
+const demoPassword = process.env.DEMO_PASSWORD || "hufc1234";
 
 const pool = new Pool({
   host: process.env.DB_HOST || "127.0.0.1",
@@ -83,6 +85,7 @@ async function ensureSchema() {
       id SERIAL PRIMARY KEY,
       name VARCHAR(120) NOT NULL,
       caretaker VARCHAR(160) NOT NULL,
+      caretaker_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
 
@@ -208,14 +211,20 @@ async function ensureSchema() {
   await pool.query("ALTER TABLE session_photos ADD COLUMN IF NOT EXISTS image_data TEXT");
   await pool.query("ALTER TABLE session_photos ADD COLUMN IF NOT EXISTS mime_type VARCHAR(80)");
   await pool.query("ALTER TABLE session_photos ADD COLUMN IF NOT EXISTS share_token VARCHAR(80) UNIQUE");
+  await pool.query("ALTER TABLE cohorts ADD COLUMN IF NOT EXISTS caretaker_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL");
 
-  const users = await pool.query("SELECT COUNT(*)::int AS count FROM users");
-  if (users.rows[0].count === 0) {
-    await pool.query(
-      "INSERT INTO users (email, name, role, password_hash) VALUES ($1, $2, $3, $4)",
-      [adminEmail, "Administrator hufca", "administrator", hashPassword(adminPassword)]
-    );
-  }
+  await pool.query(
+    `INSERT INTO users (email, name, role, password_hash)
+     VALUES ($1, $2, $3, $4)
+     ON CONFLICT (email) DO UPDATE SET name=$2, role=$3, password_hash=$4`,
+    [adminEmail, "Administrator hufca", "administrator", hashPassword(adminPassword)]
+  );
+  await pool.query(
+    `INSERT INTO users (email, name, role, password_hash)
+     VALUES ($1, $2, $3, $4)
+     ON CONFLICT (email) DO NOTHING`,
+    [demoEmail, "Demo wychowawca", "wychowawca", hashPassword(demoPassword)]
+  );
 
   const games = await pool.query("SELECT COUNT(*)::int AS count FROM games");
   if (games.rows[0].count === 0) {
@@ -284,7 +293,7 @@ async function state(gameId?: number) {
   if (!game) throw new Error("Nie znaleziono gry");
   game.remaining_seconds = remaining(game);
 
-  const [teams, stations, scores, materials, questions, games, cohorts, wards, sessions, photos, shares, messages] = await Promise.all([
+  const [teams, stations, scores, materials, questions, games, cohorts, wards, sessions, photos, shares, messages, caregivers] = await Promise.all([
     pool.query(`
       SELECT t.*,
         COALESCE(SUM(ts.points), 0)::int AS total_points,
@@ -318,9 +327,10 @@ async function state(gameId?: number) {
     `, [game.id]),
     gamesList(),
     pool.query(`
-      SELECT c.*,
+      SELECT c.*, u.name AS caretaker_user_name, u.email AS caretaker_email,
         COALESCE((SELECT COUNT(*) FROM wards w WHERE w.cohort_id = c.id), 0)::int AS ward_count
       FROM cohorts c
+      LEFT JOIN users u ON u.id = c.caretaker_user_id
       ORDER BY c.name
     `),
     pool.query(`
@@ -357,6 +367,12 @@ async function state(gameId?: number) {
       LEFT JOIN cohorts c ON c.id = m.target_id AND m.target_type='cohort'
       ORDER BY m.created_at DESC
       LIMIT 80
+    `),
+    pool.query(`
+      SELECT u.id, u.email, u.name, u.role, u.created_at,
+        COALESCE((SELECT COUNT(*) FROM cohorts c WHERE c.caretaker_user_id = u.id), 0)::int AS group_count
+      FROM users u
+      ORDER BY CASE WHEN u.role='administrator' THEN 0 ELSE 1 END, u.name
     `)
   ]);
 
@@ -374,7 +390,8 @@ async function state(gameId?: number) {
     sessions: sessions.rows,
     photos: photos.rows,
     shares: shares.rows,
-    messages: messages.rows
+    messages: messages.rows,
+    caregivers: caregivers.rows
   };
 }
 
@@ -500,6 +517,54 @@ app.post("/api/wards", async (req, res) => {
 app.delete("/api/wards/:id", async (req, res) => {
   await pool.query("DELETE FROM wards WHERE id=$1", [Number(req.params.id)]);
   res.json(await state(req.query.gameId ? Number(req.query.gameId) : undefined));
+});
+
+app.post("/api/caregivers", async (req, res) => {
+  if (req.user?.role !== "administrator") return res.status(403).json({ ok: false, error: "Tylko administrator może zarządzać kontami" });
+  const id = Number(req.body.id || 0);
+  const name = String(req.body.name || "").trim();
+  const email = String(req.body.email || "").trim().toLowerCase();
+  const role = String(req.body.role || "wychowawca");
+  const password = String(req.body.password || "");
+  const cohortId = Number(req.body.cohort_id || 0) || null;
+  if (!name || !email) return res.status(400).json({ ok: false, error: "Podaj imię, nazwisko i e-mail" });
+
+  let userId = id;
+  if (id) {
+    if (password) {
+      await pool.query("UPDATE users SET name=$1, email=$2, role=$3, password_hash=$4 WHERE id=$5", [name, email, role, hashPassword(password), id]);
+    } else {
+      await pool.query("UPDATE users SET name=$1, email=$2, role=$3 WHERE id=$4", [name, email, role, id]);
+    }
+  } else {
+    const result = await pool.query(
+      "INSERT INTO users (email, name, role, password_hash) VALUES ($1,$2,$3,$4) RETURNING id",
+      [email, name, role, hashPassword(password || crypto.randomBytes(8).toString("hex"))]
+    );
+    userId = Number(result.rows[0].id);
+  }
+
+  if (cohortId) {
+    await pool.query("UPDATE cohorts SET caretaker_user_id=$1, caretaker=$2 WHERE id=$3", [userId, name, cohortId]);
+  }
+  res.json(await state(Number(req.body.game_id || 0) || undefined));
+});
+
+app.post("/api/cohorts", async (req, res) => {
+  if (req.user?.role !== "administrator") return res.status(403).json({ ok: false, error: "Tylko administrator może zarządzać grupami" });
+  const id = Number(req.body.id || 0);
+  const name = String(req.body.name || "").trim();
+  const caretakerUserId = Number(req.body.caretaker_user_id || 0) || null;
+  const caretaker = caretakerUserId
+    ? String((await pool.query("SELECT name FROM users WHERE id=$1", [caretakerUserId])).rows[0]?.name || "")
+    : String(req.body.caretaker || "").trim();
+  if (!name) return res.status(400).json({ ok: false, error: "Podaj nazwę grupy" });
+  if (id) {
+    await pool.query("UPDATE cohorts SET name=$1, caretaker=$2, caretaker_user_id=$3 WHERE id=$4", [name, caretaker || "Bez opiekuna", caretakerUserId, id]);
+  } else {
+    await pool.query("INSERT INTO cohorts (name, caretaker, caretaker_user_id) VALUES ($1,$2,$3)", [name, caretaker || "Bez opiekuna", caretakerUserId]);
+  }
+  res.json(await state(Number(req.body.game_id || 0) || undefined));
 });
 
 app.post("/api/sessions", async (req, res) => {

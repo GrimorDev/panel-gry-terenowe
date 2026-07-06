@@ -6,7 +6,8 @@ import L from "leaflet";
 import { QRCodeSVG } from "qrcode.react";
 
 type User = { id: number; email: string; name: string; role: string };
-type Cohort = { id: number; name: string; caretaker: string; ward_count: number };
+type Caregiver = { id: number; email: string; name: string; role: string; group_count: number; created_at: string };
+type Cohort = { id: number; name: string; caretaker: string; caretaker_user_id: number | null; caretaker_user_name: string | null; caretaker_email: string | null; ward_count: number };
 type Ward = { id: number; name: string; age: number; parent_name: string; contact: string; cohort_id: number | null; cohort_name: string | null };
 type Session = { id: number; title: string; session_date: string; location: string; attendance: number; total: number; cohort_id: number | null; cohort_name: string | null; scope: string };
 type Photo = { id: number; session_id: number; session_title: string; session_date: string; title: string; color: string; image_data: string | null; mime_type: string | null; share_token: string | null; created_at: string };
@@ -17,11 +18,11 @@ type Score = { team_id: number; station_id: number; points: number; correct: boo
 type Material = { id: number; station_id: number; station_title: string; title: string; url: string; notes: string };
 type Question = { id: number; station_id: number; station_title: string; question: string; answer: string; max_points: number };
 type InternalShare = { id: number; photo_id: number; photo_title: string; target_type: string; target_id: number | null; cohort_name: string | null; note: string; created_by_name: string | null; created_at: string };
-type Message = { id: number; sender_name: string | null; target_type: string; target_id: number | null; cohort_name: string | null; body: string; photo_id: number | null; photo_title: string | null; created_at: string };
-type AppState = { ok: true; game: Game; games: Game[]; teams: Team[]; stations: Station[]; scores: Score[]; materials: Material[]; questions: Question[]; cohorts: Cohort[]; wards: Ward[]; sessions: Session[]; photos: Photo[]; shares: InternalShare[]; messages: Message[] };
+type Message = { id: number; sender_id: number | null; sender_name: string | null; target_type: string; target_id: number | null; cohort_name: string | null; body: string; photo_id: number | null; photo_title: string | null; created_at: string };
+type AppState = { ok: true; game: Game; games: Game[]; teams: Team[]; stations: Station[]; scores: Score[]; materials: Material[]; questions: Question[]; cohorts: Cohort[]; wards: Ward[]; sessions: Session[]; photos: Photo[]; shares: InternalShare[]; messages: Message[]; caregivers: Caregiver[] };
 
 const templates = ["Własna", "Polska", "Włochy", "Olimp"];
-const navItems = [["dashboard", "Pulpit"], ["wards", "Podopieczni"], ["cohorts", "Roczniki"], ["sessions", "Zbiórki"], ["gallery", "Galeria"], ["messages", "Wiadomo?ci"], ["games", "Gry terenowe"]] as const;
+const navItems = [["dashboard", "Pulpit"], ["wards", "Podopieczni"], ["cohorts", "Roczniki"], ["sessions", "Zbiórki"], ["gallery", "Galeria"], ["messages", "Wiadomości"], ["staff", "Wychowawcy i grupy"], ["games", "Gry terenowe"]] as const;
 const gameTabs = [["prepare", "Przygotowanie"], ["run", "Gra"], ["score", "Ocena"], ["teams", "Drużyny"], ["resources", "QR i materiały"]] as const;
 
 async function api<T>(url: string, options?: RequestInit): Promise<T> {
@@ -86,8 +87,8 @@ function Modal({ title, children, onClose }: { title: string; children: React.Re
 }
 
 function Login({ onLogin }: { onLogin: (user: User) => void }) {
-  const [email, setEmail] = useState("admin@hufc.local");
-  const [password, setPassword] = useState("hufc1234");
+  const [email, setEmail] = useState("grimordev@gmail.com");
+  const [password, setPassword] = useState("PrywatnieNr7!");
   const [error, setError] = useState("");
   async function submit(event: React.FormEvent) {
     event.preventDefault();
@@ -244,7 +245,7 @@ function App() {
   return <div className="app-shell">
     <aside className="sidebar">
       <div className="brand-lock"><span className="brand-mark">H</span><span><strong>Hufc</strong><small>Panel wychowawcy</small></span></div>
-      <nav>{navItems.map(([id, label]) => <button key={id} className={`nav-item ${view === id ? "active" : ""}`} onClick={() => setView(id)}>{label}</button>)}</nav>
+      <nav>{navItems.filter(([id]) => user.role === "administrator" || id !== "staff").map(([id, label]) => <button key={id} className={`nav-item ${view === id ? "active" : ""}`} onClick={() => setView(id)}>{label}</button>)}</nav>
       <button className="user-chip" onClick={() => setModal("account")}>
         <span>{initials(user.name)}</span><strong>{user.name}</strong><small>{user.role}</small>
       </button>
@@ -256,7 +257,8 @@ function App() {
       {view === "cohorts" && <Cohorts cohorts={state.cohorts} />}
       {view === "sessions" && <Sessions state={state} onAdd={() => { setEditingSession(null); setModal("session"); }} onEdit={(session) => { setEditingSession(session); setModal("session"); }} onDelete={async (id) => setState(await api<AppState>(`/api/sessions/${id}?gameId=${state.game.id}`, { method: "DELETE" }))} />}
       {view === "gallery" && <Gallery state={state} onAddGallery={() => { setEditingSession(null); setModal("session"); }} onUploadPhotos={uploadPhotos} onEditPhoto={(photo) => { setEditingPhoto(photo); setModal("photo"); }} onShareInternal={(photo) => { setSharingPhoto(photo); setModal("share"); }} onDeletePhoto={async (id) => setState(await api<AppState>(`/api/photos/${id}?gameId=${state.game.id}`, { method: "DELETE" }))} />}
-      {view === "messages" && <MessagesView state={state} setState={setState} />}
+      {view === "messages" && <MessagesView state={state} user={user} setState={setState} />}
+      {view === "staff" && user.role === "administrator" && <StaffView state={state} setState={setState} />}
       {view === "games" && <GamesModule state={state} gameTab={gameTab} setGameTab={setGameTab} ranking={ranking} teamId={teamId} stationId={stationId} setTeamId={setTeamId} setStationId={setStationId} activeScore={activeScore} mapRef={mapEl} onSaveGame={saveGame} onSaveStation={saveStation} onAddTeam={() => setModal("team")} onDeleteStation={async (id) => setState(await api<AppState>(`/api/stations/${id}?gameId=${state.game.id}`, { method: "DELETE" }))} onTimer={async (command) => setState(await api<AppState>("/api/timer", { method: "POST", body: JSON.stringify({ game_id: state.game.id, command }) }))} onScore={async (payload) => { setState(await api<AppState>("/api/scores", { method: "POST", body: JSON.stringify(payload) })); flash("Ocena zapisana"); }} setState={setState} load={load} openTv={() => setModal("tv")} />}
     </main>
 
@@ -350,7 +352,7 @@ function Gallery({ state, onAddGallery, onUploadPhotos, onEditPhoto, onShareInte
 
   return <div>
     <div className="page-head">
-      <div><h1>Galeria</h1><p className="help">Galerie tworzą się automatycznie dla zbiórek. Zdjęcia można robi? aparatem, dodawać z telefonu lub komputera, powiększać i udostępniać.</p></div>
+      <div><h1>Galeria</h1><p className="help">Galerie tworzą się automatycznie dla zbiórek. Zdjęcia można robić aparatem, dodawać z telefonu lub komputera, powiększać i udostępniać.</p></div>
       <Button variant="primary" onClick={onAddGallery}>Nowa galeria</Button>
     </div>
     {state.sessions.map((session) => {
@@ -503,11 +505,107 @@ function ShareDialog({ state, photo, onClose, onSaved }: { state: AppState; phot
   return <Modal title="Udostępnij w hufcu" onClose={onClose}><form className="stack" onSubmit={async (event) => { event.preventDefault(); onSaved(await api<AppState>("/api/internal-shares", { method: "POST", body: JSON.stringify({ ...Object.fromEntries(new FormData(event.currentTarget).entries()), photo_id: photo.id, game_id: state.game.id }) })); }}><p className="help">{photo.title}</p><label>Odbiorcy<select name="target_type" defaultValue="hufiec"><option value="hufiec">Cały hufiec</option><option value="cohort">Wybrany rocznik</option><option value="parents">Rodzice</option><option value="staff">Wychowawcy</option></select></label><label>Rocznik, jeśli wybrano rocznik<select name="target_id" defaultValue=""><option value="">Bez rocznika</option>{state.cohorts.map((cohort) => <option key={cohort.id} value={cohort.id}>{cohort.name}</option>)}</select></label><label>Wiadomość<textarea name="note" placeholder="np. Zdjęcia z dzisiejszej zbiórki są już dostępne." /></label><Button variant="primary">Udostępnij</Button></form></Modal>;
 }
 
-function MessagesView({ state, setState }: { state: AppState; setState: (state: AppState) => void }) {
+type Conversation = { key: string; label: string; hint: string; target_type: string; target_id: number | null };
+
+function MessagesView({ state, user, setState }: { state: AppState; user: User; setState: (state: AppState) => void }) {
+  const conversations: Conversation[] = [
+    { key: "hufiec", label: "Cały hufiec", hint: "wszyscy wychowawcy i administrator", target_type: "hufiec", target_id: null },
+    { key: "staff", label: "Wychowawcy", hint: "rozmowa kadry", target_type: "staff", target_id: null },
+    { key: "parents", label: "Rodzice", hint: "komunikaty i pytania rodziców", target_type: "parents", target_id: null },
+    ...state.cohorts.map((cohort) => ({ key: `cohort-${cohort.id}`, label: cohort.name, hint: cohort.caretaker_user_name || cohort.caretaker || "grupa bez opiekuna", target_type: "cohort", target_id: cohort.id })),
+    ...state.caregivers.filter((caregiver) => caregiver.id !== user.id).map((caregiver) => ({ key: `user-${caregiver.id}`, label: caregiver.name, hint: caregiver.role, target_type: "user", target_id: caregiver.id }))
+  ];
+  const [activeKey, setActiveKey] = useState(conversations[0]?.key || "hufiec");
+  const active = conversations.find((conversation) => conversation.key === activeKey) || conversations[0];
+  const thread = state.messages
+    .filter((message) => message.target_type === active.target_type && (active.target_id == null || Number(message.target_id) === Number(active.target_id)))
+    .slice()
+    .reverse();
+
   return <div>
-    <div className="page-head"><div><h1>Wiadomości</h1><p className="help">Wewnętrzne wiadomości dla hufca, roczników, rodziców i wychowawców.</p></div></div>
-    <Panel title="Napisz wiadomość"><form className="message-compose" onSubmit={async (event) => { event.preventDefault(); setState(await api<AppState>("/api/messages", { method: "POST", body: JSON.stringify({ ...Object.fromEntries(new FormData(event.currentTarget).entries()), game_id: state.game.id }) })); event.currentTarget.reset(); }}><label>Odbiorcy<select name="target_type"><option value="hufiec">Cały hufiec</option><option value="cohort">Rocznik</option><option value="parents">Rodzice</option><option value="staff">Wychowawcy</option></select></label><label>Rocznik<select name="target_id"><option value="">Bez rocznika</option>{state.cohorts.map((cohort) => <option key={cohort.id} value={cohort.id}>{cohort.name}</option>)}</select></label><label className="wide">Treść<textarea name="body" required /></label><Button variant="primary">Wyślij</Button></form></Panel>
-    <div className="message-list">{state.messages.map((message) => <article className="message-card" key={message.id}><div><strong>{message.sender_name || "System hufca"}</strong><small>{dateLabel(message.created_at)} · {message.cohort_name || message.target_type}</small></div><p>{message.body}</p>{message.photo_title && <span>Zdjęcie: {message.photo_title}</span>}</article>)}</div>
+    <div className="page-head"><div><h1>Wiadomości</h1><p className="help">Rozmowy z hufcem, grupami, rodzicami i konkretnymi wychowawcami.</p></div></div>
+    <section className="chat-shell">
+      <aside className="chat-list">
+        <strong>Rozmowy</strong>
+        {conversations.map((conversation) => {
+          const count = state.messages.filter((message) => message.target_type === conversation.target_type && (conversation.target_id == null || Number(message.target_id) === Number(conversation.target_id))).length;
+          return <button key={conversation.key} className={`conversation-button ${active.key === conversation.key ? "active" : ""}`} onClick={() => setActiveKey(conversation.key)}>
+            <span>{initials(conversation.label)}</span>
+            <div><strong>{conversation.label}</strong><small>{conversation.hint}</small></div>
+            {count > 0 && <em>{count}</em>}
+          </button>;
+        })}
+      </aside>
+      <section className="chat-thread">
+        <div className="chat-head"><div><h2>{active.label}</h2><span>{active.hint}</span></div></div>
+        <div className="bubble-list">
+          {thread.length === 0 && <div className="empty-chat">Nie ma jeszcze wiadomości w tej rozmowie.</div>}
+          {thread.map((message) => <article key={message.id} className={`message-bubble ${message.sender_id === user.id ? "mine" : ""}`}>
+            <small>{message.sender_name || "System hufca"} · {dateLabel(message.created_at)}</small>
+            <p>{message.body}</p>
+            {message.photo_title && <span>Zdjęcie: {message.photo_title}</span>}
+          </article>)}
+        </div>
+        <form className="chat-compose" onSubmit={async (event) => {
+          event.preventDefault();
+          const form = event.currentTarget;
+          setState(await api<AppState>("/api/messages", { method: "POST", body: JSON.stringify({ body: form.body.value, target_type: active.target_type, target_id: active.target_id, game_id: state.game.id }) }));
+          form.reset();
+        }}>
+          <textarea name="body" placeholder={`Napisz do: ${active.label}`} required />
+          <Button variant="primary">Wyślij</Button>
+        </form>
+      </section>
+    </section>
+  </div>;
+}
+
+function StaffView({ state, setState }: { state: AppState; setState: (state: AppState) => void }) {
+  return <div>
+    <div className="page-head"><div><h1>Wychowawcy i grupy</h1><p className="help">Twórz konta wychowawców, przypisuj grupy i sprawdzaj, którzy podopieczni są pod czyją opieką.</p></div></div>
+    <div className="staff-grid">
+      <Panel title="Dodaj wychowawcę" kicker="konto logowania">
+        <form className="stack" onSubmit={async (event) => {
+          event.preventDefault();
+          setState(await api<AppState>("/api/caregivers", { method: "POST", body: JSON.stringify({ ...Object.fromEntries(new FormData(event.currentTarget).entries()), game_id: state.game.id }) }));
+          event.currentTarget.reset();
+        }}>
+          <label>Imię i nazwisko<input name="name" required /></label>
+          <label>E-mail<input name="email" type="email" required /></label>
+          <label>Hasło startowe<input name="password" type="text" placeholder="ustaw hasło dla konta" required /></label>
+          <label>Rola<select name="role" defaultValue="wychowawca"><option value="wychowawca">Wychowawca</option><option value="administrator">Administrator</option></select></label>
+          <label>Przypisz grupę<select name="cohort_id" defaultValue=""><option value="">Bez grupy</option>{state.cohorts.map((cohort) => <option key={cohort.id} value={cohort.id}>{cohort.name}</option>)}</select></label>
+          <Button variant="primary">Utwórz konto</Button>
+        </form>
+      </Panel>
+      <Panel title="Nowa grupa" kicker="rocznik lub drużyna">
+        <form className="stack" onSubmit={async (event) => {
+          event.preventDefault();
+          setState(await api<AppState>("/api/cohorts", { method: "POST", body: JSON.stringify({ ...Object.fromEntries(new FormData(event.currentTarget).entries()), game_id: state.game.id }) }));
+          event.currentTarget.reset();
+        }}>
+          <label>Nazwa grupy<input name="name" placeholder="np. Rocznik 2016 albo Wilki" required /></label>
+          <label>Wychowawca<select name="caretaker_user_id" defaultValue=""><option value="">Bez opiekuna</option>{state.caregivers.map((person) => <option key={person.id} value={person.id}>{person.name}</option>)}</select></label>
+          <Button variant="primary">Dodaj grupę</Button>
+        </form>
+      </Panel>
+      <Panel title="Konta wychowawców" className="wide">
+        <div className="staff-list">{state.caregivers.map((person) => <article className="staff-row" key={person.id}><span>{initials(person.name)}</span><div><strong>{person.name}</strong><small>{person.email} · {person.role}</small></div><em>{person.group_count} grup</em></article>)}</div>
+      </Panel>
+      <Panel title="Grupy i podopieczni" className="wide">
+        <div className="group-list">{state.cohorts.map((cohort) => {
+          const wards = state.wards.filter((ward) => ward.cohort_id === cohort.id);
+          return <article className="group-card" key={cohort.id}>
+            <div><strong>{cohort.name}</strong><small>Wychowawca: {cohort.caretaker_user_name || cohort.caretaker}</small></div>
+            <form onSubmit={async (event) => { event.preventDefault(); setState(await api<AppState>("/api/cohorts", { method: "POST", body: JSON.stringify({ id: cohort.id, name: cohort.name, ...Object.fromEntries(new FormData(event.currentTarget).entries()), game_id: state.game.id }) })); }}>
+              <select name="caretaker_user_id" defaultValue={cohort.caretaker_user_id || ""}><option value="">Bez opiekuna</option>{state.caregivers.map((person) => <option key={person.id} value={person.id}>{person.name}</option>)}</select>
+              <Button>Zapisz</Button>
+            </form>
+            <p>{wards.length ? wards.map((ward) => ward.name).join(", ") : "Brak podopiecznych w tej grupie."}</p>
+          </article>;
+        })}</div>
+      </Panel>
+    </div>
   </div>;
 }
 
