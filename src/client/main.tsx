@@ -24,6 +24,7 @@ type AppState = { ok: true; game: Game; games: Game[]; teams: Team[]; stations: 
 const templates = ["Własna", "Polska", "Włochy", "Olimp"];
 const navItems = [["dashboard", "Pulpit"], ["wards", "Podopieczni"], ["cohorts", "Grupy"], ["sessions", "Zbiórki"], ["gallery", "Galeria"], ["messages", "Wiadomości"], ["staff", "Wychowawcy i grupy"], ["games", "Gry terenowe"]] as const;
 const gameTabs = [["prepare", "Przygotowanie"], ["run", "Gra"], ["score", "Ocena"], ["teams", "Drużyny"], ["resources", "QR i materiały"]] as const;
+const viewLabels = Object.fromEntries(navItems) as Record<(typeof navItems)[number][0], string>;
 
 async function api<T>(url: string, options?: RequestInit): Promise<T> {
   const response = await fetch(url, { headers: options?.body instanceof FormData ? undefined : { "Content-Type": "application/json" }, ...options });
@@ -87,12 +88,27 @@ function Panel({ title, kicker, action, children, className = "" }: { title: str
 }
 
 function Modal({ title, children, onClose }: { title: string; children: React.ReactNode; onClose: () => void }) {
-  return <div className="modal">
-    <div className="dialog">
+  return <div className="modal" onClick={onClose}>
+    <div className="dialog" onClick={(event) => event.stopPropagation()}>
       <div className="panel-head"><h2>{title}</h2><Button onClick={onClose}>Zamknij</Button></div>
       {children}
     </div>
   </div>;
+}
+
+function UiIcon({ name }: { name: string }) {
+  const common = { fill: "none", stroke: "currentColor", strokeWidth: 1.9, strokeLinecap: "round" as const, strokeLinejoin: "round" as const };
+  if (name === "dashboard") return <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="8" height="8" rx="2" {...common} /><rect x="13" y="3" width="8" height="8" rx="2" {...common} /><rect x="3" y="13" width="8" height="8" rx="2" {...common} /><rect x="13" y="13" width="8" height="8" rx="2" {...common} /></svg>;
+  if (name === "wards") return <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="4" {...common} /><path d="M4 20c0-4.2 3.6-7 8-7s8 2.8 8 7" {...common} /></svg>;
+  if (name === "cohorts") return <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="9" r="3.6" {...common} /><circle cx="17" cy="10.5" r="3" {...common} /><path d="M2.5 20c0-3.6 2.9-6.2 6.5-6.2s6.5 2.6 6.5 6.2" {...common} /><path d="M15 14.2c2.6.4 4.7 2.3 4.7 5.8" {...common} /></svg>;
+  if (name === "sessions") return <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="16" rx="2.5" {...common} /><path d="M3 10h18M8 3v4M16 3v4" {...common} /></svg>;
+  if (name === "gallery") return <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2.5" {...common} /><circle cx="9" cy="10" r="1.7" {...common} /><path d="M21 16.5l-5.3-5.5-4 4.3L9 13l-6 5" {...common} /></svg>;
+  if (name === "messages") return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5.5h16V16H8.5L4 20V5.5z" {...common} /></svg>;
+  if (name === "staff") return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l7 3.2v5.6c0 4.6-3 8.3-7 9.2-4-.9-7-4.6-7-9.2V6.2L12 3z" {...common} /></svg>;
+  if (name === "logout") return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9" {...common} /></svg>;
+  if (name === "bell") return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 17h12l-1.6-2.3V10a4.4 4.4 0 0 0-8.8 0v4.7L6 17zM10.2 19a1.9 1.9 0 0 0 3.6 0" {...common} /></svg>;
+  if (name === "settings") return <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3.2" {...common} /><path d="M12 2.5v3M12 18.5v3M4.8 4.8l2.1 2.1M17.1 17.1l2.1 2.1M2.5 12h3M18.5 12h3M4.8 19.2l2.1-2.1M17.1 6.9l2.1-2.1" {...common} /></svg>;
+  return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 21V3M6 4.5c2.8-1.6 4.7 1.4 7.5-.1s4.5 1.3 4.5 1.3v8.1c-2.8 1.6-4.7-1.4-7.5.1S6 12.5 6 12.5v-8z" {...common} /></svg>;
 }
 
 function Login({ onLogin }: { onLogin: (user: User) => void }) {
@@ -140,6 +156,8 @@ function App() {
   const [stationId, setStationId] = useState<number | null>(null);
   const [toast, setToast] = useState("");
   const [modal, setModal] = useState<null | "ward" | "session" | "team" | "photo" | "share" | "account" | "tv">(null);
+  const [settingsTab, setSettingsTab] = useState<"profil" | "wyglad" | "powiadomienia" | "konto">("profil");
+  const [notifOpen, setNotifOpen] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const navRef = useRef<HTMLElement | null>(null);
   const navItemRefs = useRef<Map<string, HTMLButtonElement>>(new Map());
@@ -166,6 +184,19 @@ function App() {
   function flash(message: string) {
     setToast(message);
     window.setTimeout(() => setToast(""), 2200);
+  }
+
+  function openAccount(tab: "profil" | "wyglad" | "powiadomienia" | "konto") {
+    setSettingsTab(tab);
+    setNotifOpen(false);
+    setModal("account");
+  }
+
+  async function logout() {
+    await api("/api/logout", { method: "POST" });
+    setUser(null);
+    setAuth("guest");
+    setModal(null);
   }
 
   useEffect(() => {
@@ -276,6 +307,7 @@ function App() {
   if (!state) return <div className="loading">Ładowanie danych...</div>;
 
   const visibleNavItems = navItems.filter(([id]) => user.role === "administrator" || id !== "staff");
+  const unreadCount = Math.min(99, state.messages.length);
 
   return <div className={`app-shell ${mobileMenuOpen ? "menu-open" : ""}`}>
     <button className="mobile-menu-button" type="button" aria-label="Otwórz menu" onClick={() => setMobileMenuOpen(true)}><span /><span /><span /></button>
@@ -284,23 +316,33 @@ function App() {
       <div className="brand-lock"><span className="brand-mark">H</span><span><strong>Hufc</strong><small>Panel wychowawcy</small></span></div>
       <nav className="side-nav" ref={navRef}>
         <span className="nav-indicator" style={{ transform: `translate(${navIndicator.left}px, ${navIndicator.top}px)`, width: navIndicator.width, height: navIndicator.height, opacity: navIndicator.opacity }} />
-        {visibleNavItems.map(([id, label]) => <button key={id} ref={(node) => { if (node) navItemRefs.current.set(id, node); else navItemRefs.current.delete(id); }} className={`nav-item ${view === id ? "active" : ""}`} onClick={() => { setView(id); setMobileMenuOpen(false); }}>{label}</button>)}
+        {visibleNavItems.map(([id, label]) => <button key={id} ref={(node) => { if (node) navItemRefs.current.set(id, node); else navItemRefs.current.delete(id); }} className={`nav-item ${view === id ? "active" : ""}`} onClick={() => { setView(id); setMobileMenuOpen(false); setNotifOpen(false); }}>
+          <UiIcon name={id} />
+          <span>{label}</span>
+          {id === "messages" && unreadCount > 0 && <em>{unreadCount}</em>}
+        </button>)}
       </nav>
-      <button className="user-chip" onClick={() => setModal("account")}>
-        <span>{initials(user.name)}</span><strong>{user.name}</strong><small>{user.role}</small>
-      </button>
+      <div className="sidebar-footer">
+        <button className="user-chip" onClick={() => openAccount("profil")}>
+          <span>{initials(user.name)}</span><strong>{user.name}</strong><small>{user.role}</small>
+        </button>
+        <button className="logout-button" onClick={logout}><UiIcon name="logout" /><span>Wyloguj się</span></button>
+      </div>
     </aside>
 
     <main className="main full">
-      <div className="view-stage" key={view}>
-        {view === "dashboard" && <Dashboard state={state} user={user} setView={setView} />}
-        {view === "wards" && <Wards state={state} onAdd={() => { setEditingWard(null); setModal("ward"); }} onEdit={(ward) => { setEditingWard(ward); setModal("ward"); }} onDelete={async (id) => setState(await api<AppState>(`/api/wards/${id}?gameId=${state.game.id}`, { method: "DELETE" }))} />}
-        {view === "cohorts" && <Cohorts cohorts={state.cohorts} />}
-        {view === "sessions" && <Sessions state={state} onAdd={() => { setEditingSession(null); setModal("session"); }} onEdit={(session) => { setEditingSession(session); setModal("session"); }} onDelete={async (id) => setState(await api<AppState>(`/api/sessions/${id}?gameId=${state.game.id}`, { method: "DELETE" }))} />}
-        {view === "gallery" && <Gallery state={state} onAddGallery={() => { setEditingSession(null); setModal("session"); }} onUploadPhotos={uploadPhotos} onEditPhoto={(photo) => { setEditingPhoto(photo); setModal("photo"); }} onShareInternal={(photo) => { setSharingPhoto(photo); setModal("share"); }} onDeletePhoto={async (id) => setState(await api<AppState>(`/api/photos/${id}?gameId=${state.game.id}`, { method: "DELETE" }))} />}
-        {view === "messages" && <MessagesView state={state} user={user} setState={setState} />}
-        {view === "staff" && user.role === "administrator" && <StaffView state={state} setState={setState} />}
-        {view === "games" && <GamesModule state={state} gameTab={gameTab} setGameTab={setGameTab} ranking={ranking} teamId={teamId} stationId={stationId} setTeamId={setTeamId} setStationId={setStationId} activeScore={activeScore} mapRef={mapEl} onSaveGame={saveGame} onSaveStation={saveStation} onAddTeam={() => setModal("team")} onDeleteStation={async (id) => setState(await api<AppState>(`/api/stations/${id}?gameId=${state.game.id}`, { method: "DELETE" }))} onTimer={async (command) => setState(await api<AppState>("/api/timer", { method: "POST", body: JSON.stringify({ game_id: state.game.id, command }) }))} onScore={async (payload) => { setState(await api<AppState>("/api/scores", { method: "POST", body: JSON.stringify(payload) })); flash("Ocena zapisana"); }} setState={setState} load={load} openTv={() => setModal("tv")} />}
+      <TopBar view={view} user={user} unreadCount={unreadCount} notifOpen={notifOpen} setNotifOpen={setNotifOpen} openAccount={openAccount} />
+      <div className="main-content">
+        <div className="view-stage" key={view}>
+          {view === "dashboard" && <Dashboard state={state} user={user} setView={setView} />}
+          {view === "wards" && <Wards state={state} onAdd={() => { setEditingWard(null); setModal("ward"); }} onEdit={(ward) => { setEditingWard(ward); setModal("ward"); }} onDelete={async (id) => setState(await api<AppState>(`/api/wards/${id}?gameId=${state.game.id}`, { method: "DELETE" }))} />}
+          {view === "cohorts" && <Cohorts cohorts={state.cohorts} />}
+          {view === "sessions" && <Sessions state={state} onAdd={() => { setEditingSession(null); setModal("session"); }} onEdit={(session) => { setEditingSession(session); setModal("session"); }} onDelete={async (id) => setState(await api<AppState>(`/api/sessions/${id}?gameId=${state.game.id}`, { method: "DELETE" }))} />}
+          {view === "gallery" && <Gallery state={state} onAddGallery={() => { setEditingSession(null); setModal("session"); }} onUploadPhotos={uploadPhotos} onEditPhoto={(photo) => { setEditingPhoto(photo); setModal("photo"); }} onShareInternal={(photo) => { setSharingPhoto(photo); setModal("share"); }} onDeletePhoto={async (id) => setState(await api<AppState>(`/api/photos/${id}?gameId=${state.game.id}`, { method: "DELETE" }))} />}
+          {view === "messages" && <MessagesView state={state} user={user} setState={setState} />}
+          {view === "staff" && user.role === "administrator" && <StaffView state={state} setState={setState} />}
+          {view === "games" && <GamesModule state={state} gameTab={gameTab} setGameTab={setGameTab} ranking={ranking} teamId={teamId} stationId={stationId} setTeamId={setTeamId} setStationId={setStationId} activeScore={activeScore} mapRef={mapEl} onSaveGame={saveGame} onSaveStation={saveStation} onAddTeam={() => setModal("team")} onDeleteStation={async (id) => setState(await api<AppState>(`/api/stations/${id}?gameId=${state.game.id}`, { method: "DELETE" }))} onTimer={async (command) => setState(await api<AppState>("/api/timer", { method: "POST", body: JSON.stringify({ game_id: state.game.id, command }) }))} onScore={async (payload) => { setState(await api<AppState>("/api/scores", { method: "POST", body: JSON.stringify(payload) })); flash("Ocena zapisana"); }} setState={setState} load={load} openTv={() => setModal("tv")} />}
+        </div>
       </div>
     </main>
 
@@ -308,21 +350,52 @@ function App() {
     {modal === "session" && <SessionDialog state={state} session={editingSession} onClose={() => setModal(null)} onSaved={(next) => { setState(next); setModal(null); }} />}
     {modal === "photo" && editingPhoto && <PhotoDialog state={state} photo={editingPhoto} onClose={() => setModal(null)} onSaved={(next) => { setState(next); setModal(null); }} />}
     {modal === "share" && sharingPhoto && <ShareDialog state={state} photo={sharingPhoto} onClose={() => setModal(null)} onSaved={(next) => { setState(next); setModal(null); }} />}
-    {modal === "account" && <AccountDialog user={user} onClose={() => setModal(null)} onSaved={(next) => { setUser(next); setModal(null); }} onLogout={() => api("/api/logout", { method: "POST" }).then(() => { setUser(null); setAuth("guest"); setModal(null); })} />}
+    {modal === "account" && <AccountDialog user={user} initialTab={settingsTab} onClose={() => setModal(null)} onSaved={(next) => { setUser(next); setModal(null); }} onLogout={logout} />}
     {modal === "team" && <TeamDialog gameId={state.game.id} onClose={() => setModal(null)} onSaved={(next) => { setState(next); setModal(null); }} />}
     {modal === "tv" && <TvDialog state={state} ranking={ranking} onClose={() => setModal(null)} />}
     {toast && <div className="toast">{toast}</div>}
   </div>;
 }
 
+function TopBar({ view, user, unreadCount, notifOpen, setNotifOpen, openAccount }: { view: (typeof navItems)[number][0]; user: User; unreadCount: number; notifOpen: boolean; setNotifOpen: (open: boolean) => void; openAccount: (tab: "profil" | "wyglad" | "powiadomienia" | "konto") => void }) {
+  const firstName = user.name.split(" ")[0] || user.name;
+  const notifications = [
+    "Kacper Wiśniewski oznaczony jako nieobecny",
+    "Nowa wiadomość w „Wychowawcy”",
+    "Przypomnienie: Zbiórka Wilków jutro"
+  ];
+  return <header className="topbar">
+    <div className="breadcrumb">Panel wychowawcy · {viewLabels[view]}</div>
+    <div className="top-actions">
+      <div className="notification-wrap">
+        <button className="icon-button" type="button" aria-label="Powiadomienia" onClick={() => setNotifOpen(!notifOpen)}>
+          <UiIcon name="bell" />
+          {unreadCount > 0 && <span className="notif-dot" />}
+        </button>
+        {notifOpen && <div className="notification-menu">
+          <strong>Powiadomienia</strong>
+          {notifications.map((title, index) => <div className="notification-row" key={title}><span /><div><b>{title}</b><small>{index === 0 ? "2 godz. temu" : index === 1 ? "5 godz. temu" : "1 dzień temu"}</small></div></div>)}
+        </div>}
+      </div>
+      <button className="icon-button" type="button" aria-label="Ustawienia" onClick={() => openAccount("wyglad")}><UiIcon name="settings" /></button>
+      <button className="top-user-chip" type="button" onClick={() => openAccount("profil")}><span>{initials(user.name)}</span><strong>{firstName}</strong></button>
+    </div>
+  </header>;
+}
+
 function Dashboard({ state, user, setView }: { state: AppState; user: User; setView: (view: (typeof navItems)[number][0]) => void }) {
   const next = state.sessions[0];
   return <div>
-    <span className="kicker">Witaj,</span><h1>{user.name}</h1>
+    <section className="welcome-hero">
+      <div className="hero-orb" />
+      <span>Witaj,</span>
+      <h1>{user.name}</h1>
+      <p><i />Najbliższa zbiórka: <strong>{next ? next.title : "Brak zaplanowanej zbiórki"}</strong>{next ? " · " + dateLabel(next.session_date) : ""}</p>
+    </section>
     <div className="stat-grid">
       <Panel title="Podopieczni"><strong className="stat-number">{state.wards.length}</strong></Panel>
       <Panel title="Grupy"><strong className="stat-number">{state.cohorts.length}</strong></Panel>
-      <Panel title="Najbliższa zbiórka"><strong>{next ? dateLabel(next.session_date) : "Brak"}</strong></Panel>
+      <Panel title="Wiadomości"><strong className="stat-number accent">{state.messages.length}</strong></Panel>
     </div>
     <div className="dashboard-grid">
       <Panel title="Nadchodzące zbiórki" action={<Button onClick={() => setView("sessions")}>Wszystkie</Button>}>
@@ -603,8 +676,26 @@ function PhotoDialog({ state, photo, onClose, onSaved }: { state: AppState; phot
   return <Modal title="Edytuj zdjęcie" onClose={onClose}><form className="stack" onSubmit={async (event) => { event.preventDefault(); onSaved(await api<AppState>("/api/photos", { method: "POST", body: JSON.stringify({ ...Object.fromEntries(new FormData(event.currentTarget).entries()), game_id: state.game.id }) })); }}><input type="hidden" name="id" defaultValue={photo.id} /><label>Nazwa zdjęcia<input name="title" defaultValue={photo.title} required /></label>{photo.image_data && <img className="dialog-photo" src={photo.image_data} alt={photo.title} />}<Button variant="primary">Zapisz</Button></form></Modal>;
 }
 
-function AccountDialog({ user, onClose, onSaved, onLogout }: { user: User; onClose: () => void; onSaved: (user: User) => void; onLogout: () => void }) {
-  return <Modal title="Konto" onClose={onClose}><form className="stack" onSubmit={async (event) => { event.preventDefault(); const result = await api<{ ok: true; user: User }>("/api/profile", { method: "POST", body: JSON.stringify(Object.fromEntries(new FormData(event.currentTarget).entries())) }); onSaved(result.user); }}><span className="kicker">{user.role}</span><label>Imię i nazwisko<input name="name" defaultValue={user.name} required /></label><label>E-mail<input name="email" type="email" defaultValue={user.email} required /></label><div className="form-actions"><Button variant="primary">Zapisz zmiany</Button></div></form><div className="danger-zone"><Button variant="danger" onClick={onLogout}>Wyloguj się</Button></div></Modal>;
+function AccountDialog({ user, initialTab, onClose, onSaved, onLogout }: { user: User; initialTab: "profil" | "wyglad" | "powiadomienia" | "konto"; onClose: () => void; onSaved: (user: User) => void; onLogout: () => void }) {
+  const [tab, setTab] = useState(initialTab);
+  const [prefs, setPrefs] = useState({ email: true, push: true, sms: false });
+  const tabButton = (id: typeof tab, label: string) => <button type="button" className={tab === id ? "settings-tab active" : "settings-tab"} onClick={() => setTab(id)}>{label}</button>;
+  const prefRow = (key: keyof typeof prefs, label: string, desc: string) => <div className="switch-row"><span><strong>{label}</strong><small>{desc}</small></span><button type="button" className={prefs[key] ? "switch on" : "switch"} onClick={() => setPrefs((current) => ({ ...current, [key]: !current[key] }))}><span /></button></div>;
+  return <Modal title="Ustawienia" onClose={onClose}>
+    <div className="settings-tabs">{tabButton("profil", "Profil")}{tabButton("wyglad", "Wygląd")}{tabButton("powiadomienia", "Powiadomienia")}{tabButton("konto", "Konto")}</div>
+    {tab === "profil" && <form className="stack settings-pane" onSubmit={async (event) => { event.preventDefault(); const result = await api<{ ok: true; user: User }>("/api/profile", { method: "POST", body: JSON.stringify(Object.fromEntries(new FormData(event.currentTarget).entries())) }); onSaved(result.user); }}>
+      <div className="profile-head"><span>{initials(user.name)}</span><div><strong>{user.name}</strong><small>{user.role}</small></div></div>
+      <label>Imię i nazwisko<input name="name" defaultValue={user.name} required /></label>
+      <label>E-mail<input name="email" type="email" defaultValue={user.email} required /></label>
+      <Button variant="primary">Zapisz zmiany</Button>
+    </form>}
+    {tab === "wyglad" && <div className="settings-pane">
+      <div><strong>Pasek boczny</strong><p className="help">Wybierz szerokość menu nawigacji. Tryb zwinięty będzie rozwijany w kolejnym kroku razem z ikonowym menu.</p><div className="segmented"><button className="active">Pełny</button><button>Zwinięty</button></div></div>
+      <div><strong>Kolory systemu</strong><div className="swatches"><span /><span /><span /></div></div>
+    </div>}
+    {tab === "powiadomienia" && <div className="settings-pane">{prefRow("email", "E-mail", "Podsumowania i przypomnienia na skrzynkę")}{prefRow("push", "Powiadomienia push", "W aplikacji i na telefonie")}{prefRow("sms", "SMS", "Tylko pilne zmiany w zbiórkach")}</div>}
+    {tab === "konto" && <div className="settings-pane"><label>Aktualne hasło<input type="password" /></label><label>Nowe hasło<input type="password" /></label><Button variant="primary">Zmień hasło</Button><div className="danger-zone"><Button variant="danger" onClick={onLogout}>Wyloguj się</Button></div></div>}
+  </Modal>;
 }
 
 function ShareDialog({ state, photo, onClose, onSaved }: { state: AppState; photo: Photo; onClose: () => void; onSaved: (state: AppState) => void }) {
