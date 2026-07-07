@@ -755,7 +755,7 @@ function App() {
         <span>{id === "dashboard" ? "Pulpit" : viewLabels[id]}</span>
         {id === "messages" && unreadMessagesCount > 0 && <em>{unreadMessagesCount}</em>}
       </button>)}
-      <button type="button" onClick={() => setMobileMenuOpen(true)}>
+      <button className={!["dashboard", "sessions", "messages", "gallery"].includes(view) || mobileMenuOpen ? "active" : ""} type="button" onClick={() => setMobileMenuOpen(true)}>
         <UiIcon name="more" />
         <span>Więcej</span>
       </button>
