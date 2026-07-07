@@ -107,8 +107,16 @@ async function ensureSchema() {
       attendance INTEGER NOT NULL DEFAULT 0,
       total INTEGER NOT NULL DEFAULT 0,
       cohort_id INTEGER REFERENCES cohorts(id) ON DELETE SET NULL,
+      owner_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
       scope VARCHAR(20) NOT NULL DEFAULT 'grupa',
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS session_participants (
+      session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (session_id, user_id)
     );
 
     CREATE TABLE IF NOT EXISTS session_photos (
@@ -133,6 +141,7 @@ async function ensureSchema() {
       timer_running BOOLEAN NOT NULL DEFAULT FALSE,
       timer_updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       status VARCHAR(30) NOT NULL DEFAULT 'draft',
+      owner_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
 
@@ -249,6 +258,8 @@ async function ensureSchema() {
   await pool.query("ALTER TABLE session_photos ADD COLUMN IF NOT EXISTS image_data TEXT");
   await pool.query("ALTER TABLE session_photos ADD COLUMN IF NOT EXISTS mime_type VARCHAR(80)");
   await pool.query("ALTER TABLE session_photos ADD COLUMN IF NOT EXISTS share_token VARCHAR(80) UNIQUE");
+  await pool.query("ALTER TABLE sessions ADD COLUMN IF NOT EXISTS owner_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL");
+  await pool.query("ALTER TABLE games ADD COLUMN IF NOT EXISTS owner_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL");
   await pool.query("ALTER TABLE cohorts ADD COLUMN IF NOT EXISTS caretaker_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL");
   await pool.query("ALTER TABLE messages ADD COLUMN IF NOT EXISTS attachment_name VARCHAR(240)");
   await pool.query("ALTER TABLE messages ADD COLUMN IF NOT EXISTS attachment_mime VARCHAR(120)");
@@ -269,6 +280,8 @@ async function ensureSchema() {
      ON CONFLICT (email) DO UPDATE SET name=$2, role=$3, password_hash=$4`,
     [demoEmail, "Demo wychowawca", "wychowawca", hashPassword(demoPassword)]
   );
+  await pool.query("UPDATE games SET owner_user_id = (SELECT id FROM users WHERE lower(email)=lower($1) LIMIT 1) WHERE owner_user_id IS NULL", [adminEmail]);
+  await pool.query("UPDATE sessions SET owner_user_id = (SELECT id FROM users WHERE lower(email)=lower($1) LIMIT 1) WHERE owner_user_id IS NULL", [adminEmail]);
 
   const games = await pool.query("SELECT COUNT(*)::int AS count FROM games");
   if (games.rows[0].count === 0) {
@@ -308,6 +321,9 @@ async function ensureSchema() {
       SELECT setval('cohorts_id_seq', (SELECT MAX(id) FROM cohorts));
     `);
   }
+
+  await pool.query("UPDATE games SET owner_user_id = (SELECT id FROM users WHERE lower(email)=lower($1) LIMIT 1) WHERE owner_user_id IS NULL", [adminEmail]);
+  await pool.query("UPDATE sessions SET owner_user_id = (SELECT id FROM users WHERE lower(email)=lower($1) LIMIT 1) WHERE owner_user_id IS NULL", [adminEmail]);
 }
 
 function remaining(game: any) {
@@ -319,20 +335,66 @@ function remaining(game: any) {
   return seconds;
 }
 
-async function gamesList() {
+function isAdmin(user?: User) {
+  return user?.role === "administrator";
+}
+
+async function assertGameAccess(user: User | undefined, gameId: number, mode: "view" | "manage" = "view") {
+  if (!gameId) throw new Error("Nie wybrano gry");
+  const result = await pool.query("SELECT id, owner_user_id FROM games WHERE id=$1", [gameId]);
+  const game = result.rows[0];
+  if (!game) throw new Error("Nie znaleziono gry");
+  if (isAdmin(user)) return game;
+  if (Number(game.owner_user_id) === Number(user?.id)) return game;
+  const message = mode === "manage" ? "Nie możesz edytować gry innego wychowawcy" : "Nie masz dostępu do tej gry";
+  const error = new Error(message) as Error & { status?: number };
+  error.status = 403;
+  throw error;
+}
+
+async function assertSessionManage(user: User | undefined, sessionId: number) {
+  if (!sessionId) return;
+  const result = await pool.query("SELECT owner_user_id FROM sessions WHERE id=$1", [sessionId]);
+  const session = result.rows[0];
+  if (!session) throw new Error("Nie znaleziono zbiórki");
+  if (isAdmin(user) || Number(session.owner_user_id) === Number(user?.id)) return;
+  const error = new Error("Tylko twórca albo administrator może edytować tę zbiórkę") as Error & { status?: number };
+  error.status = 403;
+  throw error;
+}
+
+async function gamesList(user?: User) {
   const { rows } = await pool.query(`
-    SELECT g.*,
+    SELECT g.*, u.name AS owner_name,
       COALESCE((SELECT COUNT(*) FROM teams t WHERE t.game_id = g.id), 0)::int AS team_count,
       COALESCE((SELECT COUNT(*) FROM stations s WHERE s.game_id = g.id), 0)::int AS station_count
     FROM games g
+    LEFT JOIN users u ON u.id = g.owner_user_id
+    WHERE ($1::boolean OR g.owner_user_id = $2)
     ORDER BY g.game_date DESC, g.id DESC
-  `);
+  `, [isAdmin(user), user?.id || 0]);
   return rows.map((game) => ({ ...game, remaining_seconds: remaining(game) }));
 }
 
-async function state(gameId?: number, userId?: number) {
-  const selectedId = gameId || Number((await pool.query("SELECT id FROM games ORDER BY id DESC LIMIT 1")).rows[0]?.id);
-  const gameResult = await pool.query("SELECT * FROM games WHERE id = $1", [selectedId]);
+async function availableGamesFor(user?: User) {
+  let list = await gamesList(user);
+  if (!list.length && user?.id && !isAdmin(user)) {
+    await pool.query(
+      `INSERT INTO games (name, template, game_date, start_time, duration_minutes, timer_remaining_seconds, owner_user_id)
+       VALUES ($1,$2,CURRENT_DATE,$3,$4,$5,$6)`,
+      ["Moja gra terenowa", "Własna", "12:00", 90, 90 * 60, user.id]
+    );
+    list = await gamesList(user);
+  }
+  return list;
+}
+
+async function state(gameId?: number, user?: User) {
+  const availableGames = await availableGamesFor(user);
+  const selectedId = gameId || Number(availableGames[0]?.id);
+  if (!selectedId) throw new Error("Nie masz jeszcze dostępnej gry");
+  await assertGameAccess(user, selectedId, "view");
+  const gameResult = await pool.query("SELECT g.*, u.name AS owner_name FROM games g LEFT JOIN users u ON u.id = g.owner_user_id WHERE g.id = $1", [selectedId]);
   const game = gameResult.rows[0];
   if (!game) throw new Error("Nie znaleziono gry");
   game.remaining_seconds = remaining(game);
@@ -369,7 +431,7 @@ async function state(gameId?: number, userId?: number) {
       FROM questions q JOIN stations s ON s.id = q.station_id
       WHERE s.game_id = $1 ORDER BY q.id DESC
     `, [game.id]),
-    gamesList(),
+    Promise.resolve(availableGames),
     pool.query(`
       SELECT c.*, u.name AS caretaker_user_name, u.email AS caretaker_email,
         COALESCE((SELECT COUNT(*) FROM wards w WHERE w.cohort_id = c.id), 0)::int AS ward_count
@@ -384,11 +446,15 @@ async function state(gameId?: number, userId?: number) {
       ORDER BY w.name
     `),
     pool.query(`
-      SELECT s.*, c.name AS cohort_name
+      SELECT s.*, c.name AS cohort_name, u.name AS owner_name,
+        COALESCE((SELECT json_agg(sp.user_id ORDER BY sp.user_id) FROM session_participants sp WHERE sp.session_id=s.id), '[]'::json) AS participant_user_ids,
+        COALESCE((SELECT string_agg(u2.name, ', ' ORDER BY u2.name) FROM session_participants sp JOIN users u2 ON u2.id=sp.user_id WHERE sp.session_id=s.id), '') AS participant_names
       FROM sessions s
       LEFT JOIN cohorts c ON c.id = s.cohort_id
+      LEFT JOIN users u ON u.id = s.owner_user_id
+      WHERE ($1::boolean OR s.scope='grupa' OR s.owner_user_id=$2 OR EXISTS (SELECT 1 FROM session_participants sp WHERE sp.session_id=s.id AND sp.user_id=$2))
       ORDER BY s.session_date ASC, s.id ASC
-    `),
+    `, [isAdmin(user), user?.id || 0]),
     pool.query(`
       SELECT p.*, s.title AS session_title, s.session_date
       FROM session_photos p
@@ -424,7 +490,7 @@ async function state(gameId?: number, userId?: number) {
       ORDER BY m.created_at DESC
       LIMIT 80
     `),
-    userId ? pool.query(`
+    user?.id ? pool.query(`
       SELECT m.target_type,
         CASE
           WHEN m.target_type='user' AND m.target_id=$1 THEN COALESCE(m.sender_id, 0)
@@ -446,7 +512,7 @@ async function state(gameId?: number, userId?: number) {
         WHEN m.target_type='user' AND m.target_id=$1 THEN COALESCE(m.sender_id, 0)
         ELSE COALESCE(m.target_id, 0)
       END
-    `, [userId]) : Promise.resolve({ rows: [] }),
+    `, [user.id]) : Promise.resolve({ rows: [] }),
     pool.query(`
       SELECT u.id, u.email, u.name, u.role, u.created_at,
         COALESCE((SELECT COUNT(*) FROM cohorts c WHERE c.caretaker_user_id = u.id), 0)::int AS group_count
@@ -503,12 +569,15 @@ async function state(gameId?: number, userId?: number) {
 }
 
 function stateFor(req: Request, gameId?: number) {
-  return state(gameId, Number(req.user?.id || 0) || undefined);
+  return state(gameId, req.user);
 }
 
-async function gameState(gameId?: number) {
-  const selectedId = gameId || Number((await pool.query("SELECT id FROM games ORDER BY id DESC LIMIT 1")).rows[0]?.id);
-  const gameResult = await pool.query("SELECT * FROM games WHERE id = $1", [selectedId]);
+async function gameState(gameId?: number, user?: User) {
+  const availableGames = await availableGamesFor(user);
+  const selectedId = gameId || Number(availableGames[0]?.id);
+  if (!selectedId) throw new Error("Nie masz jeszcze dostępnej gry");
+  await assertGameAccess(user, selectedId, "view");
+  const gameResult = await pool.query("SELECT g.*, u.name AS owner_name FROM games g LEFT JOIN users u ON u.id = g.owner_user_id WHERE g.id = $1", [selectedId]);
   const game = gameResult.rows[0];
   if (!game) throw new Error("Nie znaleziono gry");
   game.remaining_seconds = remaining(game);
@@ -545,7 +614,7 @@ async function gameState(gameId?: number) {
       FROM questions q JOIN stations s ON s.id = q.station_id
       WHERE s.game_id = $1 ORDER BY q.id DESC
     `, [game.id]),
-    gamesList()
+    Promise.resolve(availableGames)
   ]);
 
   return {
@@ -560,9 +629,10 @@ async function gameState(gameId?: number) {
   };
 }
 
-async function pulseState(gameId?: number, userId?: number) {
+async function pulseState(gameId?: number, user?: User) {
+  const userId = Number(user?.id || 0) || undefined;
   const [game, messages, messageUnreads] = await Promise.all([
-    gameState(gameId),
+    gameState(gameId, user),
     pool.query(`
       SELECT m.*, u.name AS sender_name,
         p.title AS photo_title,
@@ -665,9 +735,9 @@ async function markAllMessagesRead(userId: number) {
 function templateStations(template: string) {
   const data: Record<string, string[]> = {
     Polska: ["Start", "Wawel", "Mazury", "Tatry", "Gdańsk", "Meta"],
-    Włochy: ["Start", "Koloseum", "Wieża w Pizie", "Pompeje", "Fontanna", "Meta"],
+    "Włochy": ["Start", "Koloseum", "Wieża w Pizie", "Pompeje", "Fontanna", "Meta"],
     Olimp: ["Start", "Zeus", "Atena", "Apollo", "Hermes", "Meta"],
-    Własna: []
+    "Własna": []
   };
   return data[template] || [];
 }
@@ -715,23 +785,26 @@ app.get("/api/state", async (req, res) => {
   try {
     res.json(await stateFor(req, req.query.gameId ? Number(req.query.gameId) : undefined));
   } catch (error) {
-    res.status(500).json({ ok: false, error: error instanceof Error ? error.message : "Błąd serwera" });
+    const status = (error as Error & { status?: number })?.status || 500;
+    res.status(status).json({ ok: false, error: error instanceof Error ? error.message : "Błąd serwera" });
   }
 });
 
 app.get("/api/game-state", async (req, res) => {
   try {
-    res.json(await gameState(req.query.gameId ? Number(req.query.gameId) : undefined));
+    res.json(await gameState(req.query.gameId ? Number(req.query.gameId) : undefined, req.user));
   } catch (error) {
-    res.status(500).json({ ok: false, error: error instanceof Error ? error.message : "Błąd serwera" });
+    const status = (error as Error & { status?: number })?.status || 500;
+    res.status(status).json({ ok: false, error: error instanceof Error ? error.message : "Błąd serwera" });
   }
 });
 
 app.get("/api/pulse", async (req, res) => {
   try {
-    res.json(await pulseState(req.query.gameId ? Number(req.query.gameId) : undefined, Number(req.user?.id || 0) || undefined));
+    res.json(await pulseState(req.query.gameId ? Number(req.query.gameId) : undefined, req.user));
   } catch (error) {
-    res.status(500).json({ ok: false, error: error instanceof Error ? error.message : "Błąd serwera" });
+    const status = (error as Error & { status?: number })?.status || 500;
+    res.status(status).json({ ok: false, error: error instanceof Error ? error.message : "Błąd serwera" });
   }
 });
 
@@ -744,6 +817,7 @@ app.post("/api/games", async (req, res) => {
   const startTime = String(req.body.start_time || "12:00");
 
   if (id) {
+    await assertGameAccess(req.user, id, "manage");
     await pool.query(
       `UPDATE games SET name=$1, template=$2, game_date=$3, start_time=$4, duration_minutes=$5,
        timer_remaining_seconds = CASE WHEN timer_running THEN timer_remaining_seconds ELSE $6 END WHERE id=$7`,
@@ -753,8 +827,8 @@ app.post("/api/games", async (req, res) => {
   }
 
   const result = await pool.query(
-    "INSERT INTO games (name, template, game_date, start_time, duration_minutes, timer_remaining_seconds) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id",
-    [name, template, gameDate, startTime, duration, duration * 60]
+    "INSERT INTO games (name, template, game_date, start_time, duration_minutes, timer_remaining_seconds, owner_user_id) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id",
+    [name, template, gameDate, startTime, duration, duration * 60, req.user?.id || null]
   );
   const gameId = Number(result.rows[0].id);
   if (req.body.use_template) {
@@ -771,16 +845,20 @@ app.post("/api/games", async (req, res) => {
 });
 
 app.delete("/api/games/:id", async (req, res) => {
+  await assertGameAccess(req.user, Number(req.params.id), "manage");
   await pool.query("DELETE FROM games WHERE id = $1", [Number(req.params.id)]);
   res.json(await stateFor(req));
 });
 
 app.post("/api/teams", async (req, res) => {
+  await assertGameAccess(req.user, Number(req.body.game_id), "manage");
   await pool.query("INSERT INTO teams (game_id, name, color) VALUES ($1,$2,$3)", [Number(req.body.game_id), String(req.body.name), String(req.body.color || "#1e5c46")]);
   res.json(await stateFor(req, Number(req.body.game_id)));
 });
 
 app.delete("/api/teams/:id", async (req, res) => {
+  const lookup = await pool.query("SELECT game_id FROM teams WHERE id=$1", [Number(req.params.id)]);
+  await assertGameAccess(req.user, Number(lookup.rows[0]?.game_id || req.query.gameId), "manage");
   const result = await pool.query("DELETE FROM teams WHERE id = $1 RETURNING game_id", [Number(req.params.id)]);
   res.json(await stateFor(req, Number(result.rows[0]?.game_id || req.query.gameId)));
 });
@@ -905,6 +983,9 @@ app.delete("/api/competition/points/:id", async (req, res) => {
 });
 app.post("/api/sessions", async (req, res) => {
   const id = Number(req.body.id || 0);
+  const participantIds = Array.isArray(req.body.participant_user_ids)
+    ? req.body.participant_user_ids.map(Number).filter(Boolean)
+    : [req.body.participant_user_ids].map(Number).filter(Boolean);
   const values = [
     String(req.body.title || ""),
     String(req.body.session_date || new Date().toISOString().slice(0, 10)),
@@ -915,15 +996,27 @@ app.post("/api/sessions", async (req, res) => {
     String(req.body.scope || "grupa")
   ];
   if (!values[0]) return res.status(400).json({ ok: false, error: "Podaj tytuł zbiórki" });
+  let sessionId = id;
   if (id) {
+    await assertSessionManage(req.user, id);
     await pool.query("UPDATE sessions SET title=$1, session_date=$2, location=$3, attendance=$4, total=$5, cohort_id=$6, scope=$7 WHERE id=$8", [...values, id]);
   } else {
-    await pool.query("INSERT INTO sessions (title, session_date, location, attendance, total, cohort_id, scope) VALUES ($1,$2,$3,$4,$5,$6,$7)", values);
+    const result = await pool.query("INSERT INTO sessions (title, session_date, location, attendance, total, cohort_id, scope, owner_user_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id", [...values, req.user?.id || null]);
+    sessionId = Number(result.rows[0].id);
+  }
+  if (sessionId) {
+    await pool.query("DELETE FROM session_participants WHERE session_id=$1", [sessionId]);
+    for (const userId of participantIds) {
+      if (userId !== Number(req.user?.id || 0)) {
+        await pool.query("INSERT INTO session_participants (session_id, user_id) VALUES ($1,$2) ON CONFLICT DO NOTHING", [sessionId, userId]);
+      }
+    }
   }
   res.json(await stateFor(req, Number(req.body.game_id || 0) || undefined));
 });
 
 app.delete("/api/sessions/:id", async (req, res) => {
+  await assertSessionManage(req.user, Number(req.params.id));
   await pool.query("DELETE FROM sessions WHERE id=$1", [Number(req.params.id)]);
   res.json(await stateFor(req, req.query.gameId ? Number(req.query.gameId) : undefined));
 });
@@ -1015,6 +1108,7 @@ app.post("/api/messages/:id", async (req, res) => {
 
 app.post("/api/stations", async (req, res) => {
   const gameId = Number(req.body.game_id);
+  await assertGameAccess(req.user, gameId, "manage");
   const id = Number(req.body.id || 0);
   const title = String(req.body.title || "").trim();
   const order = Math.max(1, Number(req.body.station_order || 1));
@@ -1030,6 +1124,8 @@ app.post("/api/stations", async (req, res) => {
 });
 
 app.delete("/api/stations/:id", async (req, res) => {
+  const lookup = await pool.query("SELECT game_id FROM stations WHERE id=$1", [Number(req.params.id)]);
+  await assertGameAccess(req.user, Number(lookup.rows[0]?.game_id || req.query.gameId), "manage");
   const result = await pool.query("DELETE FROM stations WHERE id = $1 RETURNING game_id", [Number(req.params.id)]);
   res.json(await stateFor(req, Number(result.rows[0]?.game_id || req.query.gameId)));
 });
@@ -1037,18 +1133,20 @@ app.delete("/api/stations/:id", async (req, res) => {
 app.post("/api/scores", async (req, res) => {
   const teamId = Number(req.body.team_id);
   const stationId = Number(req.body.station_id);
+  const gameId = Number((await pool.query("SELECT game_id FROM teams WHERE id=$1", [teamId])).rows[0]?.game_id || 0);
+  await assertGameAccess(req.user, gameId, "manage");
   await pool.query(`
     INSERT INTO team_stations (team_id, station_id, points, correct, cooperation, started_at, finished_at, comment)
     VALUES ($1,$2,$3,$4,$5,NOW(),NOW(),$6)
     ON CONFLICT (team_id, station_id)
     DO UPDATE SET points=$3, correct=$4, cooperation=$5, finished_at=NOW(), comment=$6
   `, [teamId, stationId, Number(req.body.points || 0), Boolean(req.body.correct), Number(req.body.cooperation || 0), String(req.body.comment || "")]);
-  const gameId = Number((await pool.query("SELECT game_id FROM teams WHERE id=$1", [teamId])).rows[0].game_id);
   res.json(await stateFor(req, gameId));
 });
 
 app.post("/api/timer", async (req, res) => {
   const gameId = Number(req.body.game_id);
+  await assertGameAccess(req.user, gameId, "manage");
   const game = (await pool.query("SELECT * FROM games WHERE id=$1", [gameId])).rows[0];
   const left = remaining(game);
   if (req.body.command === "start") {
@@ -1063,15 +1161,17 @@ app.post("/api/timer", async (req, res) => {
 
 app.post("/api/materials", async (req, res) => {
   const stationId = Number(req.body.station_id);
-  await pool.query("INSERT INTO materials (station_id, title, url, notes) VALUES ($1,$2,$3,$4)", [stationId, String(req.body.title), String(req.body.url || ""), String(req.body.notes || "")]);
   const gameId = Number((await pool.query("SELECT game_id FROM stations WHERE id=$1", [stationId])).rows[0].game_id);
+  await assertGameAccess(req.user, gameId, "manage");
+  await pool.query("INSERT INTO materials (station_id, title, url, notes) VALUES ($1,$2,$3,$4)", [stationId, String(req.body.title), String(req.body.url || ""), String(req.body.notes || "")]);
   res.json(await stateFor(req, gameId));
 });
 
 app.post("/api/questions", async (req, res) => {
   const stationId = Number(req.body.station_id);
-  await pool.query("INSERT INTO questions (station_id, question, answer, max_points) VALUES ($1,$2,$3,$4)", [stationId, String(req.body.question), String(req.body.answer || ""), Number(req.body.max_points || 10)]);
   const gameId = Number((await pool.query("SELECT game_id FROM stations WHERE id=$1", [stationId])).rows[0].game_id);
+  await assertGameAccess(req.user, gameId, "manage");
+  await pool.query("INSERT INTO questions (station_id, question, answer, max_points) VALUES ($1,$2,$3,$4)", [stationId, String(req.body.question), String(req.body.answer || ""), Number(req.body.max_points || 10)]);
   res.json(await stateFor(req, gameId));
 });
 
@@ -1105,4 +1205,5 @@ ensureSchema().then(() => {
   console.error(error);
   process.exit(1);
 });
+
 
