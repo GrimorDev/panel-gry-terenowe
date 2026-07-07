@@ -266,6 +266,15 @@ async function ensureSchema() {
   await pool.query("ALTER TABLE messages ADD COLUMN IF NOT EXISTS attachment_data TEXT");
   await pool.query("ALTER TABLE messages ADD COLUMN IF NOT EXISTS reply_to_id INTEGER REFERENCES messages(id) ON DELETE SET NULL");
   await pool.query("ALTER TABLE messages ADD COLUMN IF NOT EXISTS edited_at TIMESTAMPTZ");
+  await pool.query(`
+    DELETE FROM competition_tent_members m
+    USING (
+      SELECT ctid, ROW_NUMBER() OVER (PARTITION BY ward_id ORDER BY created_at DESC, tent_id DESC) AS rn
+      FROM competition_tent_members
+    ) duplicates
+    WHERE m.ctid = duplicates.ctid AND duplicates.rn > 1
+  `);
+  await pool.query("CREATE UNIQUE INDEX IF NOT EXISTS competition_tent_members_one_tent_per_ward ON competition_tent_members (ward_id)");
   await pool.query("UPDATE cohorts SET caretaker='Bez opiekuna' WHERE caretaker_user_id IS NULL AND caretaker <> 'Bez opiekuna'");
 
   await pool.query(
@@ -529,9 +538,10 @@ async function state(gameId?: number, user?: User) {
       ORDER BY total_points DESC, t.name ASC
     `),
     pool.query(`
-      SELECT m.*, w.name AS ward_name, w.age, c.name AS cohort_name
+      SELECT m.*, w.name AS ward_name, w.age, c.name AS cohort_name, t.name AS tent_name
       FROM competition_tent_members m
       JOIN wards w ON w.id = m.ward_id
+      JOIN competition_tents t ON t.id = m.tent_id
       LEFT JOIN cohorts c ON c.id = w.cohort_id
       ORDER BY w.name
     `),
@@ -955,9 +965,25 @@ app.delete("/api/competition/tents/:id", async (req, res) => {
 app.post("/api/competition/tents/:id/members", async (req, res) => {
   const tentId = Number(req.params.id);
   const wardIds = Array.isArray(req.body.ward_ids) ? req.body.ward_ids.map(Number).filter(Boolean) : [];
-  await pool.query("DELETE FROM competition_tent_members WHERE tent_id=$1", [tentId]);
-  for (const wardId of wardIds) {
-    await pool.query("INSERT INTO competition_tent_members (tent_id, ward_id) VALUES ($1,$2) ON CONFLICT DO NOTHING", [tentId, wardId]);
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query("DELETE FROM competition_tent_members WHERE tent_id=$1", [tentId]);
+    if (wardIds.length) {
+      await client.query("DELETE FROM competition_tent_members WHERE ward_id = ANY($1::int[])", [wardIds]);
+    }
+    for (const wardId of wardIds) {
+      await client.query(
+        "INSERT INTO competition_tent_members (tent_id, ward_id) VALUES ($1,$2) ON CONFLICT (ward_id) DO UPDATE SET tent_id=EXCLUDED.tent_id, created_at=NOW()",
+        [tentId, wardId]
+      );
+    }
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
   }
   res.json(await stateFor(req, Number(req.body.game_id || 0) || undefined));
 });

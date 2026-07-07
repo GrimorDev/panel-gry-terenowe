@@ -22,7 +22,7 @@ type InternalShare = { id: number; photo_id: number; photo_title: string; target
 type Message = { id: number; sender_id: number | null; sender_name: string | null; target_type: string; target_id: number | null; cohort_name: string | null; body: string; photo_id: number | null; photo_title: string | null; photo_image_data: string | null; photo_mime_type: string | null; photo_share_token: string | null; attachment_name: string | null; attachment_mime: string | null; attachment_data: string | null; reply_to_id: number | null; reply_body: string | null; reply_sender_name: string | null; reply_photo_title: string | null; reply_attachment_name: string | null; edited_at: string | null; created_at: string };
 type MessageUnread = { target_type: string; target_id: number; unread_count: number };
 type CompetitionTent = { id: number; name: string; color: string; total_points: number; member_count: number; created_at: string };
-type CompetitionMember = { tent_id: number; ward_id: number; ward_name: string; age: number; cohort_name: string | null };
+type CompetitionMember = { tent_id: number; ward_id: number; ward_name: string; age: number; cohort_name: string | null; tent_name: string };
 type CompetitionPoint = { id: number; tent_id: number; tent_name: string; category: string; points: number; reason: string; created_by: number | null; created_by_name: string | null; created_at: string };
 type AppState = { ok: true; game: Game; games: Game[]; teams: Team[]; stations: Station[]; scores: Score[]; materials: Material[]; questions: Question[]; cohorts: Cohort[]; wards: Ward[]; sessions: Session[]; photos: Photo[]; shares: InternalShare[]; messages: Message[]; message_unreads: MessageUnread[]; caregivers: Caregiver[]; competition_tents: CompetitionTent[]; competition_members: CompetitionMember[]; competition_points: CompetitionPoint[] };
 type GameState = Pick<AppState, "ok" | "game" | "games" | "teams" | "stations" | "scores" | "materials" | "questions">;
@@ -860,6 +860,14 @@ function CompetitionView({ state, setState, runBusy }: { state: AppState; setSta
   const selectedTent = state.competition_tents.find((tent) => tent.id === selectedTentId) || state.competition_tents[0];
   const selectedMembers = selectedTent ? state.competition_members.filter((member) => member.tent_id === selectedTent.id) : [];
   const selectedWardIds = new Set(selectedMembers.map((member) => member.ward_id));
+  const assignedMemberByWardId = new Map(state.competition_members.map((member) => [member.ward_id, member]));
+  const availableWards = selectedTent
+    ? state.wards.filter((ward) => {
+      const assigned = assignedMemberByWardId.get(ward.id);
+      return !assigned || assigned.tent_id === selectedTent.id;
+    })
+    : [];
+  const busyWardsCount = state.wards.length - availableWards.length;
   const history = selectedTent ? state.competition_points.filter((point) => point.tent_id === selectedTent.id) : state.competition_points;
 
   useEffect(() => {
@@ -921,7 +929,9 @@ function CompetitionView({ state, setState, runBusy }: { state: AppState; setSta
 
       <Panel title={selectedTent ? `Skład: ${selectedTent.name}` : "Skład namiotu"} kicker="podopieczni" className="wide">
         {selectedTent ? <form onSubmit={(event) => { event.preventDefault(); saveMembers(event.currentTarget); }}>
-          <div className="member-picker">{state.wards.map((ward) => <label key={ward.id} className="member-check"><input type="checkbox" name="ward_ids" value={ward.id} defaultChecked={selectedWardIds.has(ward.id)} /><span>{initials(ward.name)}</span><div><strong>{ward.name}</strong><small>{ward.age} lat · {ward.cohort_name || "bez grupy"}</small></div></label>)}</div>
+          <p className="help">Pokazujemy tylko osoby wolne oraz osoby przypisane do tego namiotu. {busyWardsCount > 0 ? `${busyWardsCount} podopiecznych jest już w innych namiotach.` : "Wszyscy podopieczni są dostępni."}</p>
+          <div className="member-picker">{availableWards.map((ward) => <label key={ward.id} className="member-check"><input type="checkbox" name="ward_ids" value={ward.id} defaultChecked={selectedWardIds.has(ward.id)} /><span>{initials(ward.name)}</span><div><strong>{ward.name}</strong><small>{ward.age} lat · {ward.cohort_name || "bez grupy"}</small></div></label>)}</div>
+          {!availableWards.length && <p className="empty">Brak wolnych podopiecznych. Odpnij osobę z innego namiotu, żeby przypisać ją tutaj.</p>}
           <div className="form-actions"><Button variant="primary">Zapisz skład</Button></div>
         </form> : <p className="empty">Najpierw dodaj namiot.</p>}
       </Panel>
