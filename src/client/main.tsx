@@ -226,13 +226,14 @@ function UiIcon({ name }: { name: string }) {
   if (name === "edit") return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20h9" {...common} /><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L8 18l-4 1 1-4L16.5 3.5z" {...common} /></svg>;
   if (name === "attach") return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21.4 11.2 12 20.6a6 6 0 0 1-8.5-8.5l9.8-9.8a4 4 0 0 1 5.7 5.7l-9.8 9.8a2 2 0 0 1-2.8-2.8l8.9-8.9" {...common} /></svg>;
   if (name === "send") return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6" {...common} /></svg>;
+  if (name === "camera") return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8.5A2.5 2.5 0 0 1 6.5 6H8l1.5-2h5L16 6h1.5A2.5 2.5 0 0 1 20 8.5v8A2.5 2.5 0 0 1 17.5 19h-11A2.5 2.5 0 0 1 4 16.5v-8Z" {...common} /><circle cx="12" cy="12.5" r="3.5" {...common} /></svg>;
   if (name === "more") return <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="1.5" fill="currentColor" /><circle cx="12" cy="12" r="1.5" fill="currentColor" /><circle cx="19" cy="12" r="1.5" fill="currentColor" /></svg>;
   return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 21V3M6 4.5c2.8-1.6 4.7 1.4 7.5-.1s4.5 1.3 4.5 1.3v8.1c-2.8 1.6-4.7-1.4-7.5.1S6 12.5 6 12.5v-8z" {...common} /></svg>;
 }
 
 function Login({ onLogin }: { onLogin: (user: User) => void }) {
-  const [email, setEmail] = useState("grimordev@gmail.com");
-  const [password, setPassword] = useState("PrywatnieNr7!");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   async function submit(event: React.FormEvent) {
     event.preventDefault();
@@ -252,11 +253,11 @@ function Login({ onLogin }: { onLogin: (user: User) => void }) {
       <small>© 2026 Hufc</small>
     </section>
     <section className="login-pane">
-      <form className="login-card" onSubmit={submit}>
+      <form className="login-card" onSubmit={submit} autoComplete="off">
         <h2>Logowanie</h2>
         <p>Konto wychowawcy</p>
-        <label>E-mail<input value={email} onChange={(event) => setEmail(event.target.value)} type="email" required /></label>
-        <label>Hasło<input value={password} onChange={(event) => setPassword(event.target.value)} type="password" required /></label>
+        <label>E-mail<input value={email} onChange={(event) => setEmail(event.target.value)} type="email" autoComplete="off" required /></label>
+        <label>Hasło<input value={password} onChange={(event) => setPassword(event.target.value)} type="password" autoComplete="new-password" required /></label>
         {error && <div className="form-error">{error}</div>}
         <Button variant="primary" type="submit">Zaloguj się</Button>
         <small>Nie masz konta? Skontaktuj się z komendantem hufca.</small>
@@ -1097,13 +1098,13 @@ function Gallery({ state, onAddGallery, onUploadPhotos, onEditPhoto, onShareInte
           <div className="photo-upload-card">
             <label className="upload-action primary-upload">
               <input type="file" accept="image/*" capture="environment" onChange={(event) => { const file = event.currentTarget.files?.[0]; if (file) onUploadPhotos(session.id, [file]); event.currentTarget.value = ""; }} />
-              <strong>Zrób zdjęcie</strong>
-              <small>Otwiera aparat telefonu</small>
+              <UiIcon name="camera" />
+              <span>Aparat</span>
             </label>
             <label className="upload-action">
               <input type="file" accept="image/*" multiple onChange={(event) => { const files = Array.from(event.currentTarget.files || []); if (files.length) onUploadPhotos(session.id, files); event.currentTarget.value = ""; }} />
-              <strong>Wgraj zdjęcia</strong>
-              <small>Z galerii telefonu lub dysku</small>
+              <UiIcon name="gallery" />
+              <span>Galeria</span>
             </label>
           </div>
         </div>

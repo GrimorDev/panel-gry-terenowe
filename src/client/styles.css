@@ -153,8 +153,11 @@ body:has(.app-shell.theme-night) { background: radial-gradient(circle at 16% 0%,
 .app-shell.theme-night .point-row,
 .app-shell.theme-night .choice,
 .app-shell.theme-night .gallery-add-tile,
+.app-shell.theme-night .photo-upload-card,
+.app-shell.theme-night .upload-action,
 .app-shell.theme-night .photo-info-menu,
 .app-shell.theme-night .photo-actions-menu { background: #0C1812; color: var(--text-primary); border-color: var(--border-default); }
+.app-shell.theme-night .upload-action.primary-upload { background: var(--forest-600); color: #fff; border-color: var(--forest-600); }
 .app-shell.theme-night .bubble-list,
 .app-shell.theme-night .main-content,
 .app-shell.theme-night .map-tools,
@@ -376,11 +379,12 @@ body:has(.app-shell.theme-night) { background: radial-gradient(circle at 16% 0%,
 .photo-actions-menu button { min-height: 36px; padding: 0 10px; background: transparent; text-align: left; color: var(--text-primary); font-size: 12.5px; }
 .photo-actions-menu button:hover { background: var(--surface-muted); }
 .photo-actions-menu button.danger { color: var(--color-danger); }
-.photo-upload-card { aspect-ratio: 1; min-height: 0; display: grid; grid-template-columns: 1fr 1fr; gap: 10px; padding: 10px; border: 1px dashed var(--border-default); border-radius: var(--radius-md); background: rgba(255,255,255,.55); }
-.upload-action { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; min-height: 100%; padding: 16px; border: 1px solid var(--border-default); border-radius: var(--radius-sm); background: #fff; text-align: center; cursor: pointer; }
+.photo-upload-card { aspect-ratio: 1; min-height: 0; display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding: 8px; border: 1px dashed var(--border-default); border-radius: var(--radius-md); background: rgba(255,255,255,.55); }
+.upload-action { display: grid; place-items: center; align-content: center; gap: 8px; min-height: 100%; padding: 10px; border: 1px solid var(--border-default); border-radius: var(--radius-sm); background: #fff; color: var(--color-brand); text-align: center; cursor: pointer; }
 .upload-action.primary-upload { background: var(--color-brand); color: #fff; border-color: var(--color-brand); }
 .upload-action input { display: none; }
-.upload-action small { color: inherit; opacity: .72; }
+.upload-action svg { width: 24px; height: 24px; }
+.upload-action span { font-size: 12px; font-weight: 800; line-height: 1.1; }
 .dialog-photo { width: 100%; max-height: 360px; object-fit: contain; border-radius: var(--radius-md); border: 1px solid var(--border-default); background: var(--gray-100); }
 .danger-zone { margin-top: 18px; padding-top: 18px; border-top: 1px solid var(--border-default); }
 .game-select { min-width: 260px; grid-template-columns: 1fr; align-items: center; color: var(--text-muted); }
