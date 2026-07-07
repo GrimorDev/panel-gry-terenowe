@@ -22,6 +22,8 @@ type InternalShare = { id: number; photo_id: number; photo_title: string; target
 type Message = { id: number; sender_id: number | null; sender_name: string | null; target_type: string; target_id: number | null; cohort_name: string | null; body: string; photo_id: number | null; photo_title: string | null; photo_image_data: string | null; photo_mime_type: string | null; photo_share_token: string | null; attachment_name: string | null; attachment_mime: string | null; attachment_data: string | null; reply_to_id: number | null; reply_body: string | null; reply_sender_name: string | null; reply_photo_title: string | null; reply_attachment_name: string | null; edited_at: string | null; created_at: string };
 type MessageUnread = { target_type: string; target_id: number; unread_count: number };
 type AppState = { ok: true; game: Game; games: Game[]; teams: Team[]; stations: Station[]; scores: Score[]; materials: Material[]; questions: Question[]; cohorts: Cohort[]; wards: Ward[]; sessions: Session[]; photos: Photo[]; shares: InternalShare[]; messages: Message[]; message_unreads: MessageUnread[]; caregivers: Caregiver[] };
+type GameState = Pick<AppState, "ok" | "game" | "games" | "teams" | "stations" | "scores" | "materials" | "questions">;
+type PulseState = GameState & Pick<AppState, "messages" | "message_unreads">;
 type NotificationItem = { id: string; title: string; detail: string; time: string; kind: "ward" | "session" | "message" | "today" };
 type AppPrefs = { sidebar: "full" | "compact"; theme: "forest" | "terra" | "cream"; email: boolean; push: boolean };
 type BusyRunner = <T>(label: string, task: () => Promise<T>) => Promise<T>;
@@ -288,7 +290,10 @@ function App() {
   }
 
   async function load(gameId?: number) {
-    const data = await api<AppState>(`/api/state${gameId ? `?gameId=${gameId}` : ""}`);
+    const data = gameId && state
+      ? { ...state, ...(await api<GameState>(`/api/game-state?gameId=${gameId}`)) }
+      : await api<AppState>(`/api/state${gameId ? `?gameId=${gameId}` : ""}`);
+    if (gameId) mapFittedGameRef.current = null;
     setState(data);
     setTeamId((previous) => previous && data.teams.some((team) => team.id === previous) ? previous : data.teams[0]?.id || null);
     setStationId((previous) => previous && data.stations.some((station) => station.id === previous) ? previous : data.stations[0]?.id || null);
@@ -374,9 +379,12 @@ function App() {
     const timer = window.setInterval(async () => {
       try {
         const previousMessageId = lastMessageIdRef.current;
-        const next = await api<AppState>(`/api/state?gameId=${state.game.id}`);
+        const fullMessages = view === "messages";
+        const next = fullMessages
+          ? await api<AppState>(`/api/state?gameId=${state.game.id}`)
+          : await api<PulseState>(`/api/pulse?gameId=${state.game.id}`);
         const incoming = newestIncomingMessage(next.messages, user.id, previousMessageId);
-        setState(next);
+        setState((current) => current ? { ...current, ...next, messages: fullMessages ? next.messages : current.messages } : next as AppState);
         lastMessageIdRef.current = newestMessageId(next.messages);
         if (!incoming || !prefs.push || !("Notification" in window) || Notification.permission !== "granted") return;
         const title = incoming.sender_name ? `Nowa wiadomość od ${incoming.sender_name}` : "Nowa wiadomość w Hufcu";
@@ -387,7 +395,7 @@ function App() {
       }
     }, 7000);
     return () => window.clearInterval(timer);
-  }, [auth, state?.game.id, user?.id, prefs.push]);
+  }, [auth, state?.game.id, user?.id, prefs.push, view]);
 
   useEffect(() => {
     if (!state || view !== "messages" || messageUnreadTotal(state) === 0 || readAllInFlightRef.current) return;
@@ -446,7 +454,9 @@ function App() {
         (form.elements.namedItem("station_order") as HTMLInputElement).value = String(state.stations.length + 1);
         (form.elements.namedItem("lat") as HTMLInputElement).value = event.latlng.lat.toFixed(6);
         (form.elements.namedItem("lng") as HTMLInputElement).value = event.latlng.lng.toFixed(6);
-        (form.elements.namedItem("title") as HTMLInputElement).focus();
+        const title = form.elements.namedItem("title") as HTMLInputElement;
+        if (window.matchMedia("(max-width: 680px)").matches) title.scrollIntoView({ block: "center", behavior: "smooth" });
+        else title.focus();
       });
     }
     window.setTimeout(() => map.current?.invalidateSize(), 80);
@@ -529,6 +539,25 @@ function App() {
     );
   }
 
+  function focusNearestStation() {
+    if (!state || !map.current) return;
+    const points = state.stations.filter((station) => station.lat && station.lng);
+    if (!points.length) {
+      flash("Ta gra nie ma jeszcze stacji na mapie");
+      return;
+    }
+    const center = map.current.getCenter();
+    const nearest = points
+      .map((station) => ({
+        station,
+        distance: map.current!.distance(center, L.latLng(Number(station.lat), Number(station.lng)))
+      }))
+      .sort((a, b) => a.distance - b.distance)[0].station;
+    map.current.setView([Number(nearest.lat), Number(nearest.lng)], Math.max(map.current.getZoom(), 16), { animate: true });
+    window.setTimeout(() => map.current?.invalidateSize(), 80);
+    flash(`Mapa wróciła do stacji: ${nearest.title}`);
+  }
+
   function useMapCenterForStation() {
     if (!state || !map.current) return;
     const center = map.current.getCenter();
@@ -538,8 +567,13 @@ function App() {
     (form.elements.namedItem("station_order") as HTMLInputElement).value = String(state.stations.length + 1);
     (form.elements.namedItem("lat") as HTMLInputElement).value = center.lat.toFixed(6);
     (form.elements.namedItem("lng") as HTMLInputElement).value = center.lng.toFixed(6);
-    (form.elements.namedItem("title") as HTMLInputElement).focus();
-    flash("Punkt ustawiony w środku mapy");
+    const title = form.elements.namedItem("title") as HTMLInputElement;
+    if (window.matchMedia("(max-width: 680px)").matches) {
+      title.scrollIntoView({ block: "center", behavior: "smooth" });
+    } else {
+      title.focus();
+    }
+    flash(`Punkt ustawiony: ${center.lat.toFixed(5)}, ${center.lng.toFixed(5)}`);
   }
 
   async function uploadPhotos(sessionId: number, files: File[]) {
@@ -598,7 +632,7 @@ function App() {
           {view === "gallery" && <Gallery state={state} onAddGallery={() => { setEditingSession(null); setModal("session"); }} onUploadPhotos={uploadPhotos} onEditPhoto={(photo) => { setEditingPhoto(photo); setModal("photo"); }} onShareInternal={(photo) => { setSharingPhoto(photo); setModal("share"); }} onDeletePhoto={async (id) => setState(await runBusy("Usuwanie zdjęcia...", () => api<AppState>(`/api/photos/${id}?gameId=${state.game.id}`, { method: "DELETE" })))} />}
           {view === "messages" && <MessagesView state={state} user={user} setState={setState} />}
           {view === "staff" && user.role === "administrator" && <StaffView state={state} setState={setState} />}
-          {view === "games" && <GamesModule state={state} gameTab={gameTab} setGameTab={setGameTab} ranking={ranking} teamId={teamId} stationId={stationId} setTeamId={setTeamId} setStationId={setStationId} activeScore={activeScore} mapRef={mapEl} onSaveGame={saveGame} onDeleteGame={deleteGame} onFocusArea={focusGameArea} onUseCurrentLocation={useCurrentLocation} onUseMapCenter={useMapCenterForStation} onSaveStation={saveStation} onAddTeam={() => setModal("team")} onDeleteStation={async (id) => setState(await runBusy("Usuwanie stacji...", () => api<AppState>(`/api/stations/${id}?gameId=${state.game.id}`, { method: "DELETE" })))} onTimer={async (command) => setState(await runBusy("Aktualizowanie timera...", () => api<AppState>("/api/timer", { method: "POST", body: JSON.stringify({ game_id: state.game.id, command }) })))} onScore={async (payload) => { setState(await runBusy("Zapisywanie oceny...", () => api<AppState>("/api/scores", { method: "POST", body: JSON.stringify(payload) }))); flash("Ocena zapisana"); }} setState={setState} load={(gameId?: number) => runBusy("Przełączanie gry...", () => load(gameId))} openTv={() => setModal("tv")} />}
+          {view === "games" && <GamesModule state={state} gameTab={gameTab} setGameTab={setGameTab} ranking={ranking} teamId={teamId} stationId={stationId} setTeamId={setTeamId} setStationId={setStationId} activeScore={activeScore} mapRef={mapEl} onSaveGame={saveGame} onDeleteGame={deleteGame} onFocusArea={focusGameArea} onUseCurrentLocation={useCurrentLocation} onUseMapCenter={useMapCenterForStation} onFocusNearestStation={focusNearestStation} onSaveStation={saveStation} onAddTeam={() => setModal("team")} onDeleteStation={async (id) => setState(await runBusy("Usuwanie stacji...", () => api<AppState>(`/api/stations/${id}?gameId=${state.game.id}`, { method: "DELETE" })))} onTimer={async (command) => setState(await runBusy("Aktualizowanie timera...", () => api<AppState>("/api/timer", { method: "POST", body: JSON.stringify({ game_id: state.game.id, command }) })))} onScore={async (payload) => { setState(await runBusy("Zapisywanie oceny...", () => api<AppState>("/api/scores", { method: "POST", body: JSON.stringify(payload) }))); flash("Ocena zapisana"); }} setState={setState} load={(gameId?: number) => runBusy("Przełączanie gry...", () => load(gameId))} openTv={() => setModal("tv")} />}
         </div>
       </div>
     </main>
@@ -876,7 +910,7 @@ function GalleryLightbox({ photo, current, total, onClose, onPrev, onNext, onSha
   </div>;
 }
 
-function GamesModule(props: { state: AppState; gameTab: string; setGameTab: (tab: any) => void; ranking: Team[]; teamId: number | null; stationId: number | null; setTeamId: (id: number) => void; setStationId: (id: number) => void; activeScore: Score | null; mapRef: React.RefObject<HTMLDivElement>; onSaveGame: (form: HTMLFormElement) => void; onDeleteGame: (id: number) => void; onFocusArea: (query: string) => void; onUseCurrentLocation: () => void; onUseMapCenter: () => void; onSaveStation: (payload: Partial<Station>) => void; onAddTeam: () => void; onDeleteStation: (id: number) => void; onTimer: (command: "start" | "pause" | "reset") => void; onScore: (payload: { team_id: number | null; station_id: number | null; points: number; correct: boolean; cooperation: number; comment: string }) => void; setState: (state: AppState) => void; load: (gameId?: number) => void; openTv: () => void }) {
+function GamesModule(props: { state: AppState; gameTab: string; setGameTab: (tab: any) => void; ranking: Team[]; teamId: number | null; stationId: number | null; setTeamId: (id: number) => void; setStationId: (id: number) => void; activeScore: Score | null; mapRef: React.RefObject<HTMLDivElement>; onSaveGame: (form: HTMLFormElement) => void; onDeleteGame: (id: number) => void; onFocusArea: (query: string) => void; onUseCurrentLocation: () => void; onUseMapCenter: () => void; onFocusNearestStation: () => void; onSaveStation: (payload: Partial<Station>) => void; onAddTeam: () => void; onDeleteStation: (id: number) => void; onTimer: (command: "start" | "pause" | "reset") => void; onScore: (payload: { team_id: number | null; station_id: number | null; points: number; correct: boolean; cooperation: number; comment: string }) => void; setState: (state: AppState) => void; load: (gameId?: number) => void; openTv: () => void }) {
   const { state } = props;
   const completedStations = state.scores.filter((score) => score.team_id === props.teamId && score.finished_at).length;
   return <div>
@@ -893,10 +927,10 @@ function GamesModule(props: { state: AppState; gameTab: string; setGameTab: (tab
   </div>;
 }
 
-function GamePrepare({ state, onSaveGame, onSaveStation, onAddTeam, onDeleteStation, mapRef, onFocusArea, onUseCurrentLocation, onUseMapCenter }: any) {
+function GamePrepare({ state, onSaveGame, onSaveStation, onAddTeam, onDeleteStation, mapRef, onFocusArea, onUseCurrentLocation, onUseMapCenter, onFocusNearestStation }: any) {
   return <div className="flow">
     <Panel kicker="Krok 1" title="Ustaw grę"><form id="gameForm" className="form-grid" onSubmit={(event) => { event.preventDefault(); onSaveGame(event.currentTarget); }}><input name="id" type="hidden" defaultValue={state.game.id} /><label>Nazwa gry<input name="name" defaultValue={state.game.name} required /></label><label>Typ<select name="template" defaultValue={state.game.template}>{templates.map((item) => <option key={item}>{item}</option>)}</select></label><label>Data<input name="game_date" type="date" defaultValue={String(state.game.game_date).slice(0, 10)} /></label><label>Start<input name="start_time" type="time" defaultValue={String(state.game.start_time).slice(0, 5)} /></label><label>Czas minut<input name="duration_minutes" type="number" min={5} max={600} defaultValue={state.game.duration_minutes} /></label><label className="check"><input name="use_template" type="checkbox" /> Dodaj przykładowe stacje</label><div className="form-actions"><Button variant="primary" type="submit">Zapisz grę</Button></div></form></Panel>
-    <Panel kicker="Krok 2" title="Stacje na mapie" action={<span>Ustaw obszar, potem dodaj punkty</span>}><form className="map-search" onSubmit={(event) => { event.preventDefault(); const input = event.currentTarget.elements.namedItem("area") as HTMLInputElement; onFocusArea(input.value); }}><label>Obszar gry<input name="area" placeholder="np. Gdańsk, Park Oliwski" /></label><Button variant="primary">Pokaż obszar</Button><Button type="button" onClick={onUseCurrentLocation}>Moja lokalizacja</Button></form><div className="builder"><div className="map-panel"><div ref={mapRef} className="map" /><div className="map-tools"><Button type="button" onClick={onUseMapCenter}>Ustaw punkt w środku mapy</Button><span>Na telefonie przesuń mapę i użyj tego przycisku zamiast trafiać palcem w punkt.</span></div></div><div className="station-side"><form id="stationForm" className="stack" onSubmit={(event) => { event.preventDefault(); onSaveStation(Object.fromEntries(new FormData(event.currentTarget).entries())); event.currentTarget.reset(); }}><input name="id" type="hidden" /><label>Nazwa stacji<input name="title" placeholder="np. Most nad rzeką" required /></label><label>Kolejność<input name="station_order" type="number" min={1} defaultValue={state.stations.length + 1} /></label><div className="coord-grid"><label>Lat<input name="lat" type="number" step="0.000001" placeholder="kliknij mapę" /></label><label>Lng<input name="lng" type="number" step="0.000001" placeholder="kliknij mapę" /></label></div><Button variant="primary">Zapisz stację</Button></form><div className="station-list-admin">{state.stations.map((station: Station) => <article key={station.id} className="manage-row"><div><strong>{station.station_order}. {station.title}</strong><small>{station.lat ? `${Number(station.lat).toFixed(5)}, ${Number(station.lng).toFixed(5)}` : "bez punktu"}</small></div><Button onClick={() => fillStationForm(station)}>Edytuj</Button><Button variant="danger" onClick={() => onDeleteStation(station.id)}>Usuń</Button></article>)}</div></div></div></Panel>
+    <Panel kicker="Krok 2" title="Stacje na mapie" action={<span>Ustaw obszar, potem dodaj punkty</span>}><form className="map-search" onSubmit={(event) => { event.preventDefault(); const input = event.currentTarget.elements.namedItem("area") as HTMLInputElement; onFocusArea(input.value); }}><label>Obszar gry<input name="area" placeholder="np. Gdańsk, Park Oliwski" /></label><Button variant="primary">Pokaż obszar</Button><Button type="button" onClick={onUseCurrentLocation}>Moja lokalizacja</Button></form><div className="builder"><div className="map-panel"><div ref={mapRef} className="map" /><div className="map-tools"><div className="map-tool-buttons"><Button type="button" onClick={onUseMapCenter}>Ustaw punkt w środku mapy</Button>{state.stations.some((station: Station) => station.lat && station.lng) && <Button type="button" onClick={onFocusNearestStation}>Wróć do najbliższej stacji</Button>}</div><span>Na telefonie przesuń mapę i użyj przycisków pod mapą, bez celowania palcem w punkt.</span></div></div><div className="station-side"><form id="stationForm" className="stack" onSubmit={(event) => { event.preventDefault(); onSaveStation(Object.fromEntries(new FormData(event.currentTarget).entries())); event.currentTarget.reset(); }}><input name="id" type="hidden" /><label>Nazwa stacji<input name="title" placeholder="np. Most nad rzeką" required /></label><label>Kolejność<input name="station_order" type="number" min={1} defaultValue={state.stations.length + 1} /></label><div className="coord-grid"><label>Lat<input name="lat" type="number" step="0.000001" placeholder="kliknij mapę" /></label><label>Lng<input name="lng" type="number" step="0.000001" placeholder="kliknij mapę" /></label></div><Button variant="primary">Zapisz stację</Button></form><div className="station-list-admin">{state.stations.map((station: Station) => <article key={station.id} className="manage-row"><div><strong>{station.station_order}. {station.title}</strong><small>{station.lat ? `${Number(station.lat).toFixed(5)}, ${Number(station.lng).toFixed(5)}` : "bez punktu"}</small></div><Button onClick={() => fillStationForm(station)}>Edytuj</Button><Button variant="danger" onClick={() => onDeleteStation(station.id)}>Usuń</Button></article>)}</div></div></div></Panel>
     <Panel kicker="Krok 3" title="Drużyny" action={<Button variant="primary" onClick={onAddTeam}>Dodaj drużynę</Button>}><div className="mini-grid">{state.teams.map((team: Team) => <div key={team.id} className="mini-row"><span style={{ background: team.color }} /><strong>{team.name}</strong><small>{team.total_points} pkt</small></div>)}</div></Panel>
   </div>;
 }

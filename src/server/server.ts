@@ -455,6 +455,117 @@ function stateFor(req: Request, gameId?: number) {
   return state(gameId, Number(req.user?.id || 0) || undefined);
 }
 
+async function gameState(gameId?: number) {
+  const selectedId = gameId || Number((await pool.query("SELECT id FROM games ORDER BY id DESC LIMIT 1")).rows[0]?.id);
+  const gameResult = await pool.query("SELECT * FROM games WHERE id = $1", [selectedId]);
+  const game = gameResult.rows[0];
+  if (!game) throw new Error("Nie znaleziono gry");
+  game.remaining_seconds = remaining(game);
+
+  const [teams, stations, scores, materials, questions, games] = await Promise.all([
+    pool.query(`
+      SELECT t.*,
+        COALESCE(SUM(ts.points), 0)::int AS total_points,
+        COALESCE(AVG(NULLIF(ts.cooperation, 0)), 0)::float AS avg_cooperation,
+        COALESCE(SUM(CASE WHEN ts.correct THEN 1 ELSE 0 END), 0)::int AS correct_count,
+        COALESCE(COUNT(CASE WHEN ts.finished_at IS NOT NULL THEN 1 END), 0)::int AS finished_count
+      FROM teams t
+      LEFT JOIN team_stations ts ON ts.team_id = t.id
+      WHERE t.game_id = $1
+      GROUP BY t.id
+      ORDER BY total_points DESC, t.name ASC
+    `, [game.id]),
+    pool.query("SELECT * FROM stations WHERE game_id = $1 ORDER BY station_order ASC, id ASC", [game.id]),
+    pool.query(`
+      SELECT ts.*, s.title AS station_title, t.name AS team_name
+      FROM team_stations ts
+      JOIN stations s ON s.id = ts.station_id
+      JOIN teams t ON t.id = ts.team_id
+      WHERE t.game_id = $1
+      ORDER BY COALESCE(ts.finished_at, ts.started_at) ASC
+    `, [game.id]),
+    pool.query(`
+      SELECT m.*, s.title AS station_title
+      FROM materials m JOIN stations s ON s.id = m.station_id
+      WHERE s.game_id = $1 ORDER BY m.id DESC
+    `, [game.id]),
+    pool.query(`
+      SELECT q.*, s.title AS station_title
+      FROM questions q JOIN stations s ON s.id = q.station_id
+      WHERE s.game_id = $1 ORDER BY q.id DESC
+    `, [game.id]),
+    gamesList()
+  ]);
+
+  return {
+    ok: true,
+    game,
+    games,
+    teams: teams.rows,
+    stations: stations.rows,
+    scores: scores.rows,
+    materials: materials.rows,
+    questions: questions.rows
+  };
+}
+
+async function pulseState(gameId?: number, userId?: number) {
+  const [game, messages, messageUnreads] = await Promise.all([
+    gameState(gameId),
+    pool.query(`
+      SELECT m.*, u.name AS sender_name,
+        p.title AS photo_title,
+        NULL::text AS photo_image_data,
+        p.mime_type AS photo_mime_type,
+        p.share_token AS photo_share_token,
+        c.name AS cohort_name,
+        rm.body AS reply_body,
+        ru.name AS reply_sender_name,
+        rp.title AS reply_photo_title,
+        rm.attachment_name AS reply_attachment_name,
+        NULL::text AS attachment_data
+      FROM messages m
+      LEFT JOIN users u ON u.id = m.sender_id
+      LEFT JOIN session_photos p ON p.id = m.photo_id
+      LEFT JOIN cohorts c ON c.id = m.target_id AND m.target_type='cohort'
+      LEFT JOIN messages rm ON rm.id = m.reply_to_id
+      LEFT JOIN users ru ON ru.id = rm.sender_id
+      LEFT JOIN session_photos rp ON rp.id = rm.photo_id
+      ORDER BY m.created_at DESC
+      LIMIT 80
+    `),
+    userId ? pool.query(`
+      SELECT m.target_type,
+        CASE
+          WHEN m.target_type='user' AND m.target_id=$1 THEN COALESCE(m.sender_id, 0)
+          ELSE COALESCE(m.target_id, 0)
+        END::int AS target_id,
+        COUNT(*)::int AS unread_count
+      FROM messages m
+      LEFT JOIN message_reads r
+        ON r.user_id = $1
+       AND r.target_type = m.target_type
+       AND r.target_id = CASE
+         WHEN m.target_type='user' AND m.target_id=$1 THEN COALESCE(m.sender_id, 0)
+         ELSE COALESCE(m.target_id, 0)
+       END
+      WHERE COALESCE(m.sender_id, 0) <> $1
+        AND (m.target_type <> 'user' OR m.target_id = $1)
+        AND m.id > COALESCE(r.last_read_message_id, 0)
+      GROUP BY m.target_type, CASE
+        WHEN m.target_type='user' AND m.target_id=$1 THEN COALESCE(m.sender_id, 0)
+        ELSE COALESCE(m.target_id, 0)
+      END
+    `, [userId]) : Promise.resolve({ rows: [] })
+  ]);
+
+  return {
+    ...game,
+    messages: messages.rows,
+    message_unreads: messageUnreads.rows
+  };
+}
+
 async function markConversationRead(userId: number, targetType: string, targetId: number) {
   const result = targetType === "user"
     ? await pool.query(
@@ -552,6 +663,22 @@ app.post("/api/profile", async (req, res) => {
 app.get("/api/state", async (req, res) => {
   try {
     res.json(await stateFor(req, req.query.gameId ? Number(req.query.gameId) : undefined));
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error instanceof Error ? error.message : "Błąd serwera" });
+  }
+});
+
+app.get("/api/game-state", async (req, res) => {
+  try {
+    res.json(await gameState(req.query.gameId ? Number(req.query.gameId) : undefined));
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error instanceof Error ? error.message : "Błąd serwera" });
+  }
+});
+
+app.get("/api/pulse", async (req, res) => {
+  try {
+    res.json(await pulseState(req.query.gameId ? Number(req.query.gameId) : undefined, Number(req.user?.id || 0) || undefined));
   } catch (error) {
     res.status(500).json({ ok: false, error: error instanceof Error ? error.message : "Błąd serwera" });
   }

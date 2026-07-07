@@ -44,7 +44,7 @@
 body { margin: 0; background: radial-gradient(circle at 12% 0%, #FCFAF5, #F5F1E9 60%); color: var(--text-primary); font-family: Inter, system-ui, sans-serif; }
 button, input, select, textarea { font: inherit; }
 button { min-height: var(--min-tap); border: 0; border-radius: var(--radius-sm); cursor: pointer; font-weight: 700; }
-input, select, textarea { width: 100%; min-height: var(--min-tap); border: 1px solid var(--border-default); border-radius: var(--radius-sm); padding: 10px 14px; background: #fff; }
+input, select, textarea { width: 100%; min-height: var(--min-tap); border: 1px solid var(--border-default); border-radius: var(--radius-sm); padding: 10px 14px; background: #fff; font-size: 16px; }
 textarea { min-height: 92px; resize: vertical; }
 h1, h2, h3, p { margin-top: 0; }
 h1 { margin-bottom: 0; font-family: Manrope, Inter, sans-serif; font-size: clamp(30px,4vw,42px); font-weight: 800; letter-spacing: -.3px; }
@@ -253,6 +253,7 @@ label { display: grid; gap: 6px; color: var(--text-muted); font-size: 13px; }
 .map-search { display: grid; grid-template-columns: minmax(220px, 1fr) auto auto; align-items: end; gap: 10px; margin-bottom: 12px; }
 .map-panel { display: grid; gap: 10px; min-width: 0; }
 .map-tools { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 10px; padding: 10px; border: 1px solid var(--border-default); border-radius: var(--radius-md); background: var(--surface-muted); }
+.map-tool-buttons { display: flex; flex-wrap: wrap; gap: 10px; }
 .map-tools span { color: var(--text-muted); font-size: 13px; line-height: 1.35; }
 .coord-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
 .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
@@ -487,7 +488,7 @@ label { display: grid; gap: 6px; color: var(--text-muted); font-size: 13px; }
   h1 { font-size: 29px; line-height: 1.08; letter-spacing: 0; }
   h2 { font-size: 17px; }
   label { font-size: 12px; }
-  input, select, textarea { min-height: 40px; padding: 9px 12px; }
+  input, select, textarea { min-height: 40px; padding: 9px 12px; font-size: 16px; }
   button { --min-tap: 40px; }
   .form-grid, .action-grid, .session-card-grid, .photo-preview-grid { grid-template-columns: 1fr; }
   .gallery-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
@@ -500,6 +501,7 @@ label { display: grid; gap: 6px; color: var(--text-muted); font-size: 13px; }
   .game-tabs .pill { width: 100%; }
   .map-search { grid-template-columns: 1fr; }
   .map-tools { grid-template-columns: 1fr; }
+  .map-tool-buttons { display: grid; grid-template-columns: 1fr; }
   .coord-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .page-head, .card-row { flex-direction: column; align-items: stretch; }
   .sidebar { padding: 14px; gap: 14px; }
