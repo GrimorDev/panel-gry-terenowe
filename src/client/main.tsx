@@ -857,6 +857,7 @@ const competitionCategories = ["Porządek", "Zachowanie", "Aktywność w zajęci
 
 function CompetitionView({ state, setState, runBusy }: { state: AppState; setState: (state: AppState) => void; runBusy: BusyRunner }) {
   const [selectedTentId, setSelectedTentId] = useState(state.competition_tents[0]?.id || 0);
+  const [competitionModal, setCompetitionModal] = useState<"tents" | "points" | "members" | null>(null);
   const selectedTent = state.competition_tents.find((tent) => tent.id === selectedTentId) || state.competition_tents[0];
   const selectedMembers = selectedTent ? state.competition_members.filter((member) => member.tent_id === selectedTent.id) : [];
   const selectedWardIds = new Set(selectedMembers.map((member) => member.ward_id));
@@ -868,15 +869,31 @@ function CompetitionView({ state, setState, runBusy }: { state: AppState; setSta
     })
     : [];
   const busyWardsCount = state.wards.length - availableWards.length;
-  const history = selectedTent ? state.competition_points.filter((point) => point.tent_id === selectedTent.id) : state.competition_points;
+  const history = state.competition_points;
 
   useEffect(() => {
     if (!selectedTent && state.competition_tents[0]) setSelectedTentId(state.competition_tents[0].id);
   }, [selectedTent, state.competition_tents]);
 
+  function tentMembers(tentId: number) {
+    return state.competition_members.filter((member) => member.tent_id === tentId);
+  }
+
+  function memberNames(tentId: number) {
+    const names = tentMembers(tentId).map((member) => member.ward_name);
+    return names.length ? names.join(", ") : "Brak podopiecznych";
+  }
+
+  function openMembers(tentId: number) {
+    setSelectedTentId(tentId);
+    setCompetitionModal("members");
+  }
+
   async function saveTent(form: HTMLFormElement) {
     const data = Object.fromEntries(new FormData(form).entries());
-    setState(await runBusy("Zapisywanie namiotu...", () => api<AppState>("/api/competition/tents", { method: "POST", body: JSON.stringify({ ...data, game_id: state.game.id }) })));
+    const next = await runBusy("Zapisywanie namiotu...", () => api<AppState>("/api/competition/tents", { method: "POST", body: JSON.stringify({ ...data, game_id: state.game.id }) }));
+    setState(next);
+    setSelectedTentId(next.competition_tents.at(-1)?.id || next.competition_tents[0]?.id || 0);
     form.reset();
   }
 
@@ -884,12 +901,14 @@ function CompetitionView({ state, setState, runBusy }: { state: AppState; setSta
     if (!selectedTent) return;
     const wardIds = new FormData(form).getAll("ward_ids").map(Number);
     setState(await runBusy("Zapisywanie składu namiotu...", () => api<AppState>(`/api/competition/tents/${selectedTent.id}/members`, { method: "POST", body: JSON.stringify({ ward_ids: wardIds, game_id: state.game.id }) })));
+    setCompetitionModal(null);
   }
 
   async function savePoints(form: HTMLFormElement) {
     const data = Object.fromEntries(new FormData(form).entries());
     setState(await runBusy("Dodawanie punktów...", () => api<AppState>("/api/competition/points", { method: "POST", body: JSON.stringify({ ...data, game_id: state.game.id }) })));
     form.reset();
+    setCompetitionModal(null);
   }
 
   async function deleteTent(id: number) {
@@ -900,50 +919,58 @@ function CompetitionView({ state, setState, runBusy }: { state: AppState; setSta
   }
 
   return <div>
-    <div className="page-head"><div><h1>Współzawodnictwo</h1><p className="help">Rywalizacja namiotów: porządek, zachowanie, aktywność i punkty dodatkowe z obowiązkowym powodem.</p></div></div>
-    <div className="competition-layout">
-      <Panel title="Ranking namiotów" kicker="na żywo" action={<span>{state.competition_tents.length} namiotów</span>}>
+    <div className="page-head competition-head"><div><h1>Współzawodnictwo</h1><p className="help">Rywalizacja namiotów: porządek, zachowanie, aktywność i punkty dodatkowe z obowiązkowym powodem.</p></div><div className="button-row competition-actions"><Button onClick={() => setCompetitionModal("tents")}>+ Namioty</Button><Button variant="primary" onClick={() => setCompetitionModal("points")} disabled={!state.competition_tents.length}>+ Dodaj punkty</Button></div></div>
+    <div className="competition-dashboard">
+      <Panel title="Ranking namiotów" action={<span>na żywo</span>} className="competition-ranking-panel">
         <div className="tent-ranking">{state.competition_tents.length ? state.competition_tents.map((tent, index) => <button type="button" key={tent.id} className={selectedTent?.id === tent.id ? "active" : ""} onClick={() => setSelectedTentId(tent.id)}>
           <span style={{ background: tent.color }}>{index + 1}</span><div><strong>{tent.name}</strong><small>{tent.member_count} osób w namiocie</small></div><b>{tent.total_points} pkt</b>
         </button>) : <p className="empty">Dodaj pierwszy namiot, aby rozpocząć ranking.</p>}</div>
       </Panel>
 
-      <Panel title="Dodaj punkty" kicker="z powodem">
-        <form className="stack" onSubmit={(event) => { event.preventDefault(); savePoints(event.currentTarget); }}>
-          <label>Namiot<select name="tent_id" defaultValue={selectedTent?.id || ""} required>{state.competition_tents.map((tent) => <option key={tent.id} value={tent.id}>{tent.name}</option>)}</select></label>
-          <label>Kategoria<select name="category" defaultValue="Porządek">{competitionCategories.map((category) => <option key={category}>{category}</option>)}</select></label>
-          <label>Punkty<input name="points" type="number" defaultValue={1} min={-50} max={100} required /></label>
-          <label>Powód / komentarz<textarea name="reason" placeholder="np. Wzorowy porządek po ciszy nocnej" required /></label>
-          <Button variant="primary">Dodaj wpis</Button>
-        </form>
-      </Panel>
+      <div className="competition-bottom-grid">
+        <Panel title="Skład namiotów" className="competition-members-panel">
+          <div className="tent-member-list">{state.competition_tents.length ? state.competition_tents.map((tent) => <article key={tent.id} className="tent-member-card">
+            <div><strong>{tent.name}</strong><p>{memberNames(tent.id)}</p></div><Button type="button" onClick={() => openMembers(tent.id)}>Edytuj skład</Button>
+          </article>) : <p className="empty">Najpierw dodaj namiot.</p>}</div>
+        </Panel>
 
-      <Panel title="Namioty" kicker="organizacja">
-        <form className="stack compact-form" onSubmit={(event) => { event.preventDefault(); saveTent(event.currentTarget); }}>
-          <label>Nazwa namiotu<input name="name" placeholder="np. Namiot 1 / Wilki" required /></label>
-          <label>Kolor<input name="color" type="color" defaultValue="#1e5c46" /></label>
-          <Button variant="primary">Dodaj namiot</Button>
-        </form>
-        {selectedTent && <div className="danger-zone"><strong>{selectedTent.name}</strong><p className="help">Zarządzanie wybranym namiotem.</p><Button variant="danger" type="button" onClick={() => deleteTent(selectedTent.id)}>Usuń namiot</Button></div>}
-      </Panel>
-
-      <Panel title={selectedTent ? `Skład: ${selectedTent.name}` : "Skład namiotu"} kicker="podopieczni" className="wide">
-        {selectedTent ? <form onSubmit={(event) => { event.preventDefault(); saveMembers(event.currentTarget); }}>
-          <p className="help">Pokazujemy tylko osoby wolne oraz osoby przypisane do tego namiotu. {busyWardsCount > 0 ? `${busyWardsCount} podopiecznych jest już w innych namiotach.` : "Wszyscy podopieczni są dostępni."}</p>
-          <div className="member-picker">{availableWards.map((ward) => <label key={ward.id} className="member-check"><input type="checkbox" name="ward_ids" value={ward.id} defaultChecked={selectedWardIds.has(ward.id)} /><span>{initials(ward.name)}</span><div><strong>{ward.name}</strong><small>{ward.age} lat · {ward.cohort_name || "bez grupy"}</small></div></label>)}</div>
-          {!availableWards.length && <p className="empty">Brak wolnych podopiecznych. Odpnij osobę z innego namiotu, żeby przypisać ją tutaj.</p>}
-          <div className="form-actions"><Button variant="primary">Zapisz skład</Button></div>
-        </form> : <p className="empty">Najpierw dodaj namiot.</p>}
-      </Panel>
-
-      <Panel title="Historia punktów" kicker="komentarze do wglądu" className="wide">
-        <div className="points-history">{history.length ? history.map((point) => <article key={point.id} className="point-row">
-          <span className={point.points >= 0 ? "positive" : "negative"}>{point.points > 0 ? "+" : ""}{point.points}</span>
-          <div><strong>{point.tent_name} · {point.category}</strong><p>{point.reason}</p><small>{dateLabel(point.created_at)} · {point.created_by_name || "system"}</small></div>
-          <Button variant="danger" onClick={async () => setState(await runBusy("Usuwanie wpisu...", () => api<AppState>(`/api/competition/points/${point.id}?gameId=${state.game.id}`, { method: "DELETE" })))}>Usuń</Button>
-        </article>) : <p className="empty">Brak punktów. Każdy wpis będzie widoczny tutaj z powodem i autorem.</p>}</div>
-      </Panel>
+        <Panel title="Historia punktów" className="competition-history-panel">
+          <div className="points-history compact">{history.length ? history.map((point) => <article key={point.id} className="point-row">
+            <div><strong>{point.tent_name} · {point.category}</strong><p>{point.reason}</p><small>{dateLabel(point.created_at)} · {point.created_by_name || "system"}</small></div>
+            <span className={point.points >= 0 ? "positive" : "negative"}>{point.points > 0 ? "+" : ""}{point.points} pkt</span>
+            <Button variant="danger" onClick={async () => setState(await runBusy("Usuwanie wpisu...", () => api<AppState>(`/api/competition/points/${point.id}?gameId=${state.game.id}`, { method: "DELETE" })))}>Usuń</Button>
+          </article>) : <p className="empty">Brak punktów. Każdy wpis będzie widoczny tutaj z powodem i autorem.</p>}</div>
+        </Panel>
+      </div>
     </div>
+
+    {competitionModal === "tents" && <Modal title="Zarządzaj namiotami" onClose={() => setCompetitionModal(null)}>
+      <form className="tent-admin-form" onSubmit={(event) => { event.preventDefault(); saveTent(event.currentTarget); }}>
+        <label>Nazwa namiotu<input name="name" placeholder="np. Namiot 3 / Wilki" required /></label>
+        <label>Kolor<input name="color" type="color" defaultValue="#1e5c46" /></label>
+        <Button variant="primary">Dodaj</Button>
+      </form>
+      <div className="tent-admin-list">{state.competition_tents.length ? state.competition_tents.map((tent) => <article key={tent.id} className="tent-admin-row"><i style={{ background: tent.color }} /><strong>{tent.name}</strong><Button variant="danger" type="button" onClick={() => deleteTent(tent.id)}>Usuń</Button></article>) : <p className="empty">Nie ma jeszcze żadnego namiotu.</p>}</div>
+    </Modal>}
+
+    {competitionModal === "points" && <Modal title="Dodaj punkty" onClose={() => setCompetitionModal(null)}>
+      <form className="stack" onSubmit={(event) => { event.preventDefault(); savePoints(event.currentTarget); }}>
+        <label>Namiot<select name="tent_id" defaultValue={selectedTent?.id || ""} required>{state.competition_tents.map((tent) => <option key={tent.id} value={tent.id}>{tent.name}</option>)}</select></label>
+        <label>Kategoria<select name="category" defaultValue="Porządek">{competitionCategories.map((category) => <option key={category}>{category}</option>)}</select></label>
+        <label>Punkty<input name="points" type="number" defaultValue={1} min={-50} max={100} required /></label>
+        <label>Powód / komentarz<textarea name="reason" placeholder="np. Wzorowy porządek po ciszy nocnej" required /></label>
+        <Button variant="primary">Dodaj wpis</Button>
+      </form>
+    </Modal>}
+
+    {competitionModal === "members" && selectedTent && <Modal title={`Skład: ${selectedTent.name}`} onClose={() => setCompetitionModal(null)}>
+      <form onSubmit={(event) => { event.preventDefault(); saveMembers(event.currentTarget); }}>
+        <p className="help">Pokazujemy tylko osoby wolne oraz osoby przypisane do tego namiotu. {busyWardsCount > 0 ? `${busyWardsCount} podopiecznych jest już w innych namiotach.` : "Wszyscy podopieczni są dostępni."}</p>
+        <div className="member-picker">{availableWards.map((ward) => <label key={ward.id} className="member-check"><input type="checkbox" name="ward_ids" value={ward.id} defaultChecked={selectedWardIds.has(ward.id)} /><span>{initials(ward.name)}</span><div><strong>{ward.name}</strong><small>{ward.age} lat · {ward.cohort_name || "bez grupy"}</small></div></label>)}</div>
+        {!availableWards.length && <p className="empty">Brak wolnych podopiecznych. Odpnij osobę z innego namiotu, żeby przypisać ją tutaj.</p>}
+        <div className="form-actions"><Button variant="primary">Zapisz skład</Button></div>
+      </form>
+    </Modal>}
   </div>;
 }
 function Sessions({ user, state, onAdd, onEdit, onDelete }: { user: User; state: AppState; onAdd: () => void; onEdit: (session: Session) => void; onDelete: (id: number) => void }) {

@@ -147,6 +147,8 @@ body:has(.app-shell.theme-night) { background: radial-gradient(circle at 16% 0%,
 .app-shell.theme-night .settings-tab,
 .app-shell.theme-night .segmented button { background: #0C1812; color: var(--text-primary); border-color: var(--border-default); }
 .app-shell.theme-night .tent-ranking button,
+.app-shell.theme-night .tent-member-card,
+.app-shell.theme-night .tent-admin-row,
 .app-shell.theme-night .member-check,
 .app-shell.theme-night .point-row,
 .app-shell.theme-night .choice,
@@ -286,6 +288,10 @@ body:has(.app-shell.theme-night) { background: radial-gradient(circle at 16% 0%,
 .member-row { display: grid; grid-template-columns: 38px 1fr; gap: 10px; align-items: center; padding: 10px; border: 1px solid var(--border-default); border-radius: var(--radius-sm); }
 .member-row > span { width: 38px; height: 38px; display: grid; place-items: center; border-radius: 12px; background: var(--color-brand-soft); color: var(--color-brand); font-weight: 800; }
 .member-row small { display: block; color: var(--text-muted); }
+.competition-head { align-items: flex-start; gap: 18px; }
+.competition-actions { margin-left: auto; }
+.competition-dashboard { display: grid; gap: 18px; }
+.competition-bottom-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, .9fr); gap: 18px; align-items: start; }
 .competition-layout { display: grid; grid-template-columns: minmax(300px, .9fr) minmax(320px, 1.1fr) minmax(260px, .8fr); gap: 18px; align-items: start; }
 .tent-ranking { display: grid; gap: 10px; }
 .tent-ranking button { width: 100%; display: grid; grid-template-columns: 44px minmax(0, 1fr) auto; align-items: center; gap: 12px; padding: 12px; border: 1px solid var(--border-default); border-radius: var(--radius-md); background: #fff; text-align: left; }
@@ -293,6 +299,14 @@ body:has(.app-shell.theme-night) { background: radial-gradient(circle at 16% 0%,
 .tent-ranking span { width: 40px; height: 40px; display: grid; place-items: center; border-radius: 14px; color: #fff; font-weight: 800; }
 .tent-ranking small { display: block; color: var(--text-muted); }
 .tent-ranking b { color: var(--color-brand); white-space: nowrap; }
+.tent-member-list { display: grid; gap: 12px; }
+.tent-member-card { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 14px 16px; border: 1px solid var(--border-default); border-radius: var(--radius-md); background: #fff; }
+.tent-member-card p { margin: 8px 0 0; color: var(--text-muted); font-size: 13px; overflow-wrap: anywhere; }
+.tent-admin-form { display: grid; grid-template-columns: minmax(0, 1fr) 92px auto; align-items: end; gap: 10px; }
+.tent-admin-form input[type="color"] { padding: 7px; }
+.tent-admin-list { display: grid; gap: 10px; margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--border-default); }
+.tent-admin-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 12px; padding: 12px; border: 1px solid var(--border-default); border-radius: var(--radius-md); background: #fff; }
+.tent-admin-row i { width: 14px; height: 14px; border-radius: 999px; }
 .compact-form { grid-template-columns: minmax(0, 1fr) 72px; align-items: end; }
 .compact-form .btn { grid-column: 1 / -1; }
 .member-picker { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 10px; margin-bottom: 14px; }
@@ -302,7 +316,9 @@ body:has(.app-shell.theme-night) { background: radial-gradient(circle at 16% 0%,
 .member-check small { display: block; color: var(--text-muted); }
 .points-history { display: grid; gap: 10px; max-height: 520px; overflow: auto; padding-right: 4px; }
 .point-row { display: grid; grid-template-columns: 54px minmax(0, 1fr) auto; gap: 12px; align-items: start; padding: 12px; border: 1px solid var(--border-default); border-radius: var(--radius-md); background: #fff; }
+.points-history.compact .point-row { grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; }
 .point-row > span { width: 46px; height: 46px; display: grid; place-items: center; border-radius: 14px; font-weight: 800; }
+.points-history.compact .point-row > span { width: auto; min-width: 56px; height: auto; padding: 8px 10px; border-radius: 999px; }
 .point-row > span.positive { background: var(--color-brand-soft); color: var(--color-brand); }
 .point-row > span.negative { background: #FBE8E5; color: var(--color-danger); }
 .point-row p { margin: 4px 0; color: var(--text-primary); }
@@ -588,7 +604,7 @@ body:has(.app-shell.theme-night) { background: radial-gradient(circle at 16% 0%,
 }
 
 @media (max-width: 1050px) {
-  .login, .builder, .run-grid, .score-grid, .resource-grid, .dashboard-grid, .stat-grid, .chat-shell, .staff-grid, .staff-create-grid, .competition-layout { grid-template-columns: 1fr; }
+  .login, .builder, .run-grid, .score-grid, .resource-grid, .dashboard-grid, .stat-grid, .chat-shell, .staff-grid, .staff-create-grid, .competition-layout, .competition-bottom-grid { grid-template-columns: 1fr; }
   .app-shell { display: block; }
   .mobile-menu-button { position: fixed; top: 12px; left: 12px; z-index: 1200; width: 48px; height: 48px; display: grid; place-items: center; gap: 4px; padding: 12px; border: 1px solid var(--border-default); background: #fff; box-shadow: var(--shadow-card); }
   .mobile-menu-button span { display: block; width: 22px; height: 2px; border-radius: 999px; background: var(--text-primary); }
@@ -626,6 +642,15 @@ body:has(.app-shell.theme-night) { background: radial-gradient(circle at 16% 0%,
   button { --min-tap: 40px; }
   .form-grid, .action-grid, .session-card-grid, .photo-preview-grid { grid-template-columns: 1fr; }
   .member-picker { grid-template-columns: 1fr; }
+  .competition-head { display: grid; }
+  .competition-actions { width: 100%; margin-left: 0; display: grid; grid-template-columns: 1fr 1fr; }
+  .competition-actions .btn { width: 100%; }
+  .tent-member-card { grid-template-columns: minmax(0, 1fr) auto; padding: 12px; }
+  .tent-member-card .btn { min-width: 102px; }
+  .tent-admin-form { grid-template-columns: 1fr; }
+  .tent-admin-row { grid-template-columns: auto minmax(0, 1fr) auto; }
+  .points-history.compact .point-row { grid-template-columns: minmax(0, 1fr) auto; }
+  .points-history.compact .point-row .btn { grid-column: 1 / -1; justify-self: start; }
   .point-row { grid-template-columns: 44px minmax(0, 1fr); }
   .point-row .btn { grid-column: 2; width: fit-content; }
   .tent-ranking button { grid-template-columns: 38px minmax(0, 1fr) auto; }
