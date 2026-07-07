@@ -21,7 +21,10 @@ type Question = { id: number; station_id: number; station_title: string; questio
 type InternalShare = { id: number; photo_id: number; photo_title: string; target_type: string; target_id: number | null; cohort_name: string | null; note: string; created_by_name: string | null; created_at: string };
 type Message = { id: number; sender_id: number | null; sender_name: string | null; target_type: string; target_id: number | null; cohort_name: string | null; body: string; photo_id: number | null; photo_title: string | null; photo_image_data: string | null; photo_mime_type: string | null; photo_share_token: string | null; attachment_name: string | null; attachment_mime: string | null; attachment_data: string | null; reply_to_id: number | null; reply_body: string | null; reply_sender_name: string | null; reply_photo_title: string | null; reply_attachment_name: string | null; edited_at: string | null; created_at: string };
 type MessageUnread = { target_type: string; target_id: number; unread_count: number };
-type AppState = { ok: true; game: Game; games: Game[]; teams: Team[]; stations: Station[]; scores: Score[]; materials: Material[]; questions: Question[]; cohorts: Cohort[]; wards: Ward[]; sessions: Session[]; photos: Photo[]; shares: InternalShare[]; messages: Message[]; message_unreads: MessageUnread[]; caregivers: Caregiver[] };
+type CompetitionTent = { id: number; name: string; color: string; total_points: number; member_count: number; created_at: string };
+type CompetitionMember = { tent_id: number; ward_id: number; ward_name: string; age: number; cohort_name: string | null };
+type CompetitionPoint = { id: number; tent_id: number; tent_name: string; category: string; points: number; reason: string; created_by: number | null; created_by_name: string | null; created_at: string };
+type AppState = { ok: true; game: Game; games: Game[]; teams: Team[]; stations: Station[]; scores: Score[]; materials: Material[]; questions: Question[]; cohorts: Cohort[]; wards: Ward[]; sessions: Session[]; photos: Photo[]; shares: InternalShare[]; messages: Message[]; message_unreads: MessageUnread[]; caregivers: Caregiver[]; competition_tents: CompetitionTent[]; competition_members: CompetitionMember[]; competition_points: CompetitionPoint[] };
 type GameState = Pick<AppState, "ok" | "game" | "games" | "teams" | "stations" | "scores" | "materials" | "questions">;
 type PulseState = GameState & Pick<AppState, "messages" | "message_unreads">;
 type NotificationItem = { id: string; title: string; detail: string; time: string; kind: "ward" | "session" | "message" | "today" };
@@ -29,7 +32,7 @@ type AppPrefs = { sidebar: "full" | "compact"; theme: "forest" | "terra" | "crea
 type BusyRunner = <T>(label: string, task: () => Promise<T>) => Promise<T>;
 
 const templates = ["Własna", "Polska", "Włochy", "Olimp"];
-const navItems = [["dashboard", "Pulpit"], ["wards", "Podopieczni"], ["cohorts", "Grupy"], ["sessions", "Zbiórki"], ["gallery", "Galeria"], ["messages", "Wiadomości"], ["staff", "Wychowawcy i grupy"], ["games", "Gry terenowe"]] as const;
+const navItems = [["dashboard", "Pulpit"], ["wards", "Podopieczni"], ["cohorts", "Grupy"], ["sessions", "Zbiórki"], ["gallery", "Galeria"], ["messages", "Wiadomości"], ["competition", "Współzawodnictwo"], ["staff", "Wychowawcy i grupy"], ["games", "Gry terenowe"]] as const;
 const gameTabs = [["prepare", "Przygotowanie"], ["run", "Gra"], ["score", "Ocena"], ["teams", "Drużyny"], ["resources", "QR i materiały"]] as const;
 const viewLabels = Object.fromEntries(navItems) as Record<(typeof navItems)[number][0], string>;
 const defaultPrefs: AppPrefs = { sidebar: "full", theme: "forest", email: true, push: false };
@@ -201,6 +204,7 @@ function UiIcon({ name }: { name: string }) {
   if (name === "sessions") return <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="16" rx="2.5" {...common} /><path d="M3 10h18M8 3v4M16 3v4" {...common} /></svg>;
   if (name === "gallery") return <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2.5" {...common} /><circle cx="9" cy="10" r="1.7" {...common} /><path d="M21 16.5l-5.3-5.5-4 4.3L9 13l-6 5" {...common} /></svg>;
   if (name === "messages") return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5.5h16V16H8.5L4 20V5.5z" {...common} /></svg>;
+  if (name === "competition") return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 21h8M12 17v4M7 4h10v4.5a5 5 0 0 1-10 0V4z" {...common} /><path d="M7 6H4v2.5A3.5 3.5 0 0 0 7.5 12M17 6h3v2.5a3.5 3.5 0 0 1-3.5 3.5" {...common} /></svg>;
   if (name === "staff") return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l7 3.2v5.6c0 4.6-3 8.3-7 9.2-4-.9-7-4.6-7-9.2V6.2L12 3z" {...common} /></svg>;
   if (name === "logout") return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9" {...common} /></svg>;
   if (name === "bell") return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 17h12l-1.6-2.3V10a4.4 4.4 0 0 0-8.8 0v4.7L6 17zM10.2 19a1.9 1.9 0 0 0 3.6 0" {...common} /></svg>;
@@ -715,6 +719,7 @@ function App() {
           {view === "sessions" && <Sessions state={state} onAdd={() => { setEditingSession(null); setModal("session"); }} onEdit={(session) => { setEditingSession(session); setModal("session"); }} onDelete={async (id) => setState(await runBusy("Usuwanie zbiórki...", () => api<AppState>(`/api/sessions/${id}?gameId=${state.game.id}`, { method: "DELETE" })))} />}
           {view === "gallery" && <Gallery state={state} onAddGallery={() => { setEditingSession(null); setModal("session"); }} onUploadPhotos={uploadPhotos} onEditPhoto={(photo) => { setEditingPhoto(photo); setModal("photo"); }} onShareInternal={(photo) => { setSharingPhoto(photo); setModal("share"); }} onDeletePhoto={async (id) => setState(await runBusy("Usuwanie zdjęcia...", () => api<AppState>(`/api/photos/${id}?gameId=${state.game.id}`, { method: "DELETE" })))} />}
           {view === "messages" && <MessagesView state={state} user={user} setState={setState} />}
+          {view === "competition" && <CompetitionView state={state} setState={setState} runBusy={runBusy} />}
           {view === "staff" && user.role === "administrator" && <StaffView state={state} setState={setState} />}
           {view === "games" && <GamesModule state={state} gameTab={gameTab} setGameTab={setGameTab} ranking={ranking} teamId={teamId} stationId={stationId} setTeamId={setTeamId} setStationId={setStationId} activeScore={activeScore} mapRef={mapEl} onSaveGame={saveGame} onDeleteGame={deleteGame} onFocusArea={focusGameArea} onUseCurrentLocation={useCurrentLocation} onUseMapCenter={useMapCenterForStation} onFocusNearestStation={focusNearestStation} onSaveStation={saveStation} onAddTeam={() => setModal("team")} onDeleteStation={async (id) => setState(await runBusy("Usuwanie stacji...", () => api<AppState>(`/api/stations/${id}?gameId=${state.game.id}`, { method: "DELETE" })))} onTimer={timerCommand} onScore={async (payload) => { setState(await runBusy("Zapisywanie oceny...", () => api<AppState>("/api/scores", { method: "POST", body: JSON.stringify(payload) }))); flash("Ocena zapisana"); }} setState={setState} load={(gameId?: number) => runBusy("Przełączanie gry...", () => load(gameId))} openTv={() => setModal("tv")} />}
         </div>
@@ -834,6 +839,89 @@ function Cohorts({ state }: { state: AppState }) {
 }
 
 
+const competitionCategories = ["Porządek", "Zachowanie", "Aktywność w zajęciach", "Punkty dodatkowe"];
+
+function CompetitionView({ state, setState, runBusy }: { state: AppState; setState: (state: AppState) => void; runBusy: BusyRunner }) {
+  const [selectedTentId, setSelectedTentId] = useState(state.competition_tents[0]?.id || 0);
+  const selectedTent = state.competition_tents.find((tent) => tent.id === selectedTentId) || state.competition_tents[0];
+  const selectedMembers = selectedTent ? state.competition_members.filter((member) => member.tent_id === selectedTent.id) : [];
+  const selectedWardIds = new Set(selectedMembers.map((member) => member.ward_id));
+  const history = selectedTent ? state.competition_points.filter((point) => point.tent_id === selectedTent.id) : state.competition_points;
+
+  useEffect(() => {
+    if (!selectedTent && state.competition_tents[0]) setSelectedTentId(state.competition_tents[0].id);
+  }, [selectedTent, state.competition_tents]);
+
+  async function saveTent(form: HTMLFormElement) {
+    const data = Object.fromEntries(new FormData(form).entries());
+    setState(await runBusy("Zapisywanie namiotu...", () => api<AppState>("/api/competition/tents", { method: "POST", body: JSON.stringify({ ...data, game_id: state.game.id }) })));
+    form.reset();
+  }
+
+  async function saveMembers(form: HTMLFormElement) {
+    if (!selectedTent) return;
+    const wardIds = new FormData(form).getAll("ward_ids").map(Number);
+    setState(await runBusy("Zapisywanie składu namiotu...", () => api<AppState>(`/api/competition/tents/${selectedTent.id}/members`, { method: "POST", body: JSON.stringify({ ward_ids: wardIds, game_id: state.game.id }) })));
+  }
+
+  async function savePoints(form: HTMLFormElement) {
+    const data = Object.fromEntries(new FormData(form).entries());
+    setState(await runBusy("Dodawanie punktów...", () => api<AppState>("/api/competition/points", { method: "POST", body: JSON.stringify({ ...data, game_id: state.game.id }) })));
+    form.reset();
+  }
+
+  async function deleteTent(id: number) {
+    if (!window.confirm("Usunąć namiot razem z punktami i składem?")) return;
+    const next = await runBusy("Usuwanie namiotu...", () => api<AppState>(`/api/competition/tents/${id}?gameId=${state.game.id}`, { method: "DELETE" }));
+    setState(next);
+    setSelectedTentId(next.competition_tents[0]?.id || 0);
+  }
+
+  return <div>
+    <div className="page-head"><div><h1>Współzawodnictwo</h1><p className="help">Rywalizacja namiotów: porządek, zachowanie, aktywność i punkty dodatkowe z obowiązkowym powodem.</p></div></div>
+    <div className="competition-layout">
+      <Panel title="Ranking namiotów" kicker="na żywo" action={<span>{state.competition_tents.length} namiotów</span>}>
+        <div className="tent-ranking">{state.competition_tents.length ? state.competition_tents.map((tent, index) => <button type="button" key={tent.id} className={selectedTent?.id === tent.id ? "active" : ""} onClick={() => setSelectedTentId(tent.id)}>
+          <span style={{ background: tent.color }}>{index + 1}</span><div><strong>{tent.name}</strong><small>{tent.member_count} osób w namiocie</small></div><b>{tent.total_points} pkt</b>
+        </button>) : <p className="empty">Dodaj pierwszy namiot, aby rozpocząć ranking.</p>}</div>
+      </Panel>
+
+      <Panel title="Dodaj punkty" kicker="z powodem">
+        <form className="stack" onSubmit={(event) => { event.preventDefault(); savePoints(event.currentTarget); }}>
+          <label>Namiot<select name="tent_id" defaultValue={selectedTent?.id || ""} required>{state.competition_tents.map((tent) => <option key={tent.id} value={tent.id}>{tent.name}</option>)}</select></label>
+          <label>Kategoria<select name="category" defaultValue="Porządek">{competitionCategories.map((category) => <option key={category}>{category}</option>)}</select></label>
+          <label>Punkty<input name="points" type="number" defaultValue={1} min={-50} max={100} required /></label>
+          <label>Powód / komentarz<textarea name="reason" placeholder="np. Wzorowy porządek po ciszy nocnej" required /></label>
+          <Button variant="primary">Dodaj wpis</Button>
+        </form>
+      </Panel>
+
+      <Panel title="Namioty" kicker="organizacja">
+        <form className="stack compact-form" onSubmit={(event) => { event.preventDefault(); saveTent(event.currentTarget); }}>
+          <label>Nazwa namiotu<input name="name" placeholder="np. Namiot 1 / Wilki" required /></label>
+          <label>Kolor<input name="color" type="color" defaultValue="#1e5c46" /></label>
+          <Button variant="primary">Dodaj namiot</Button>
+        </form>
+        {selectedTent && <div className="danger-zone"><strong>{selectedTent.name}</strong><p className="help">Zarządzanie wybranym namiotem.</p><Button variant="danger" type="button" onClick={() => deleteTent(selectedTent.id)}>Usuń namiot</Button></div>}
+      </Panel>
+
+      <Panel title={selectedTent ? `Skład: ${selectedTent.name}` : "Skład namiotu"} kicker="podopieczni" className="wide">
+        {selectedTent ? <form onSubmit={(event) => { event.preventDefault(); saveMembers(event.currentTarget); }}>
+          <div className="member-picker">{state.wards.map((ward) => <label key={ward.id} className="member-check"><input type="checkbox" name="ward_ids" value={ward.id} defaultChecked={selectedWardIds.has(ward.id)} /><span>{initials(ward.name)}</span><div><strong>{ward.name}</strong><small>{ward.age} lat · {ward.cohort_name || "bez grupy"}</small></div></label>)}</div>
+          <div className="form-actions"><Button variant="primary">Zapisz skład</Button></div>
+        </form> : <p className="empty">Najpierw dodaj namiot.</p>}
+      </Panel>
+
+      <Panel title="Historia punktów" kicker="komentarze do wglądu" className="wide">
+        <div className="points-history">{history.length ? history.map((point) => <article key={point.id} className="point-row">
+          <span className={point.points >= 0 ? "positive" : "negative"}>{point.points > 0 ? "+" : ""}{point.points}</span>
+          <div><strong>{point.tent_name} · {point.category}</strong><p>{point.reason}</p><small>{dateLabel(point.created_at)} · {point.created_by_name || "system"}</small></div>
+          <Button variant="danger" onClick={async () => setState(await runBusy("Usuwanie wpisu...", () => api<AppState>(`/api/competition/points/${point.id}?gameId=${state.game.id}`, { method: "DELETE" })))}>Usuń</Button>
+        </article>) : <p className="empty">Brak punktów. Każdy wpis będzie widoczny tutaj z powodem i autorem.</p>}</div>
+      </Panel>
+    </div>
+  </div>;
+}
 function Sessions({ state, onAdd, onEdit, onDelete }: { state: AppState; onAdd: () => void; onEdit: (session: Session) => void; onDelete: (id: number) => void }) {
   const [filter, setFilter] = useState<"all" | "grupa" | "moja">("all");
   const [mode, setMode] = useState<"cards" | "calendar">("cards");

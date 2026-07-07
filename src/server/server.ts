@@ -220,6 +220,30 @@ async function ensureSchema() {
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       PRIMARY KEY (user_id, target_type, target_id)
     );
+
+    CREATE TABLE IF NOT EXISTS competition_tents (
+      id SERIAL PRIMARY KEY,
+      name VARCHAR(120) NOT NULL,
+      color VARCHAR(20) NOT NULL DEFAULT '#1e5c46',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS competition_tent_members (
+      tent_id INTEGER NOT NULL REFERENCES competition_tents(id) ON DELETE CASCADE,
+      ward_id INTEGER NOT NULL REFERENCES wards(id) ON DELETE CASCADE,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (tent_id, ward_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS competition_points (
+      id SERIAL PRIMARY KEY,
+      tent_id INTEGER NOT NULL REFERENCES competition_tents(id) ON DELETE CASCADE,
+      category VARCHAR(60) NOT NULL,
+      points INTEGER NOT NULL,
+      reason TEXT NOT NULL,
+      created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
   `);
 
   await pool.query("ALTER TABLE session_photos ADD COLUMN IF NOT EXISTS image_data TEXT");
@@ -313,7 +337,7 @@ async function state(gameId?: number, userId?: number) {
   if (!game) throw new Error("Nie znaleziono gry");
   game.remaining_seconds = remaining(game);
 
-  const [teams, stations, scores, materials, questions, games, cohorts, wards, sessions, photos, shares, messages, messageUnreads, caregivers] = await Promise.all([
+  const [teams, stations, scores, materials, questions, games, cohorts, wards, sessions, photos, shares, messages, messageUnreads, caregivers, competitionTents, competitionMembers, competitionPoints] = await Promise.all([
     pool.query(`
       SELECT t.*,
         COALESCE(SUM(ts.points), 0)::int AS total_points,
@@ -428,6 +452,30 @@ async function state(gameId?: number, userId?: number) {
         COALESCE((SELECT COUNT(*) FROM cohorts c WHERE c.caretaker_user_id = u.id), 0)::int AS group_count
       FROM users u
       ORDER BY CASE WHEN u.role='administrator' THEN 0 ELSE 1 END, u.name
+    `),
+    pool.query(`
+      SELECT t.*,
+        COALESCE(SUM(p.points), 0)::int AS total_points,
+        COALESCE((SELECT COUNT(*) FROM competition_tent_members m WHERE m.tent_id = t.id), 0)::int AS member_count
+      FROM competition_tents t
+      LEFT JOIN competition_points p ON p.tent_id = t.id
+      GROUP BY t.id
+      ORDER BY total_points DESC, t.name ASC
+    `),
+    pool.query(`
+      SELECT m.*, w.name AS ward_name, w.age, c.name AS cohort_name
+      FROM competition_tent_members m
+      JOIN wards w ON w.id = m.ward_id
+      LEFT JOIN cohorts c ON c.id = w.cohort_id
+      ORDER BY w.name
+    `),
+    pool.query(`
+      SELECT p.*, t.name AS tent_name, u.name AS created_by_name
+      FROM competition_points p
+      JOIN competition_tents t ON t.id = p.tent_id
+      LEFT JOIN users u ON u.id = p.created_by
+      ORDER BY p.created_at DESC, p.id DESC
+      LIMIT 120
     `)
   ]);
 
@@ -447,7 +495,10 @@ async function state(gameId?: number, userId?: number) {
     shares: shares.rows,
     messages: messages.rows,
     message_unreads: messageUnreads.rows,
-    caregivers: caregivers.rows
+    caregivers: caregivers.rows,
+    competition_tents: competitionTents.rows,
+    competition_members: competitionMembers.rows,
+    competition_points: competitionPoints.rows
   };
 }
 
@@ -805,6 +856,53 @@ app.delete("/api/cohorts/:id", async (req, res) => {
   res.json(await stateFor(req, req.query.gameId ? Number(req.query.gameId) : undefined));
 });
 
+app.post("/api/competition/tents", async (req, res) => {
+  const id = Number(req.body.id || 0);
+  const name = String(req.body.name || "").trim();
+  const color = String(req.body.color || "#1e5c46").trim();
+  if (!name) return res.status(400).json({ ok: false, error: "Podaj nazwę namiotu" });
+  if (id) {
+    await pool.query("UPDATE competition_tents SET name=$1, color=$2 WHERE id=$3", [name, color, id]);
+  } else {
+    await pool.query("INSERT INTO competition_tents (name, color) VALUES ($1,$2)", [name, color]);
+  }
+  res.json(await stateFor(req, Number(req.body.game_id || 0) || undefined));
+});
+
+app.delete("/api/competition/tents/:id", async (req, res) => {
+  await pool.query("DELETE FROM competition_tents WHERE id=$1", [Number(req.params.id)]);
+  res.json(await stateFor(req, req.query.gameId ? Number(req.query.gameId) : undefined));
+});
+
+app.post("/api/competition/tents/:id/members", async (req, res) => {
+  const tentId = Number(req.params.id);
+  const wardIds = Array.isArray(req.body.ward_ids) ? req.body.ward_ids.map(Number).filter(Boolean) : [];
+  await pool.query("DELETE FROM competition_tent_members WHERE tent_id=$1", [tentId]);
+  for (const wardId of wardIds) {
+    await pool.query("INSERT INTO competition_tent_members (tent_id, ward_id) VALUES ($1,$2) ON CONFLICT DO NOTHING", [tentId, wardId]);
+  }
+  res.json(await stateFor(req, Number(req.body.game_id || 0) || undefined));
+});
+
+app.post("/api/competition/points", async (req, res) => {
+  const tentId = Number(req.body.tent_id);
+  const category = String(req.body.category || "").trim();
+  const points = Number(req.body.points || 0);
+  const reason = String(req.body.reason || "").trim();
+  if (!tentId) return res.status(400).json({ ok: false, error: "Wybierz namiot" });
+  if (!category) return res.status(400).json({ ok: false, error: "Wybierz kategorię punktów" });
+  if (!reason) return res.status(400).json({ ok: false, error: "Podaj powód przyznania punktów" });
+  await pool.query(
+    "INSERT INTO competition_points (tent_id, category, points, reason, created_by) VALUES ($1,$2,$3,$4,$5)",
+    [tentId, category, points, reason, req.user?.id || null]
+  );
+  res.json(await stateFor(req, Number(req.body.game_id || 0) || undefined));
+});
+
+app.delete("/api/competition/points/:id", async (req, res) => {
+  await pool.query("DELETE FROM competition_points WHERE id=$1", [Number(req.params.id)]);
+  res.json(await stateFor(req, req.query.gameId ? Number(req.query.gameId) : undefined));
+});
 app.post("/api/sessions", async (req, res) => {
   const id = Number(req.body.id || 0);
   const values = [
