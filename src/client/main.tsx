@@ -272,6 +272,7 @@ function App() {
   const mapEl = useRef<HTMLDivElement | null>(null);
   const map = useRef<L.Map | null>(null);
   const markers = useRef<L.LayerGroup | null>(null);
+  const mapFittedGameRef = useRef<number | null>(null);
   const lastMessageIdRef = useRef(0);
   const readAllInFlightRef = useRef(false);
 
@@ -467,8 +468,11 @@ function App() {
         await saveStation({ ...station, lat: point.lat.toFixed(6), lng: point.lng.toFixed(6) });
       });
     }
-    if (points.length) map.current.fitBounds(L.featureGroup(markers.current.getLayers()).getBounds().pad(0.18));
-    else map.current.setView([52.22977, 21.01178], 15);
+    if (mapFittedGameRef.current !== state.game.id) {
+      if (points.length) map.current.fitBounds(L.featureGroup(markers.current.getLayers()).getBounds().pad(0.18));
+      else map.current.setView([52.22977, 21.01178], 15);
+      mapFittedGameRef.current = state.game.id;
+    }
   }
 
   async function saveStation(payload: Partial<Station>) {
@@ -891,7 +895,6 @@ function GamesModule(props: { state: AppState; gameTab: string; setGameTab: (tab
 
 function GamePrepare({ state, onSaveGame, onSaveStation, onAddTeam, onDeleteStation, mapRef, onFocusArea, onUseCurrentLocation, onUseMapCenter }: any) {
   return <div className="flow">
-    <div className="game-steps"><span className="done">1. Gra</span><span className={state.stations.length ? "done" : ""}>2. Stacje</span><span className={state.teams.length ? "done" : ""}>3. Drużyny</span><span>4. Start</span></div>
     <Panel kicker="Krok 1" title="Ustaw grę"><form id="gameForm" className="form-grid" onSubmit={(event) => { event.preventDefault(); onSaveGame(event.currentTarget); }}><input name="id" type="hidden" defaultValue={state.game.id} /><label>Nazwa gry<input name="name" defaultValue={state.game.name} required /></label><label>Typ<select name="template" defaultValue={state.game.template}>{templates.map((item) => <option key={item}>{item}</option>)}</select></label><label>Data<input name="game_date" type="date" defaultValue={String(state.game.game_date).slice(0, 10)} /></label><label>Start<input name="start_time" type="time" defaultValue={String(state.game.start_time).slice(0, 5)} /></label><label>Czas minut<input name="duration_minutes" type="number" min={5} max={600} defaultValue={state.game.duration_minutes} /></label><label className="check"><input name="use_template" type="checkbox" /> Dodaj przykładowe stacje</label><div className="form-actions"><Button variant="primary" type="submit">Zapisz grę</Button></div></form></Panel>
     <Panel kicker="Krok 2" title="Stacje na mapie" action={<span>Ustaw obszar, potem dodaj punkty</span>}><form className="map-search" onSubmit={(event) => { event.preventDefault(); const input = event.currentTarget.elements.namedItem("area") as HTMLInputElement; onFocusArea(input.value); }}><label>Obszar gry<input name="area" placeholder="np. Gdańsk, Park Oliwski" /></label><Button variant="primary">Pokaż obszar</Button><Button type="button" onClick={onUseCurrentLocation}>Moja lokalizacja</Button></form><div className="builder"><div className="map-panel"><div ref={mapRef} className="map" /><div className="map-tools"><Button type="button" onClick={onUseMapCenter}>Ustaw punkt w środku mapy</Button><span>Na telefonie przesuń mapę i użyj tego przycisku zamiast trafiać palcem w punkt.</span></div></div><div className="station-side"><form id="stationForm" className="stack" onSubmit={(event) => { event.preventDefault(); onSaveStation(Object.fromEntries(new FormData(event.currentTarget).entries())); event.currentTarget.reset(); }}><input name="id" type="hidden" /><label>Nazwa stacji<input name="title" placeholder="np. Most nad rzeką" required /></label><label>Kolejność<input name="station_order" type="number" min={1} defaultValue={state.stations.length + 1} /></label><div className="coord-grid"><label>Lat<input name="lat" type="number" step="0.000001" placeholder="kliknij mapę" /></label><label>Lng<input name="lng" type="number" step="0.000001" placeholder="kliknij mapę" /></label></div><Button variant="primary">Zapisz stację</Button></form><div className="station-list-admin">{state.stations.map((station: Station) => <article key={station.id} className="manage-row"><div><strong>{station.station_order}. {station.title}</strong><small>{station.lat ? `${Number(station.lat).toFixed(5)}, ${Number(station.lng).toFixed(5)}` : "bez punktu"}</small></div><Button onClick={() => fillStationForm(station)}>Edytuj</Button><Button variant="danger" onClick={() => onDeleteStation(station.id)}>Usuń</Button></article>)}</div></div></div></Panel>
     <Panel kicker="Krok 3" title="Drużyny" action={<Button variant="primary" onClick={onAddTeam}>Dodaj drużynę</Button>}><div className="mini-grid">{state.teams.map((team: Team) => <div key={team.id} className="mini-row"><span style={{ background: team.color }} /><strong>{team.name}</strong><small>{team.total_points} pkt</small></div>)}</div></Panel>

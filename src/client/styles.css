@@ -247,12 +247,9 @@ label { display: grid; gap: 6px; color: var(--text-muted); font-size: 13px; }
 .upload-action small { color: inherit; opacity: .72; }
 .dialog-photo { width: 100%; max-height: 360px; object-fit: contain; border-radius: var(--radius-md); border: 1px solid var(--border-default); background: var(--gray-100); }
 .danger-zone { margin-top: 18px; padding-top: 18px; border-top: 1px solid var(--border-default); }
-.game-select { min-width: 260px; grid-template-columns: 42px 1fr; align-items: center; color: var(--text-muted); }
+.game-select { min-width: 260px; grid-template-columns: 1fr; align-items: center; color: var(--text-muted); }
 .game-head { align-items: flex-end; }
 .game-toolbar { align-items: end; }
-.game-steps { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
-.game-steps span { display: grid; place-items: center; min-height: 40px; padding: 8px 12px; border: 1px solid var(--border-default); border-radius: 999px; background: #fff; color: var(--text-muted); font-size: 13px; font-weight: 800; text-align: center; }
-.game-steps span.done { border-color: color-mix(in oklch, var(--color-brand) 45%, transparent); background: var(--color-brand-soft); color: var(--color-brand); }
 .map-search { display: grid; grid-template-columns: minmax(220px, 1fr) auto auto; align-items: end; gap: 10px; margin-bottom: 12px; }
 .map-panel { display: grid; gap: 10px; min-width: 0; }
 .map-tools { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 10px; padding: 10px; border: 1px solid var(--border-default); border-radius: var(--radius-md); background: var(--surface-muted); }
@@ -496,10 +493,9 @@ label { display: grid; gap: 6px; color: var(--text-muted); font-size: 13px; }
   .gallery-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
   .form-grid .check, .form-actions { grid-column: auto; }
   .game-head { align-items: stretch; }
-  .game-toolbar { display: grid; grid-template-columns: 1fr; width: 100%; gap: 8px; }
+  .game-toolbar { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); width: 100%; gap: 8px; }
   .game-select { min-width: 0; width: 100%; }
-  .game-steps { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
-  .game-steps span { min-height: 34px; padding: 7px 8px; font-size: 12px; }
+  .game-toolbar .game-select { grid-column: 1 / -1; }
   .game-tabs { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .game-tabs .pill { width: 100%; }
   .map-search { grid-template-columns: 1fr; }
