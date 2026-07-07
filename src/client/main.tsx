@@ -25,7 +25,7 @@ type AppState = { ok: true; game: Game; games: Game[]; teams: Team[]; stations: 
 type GameState = Pick<AppState, "ok" | "game" | "games" | "teams" | "stations" | "scores" | "materials" | "questions">;
 type PulseState = GameState & Pick<AppState, "messages" | "message_unreads">;
 type NotificationItem = { id: string; title: string; detail: string; time: string; kind: "ward" | "session" | "message" | "today" };
-type AppPrefs = { sidebar: "full" | "compact"; theme: "forest" | "terra" | "cream"; email: boolean; push: boolean };
+type AppPrefs = { sidebar: "full" | "compact"; theme: "forest" | "terra" | "cream" | "night"; email: boolean; push: boolean };
 type BusyRunner = <T>(label: string, task: () => Promise<T>) => Promise<T>;
 
 const templates = ["Własna", "Polska", "Włochy", "Olimp"];
@@ -510,6 +510,33 @@ function App() {
     flash("Gra usunięta");
   }
 
+  async function timerCommand(command: "start" | "pause" | "reset") {
+    if (!state) return;
+    const previousGame = state.game;
+    setState((current) => {
+      if (!current) return current;
+      const remaining = command === "reset" ? current.game.duration_minutes * 60 : current.game.remaining_seconds;
+      return {
+        ...current,
+        game: {
+          ...current.game,
+          timer_running: command === "start",
+          remaining_seconds: Math.max(0, remaining)
+        }
+      };
+    });
+    try {
+      const next = await api<AppState>("/api/timer", {
+        method: "POST",
+        body: JSON.stringify({ game_id: previousGame.id, command })
+      });
+      setState((current) => current && current.game.id === next.game.id ? next : current);
+    } catch (error) {
+      setState((current) => current ? { ...current, game: previousGame } : current);
+      flash(error instanceof Error ? error.message : "Nie udało się zaktualizować timera");
+    }
+  }
+
   async function focusGameArea(query: string) {
     const phrase = query.trim();
     if (!phrase || !map.current) return;
@@ -632,7 +659,7 @@ function App() {
           {view === "gallery" && <Gallery state={state} onAddGallery={() => { setEditingSession(null); setModal("session"); }} onUploadPhotos={uploadPhotos} onEditPhoto={(photo) => { setEditingPhoto(photo); setModal("photo"); }} onShareInternal={(photo) => { setSharingPhoto(photo); setModal("share"); }} onDeletePhoto={async (id) => setState(await runBusy("Usuwanie zdjęcia...", () => api<AppState>(`/api/photos/${id}?gameId=${state.game.id}`, { method: "DELETE" })))} />}
           {view === "messages" && <MessagesView state={state} user={user} setState={setState} />}
           {view === "staff" && user.role === "administrator" && <StaffView state={state} setState={setState} />}
-          {view === "games" && <GamesModule state={state} gameTab={gameTab} setGameTab={setGameTab} ranking={ranking} teamId={teamId} stationId={stationId} setTeamId={setTeamId} setStationId={setStationId} activeScore={activeScore} mapRef={mapEl} onSaveGame={saveGame} onDeleteGame={deleteGame} onFocusArea={focusGameArea} onUseCurrentLocation={useCurrentLocation} onUseMapCenter={useMapCenterForStation} onFocusNearestStation={focusNearestStation} onSaveStation={saveStation} onAddTeam={() => setModal("team")} onDeleteStation={async (id) => setState(await runBusy("Usuwanie stacji...", () => api<AppState>(`/api/stations/${id}?gameId=${state.game.id}`, { method: "DELETE" })))} onTimer={async (command) => setState(await runBusy("Aktualizowanie timera...", () => api<AppState>("/api/timer", { method: "POST", body: JSON.stringify({ game_id: state.game.id, command }) })))} onScore={async (payload) => { setState(await runBusy("Zapisywanie oceny...", () => api<AppState>("/api/scores", { method: "POST", body: JSON.stringify(payload) }))); flash("Ocena zapisana"); }} setState={setState} load={(gameId?: number) => runBusy("Przełączanie gry...", () => load(gameId))} openTv={() => setModal("tv")} />}
+          {view === "games" && <GamesModule state={state} gameTab={gameTab} setGameTab={setGameTab} ranking={ranking} teamId={teamId} stationId={stationId} setTeamId={setTeamId} setStationId={setStationId} activeScore={activeScore} mapRef={mapEl} onSaveGame={saveGame} onDeleteGame={deleteGame} onFocusArea={focusGameArea} onUseCurrentLocation={useCurrentLocation} onUseMapCenter={useMapCenterForStation} onFocusNearestStation={focusNearestStation} onSaveStation={saveStation} onAddTeam={() => setModal("team")} onDeleteStation={async (id) => setState(await runBusy("Usuwanie stacji...", () => api<AppState>(`/api/stations/${id}?gameId=${state.game.id}`, { method: "DELETE" })))} onTimer={timerCommand} onScore={async (payload) => { setState(await runBusy("Zapisywanie oceny...", () => api<AppState>("/api/scores", { method: "POST", body: JSON.stringify(payload) }))); flash("Ocena zapisana"); }} setState={setState} load={(gameId?: number) => runBusy("Przełączanie gry...", () => load(gameId))} openTv={() => setModal("tv")} />}
         </div>
       </div>
     </main>
@@ -1063,7 +1090,7 @@ function AccountDialog({ user, initialTab, prefs, setPrefs, notifications, onClo
     </form>}
     {tab === "wyglad" && <div className="settings-pane">
       <div><strong>Pasek boczny</strong><p className="help">Wybierz szerokość menu nawigacji. Zmiana działa od razu i zostaje po odświeżeniu.</p><div className="segmented"><button type="button" className={prefs.sidebar === "full" ? "active" : ""} onClick={() => setPrefs({ ...prefs, sidebar: "full" })}>Pełny</button><button type="button" className={prefs.sidebar === "compact" ? "active" : ""} onClick={() => setPrefs({ ...prefs, sidebar: "compact" })}>Zwinięty</button></div></div>
-      <div><strong>Kolory systemu</strong><div className="swatches"><button type="button" className={prefs.theme === "forest" ? "active" : ""} onClick={() => setPrefs({ ...prefs, theme: "forest" })} /><button type="button" className={prefs.theme === "terra" ? "active" : ""} onClick={() => setPrefs({ ...prefs, theme: "terra" })} /><button type="button" className={prefs.theme === "cream" ? "active" : ""} onClick={() => setPrefs({ ...prefs, theme: "cream" })} /></div></div>
+      <div><strong>Kolory systemu</strong><div className="swatches"><button type="button" className={prefs.theme === "forest" ? "active" : ""} onClick={() => setPrefs({ ...prefs, theme: "forest" })} /><button type="button" className={prefs.theme === "terra" ? "active" : ""} onClick={() => setPrefs({ ...prefs, theme: "terra" })} /><button type="button" className={prefs.theme === "cream" ? "active" : ""} onClick={() => setPrefs({ ...prefs, theme: "cream" })} /><button type="button" className={prefs.theme === "night" ? "active" : ""} onClick={() => setPrefs({ ...prefs, theme: "night" })} /></div></div>
     </div>}
     {tab === "powiadomienia" && <div className="settings-pane">{prefRow("email", "E-mail", "Zgoda na wysyłkę podsumowań i przypomnień, gdy zostanie podpięty SMTP.")}{prefRow("push", "Powiadomienia push", "Powiadomienia przeglądarki na komputerze i telefonie po udzieleniu zgody.", togglePush)}<p className="help">Aktualnie panel generuje {notifications.length} powiadomień z danych systemu.</p></div>}
     {tab === "konto" && <div className="settings-pane"><label>Aktualne hasło<input type="password" /></label><label>Nowe hasło<input type="password" /></label><Button variant="primary">Zmień hasło</Button><div className="danger-zone"><Button variant="danger" onClick={onLogout}>Wyloguj się</Button></div></div>}
@@ -1090,6 +1117,10 @@ function MessagesView({ state, user, setState }: { state: AppState; user: User; 
   const [mobileThreadOpen, setMobileThreadOpen] = useState(false);
   const bubbleListRef = useRef<HTMLDivElement | null>(null);
   const longPressRef = useRef<number | null>(null);
+  useEffect(() => {
+    document.body.classList.toggle("chat-thread-mobile-active", mobileThreadOpen);
+    return () => document.body.classList.remove("chat-thread-mobile-active");
+  }, [mobileThreadOpen]);
   const conversations: Conversation[] = [
     { key: "hufiec", label: "Cały hufiec", hint: "wszyscy wychowawcy i administrator", target_type: "hufiec", target_id: null },
     { key: "staff", label: "Wychowawcy", hint: "rozmowa kadry", target_type: "staff", target_id: null },
