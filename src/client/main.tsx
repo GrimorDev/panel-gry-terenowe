@@ -30,6 +30,7 @@ type PulseState = GameState & Pick<AppState, "messages" | "message_unreads">;
 type NotificationItem = { id: string; title: string; detail: string; time: string; kind: "ward" | "session" | "message" | "today" };
 type AppPrefs = { sidebar: "full" | "compact"; theme: "forest" | "terra" | "cream" | "night"; email: boolean; push: boolean };
 type BusyRunner = <T>(label: string, task: () => Promise<T>) => Promise<T>;
+type TimerMilestone = { id: string; minute: number; label: string };
 
 const templates = ["Własna", "Polska", "Włochy", "Olimp"];
 const navItems = [["dashboard", "Pulpit"], ["wards", "Podopieczni"], ["cohorts", "Grupy"], ["sessions", "Zbiórki"], ["gallery", "Galeria"], ["messages", "Wiadomości"], ["competition", "Współzawodnictwo"], ["staff", "Wychowawcy i grupy"], ["games", "Gry terenowe"]] as const;
@@ -76,6 +77,19 @@ function loadIdSet(key: string) {
 
 function saveIdSet(key: string, ids: Set<string>) {
   localStorage.setItem(key, JSON.stringify([...ids]));
+}
+
+function loadTimerMilestones(gameId: number): TimerMilestone[] {
+  try {
+    const items = JSON.parse(localStorage.getItem(`hufc-timer-milestones-${gameId}`) || "[]");
+    return Array.isArray(items) ? items.filter((item) => item && Number(item.minute) > 0 && String(item.label || "").trim()).sort((a, b) => Number(a.minute) - Number(b.minute)) : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveTimerMilestones(gameId: number, items: TimerMilestone[]) {
+  localStorage.setItem(`hufc-timer-milestones-${gameId}`, JSON.stringify(items));
 }
 
 function buildNotifications(state: AppState, user: User): NotificationItem[] {
@@ -1167,7 +1181,70 @@ function fillStationForm(station: Station) {
 
 function GameRun({ state, ranking, onTimer, setGameTab }: { state: AppState; ranking: Team[]; onTimer: (command: "start" | "pause" | "reset") => void; setGameTab: (tab: any) => void }) {
   const ratio = state.game.remaining_seconds / Math.max(1, state.game.duration_minutes * 60);
-  return <div className="run-grid"><Panel kicker="Timer gry" title={state.game.timer_running ? "Odlicza" : "Gotowa"} action={<span>{state.game.duration_minutes} min</span>} className="timer-panel"><div className={`timer ${ratio < .15 ? "danger" : ratio < .35 ? "warning" : ""}`}>{secondsLabel(state.game.remaining_seconds)}</div><div className="progress"><span style={{ width: `${Math.max(0, Math.min(1, ratio)) * 100}%` }} /></div><div className="button-row"><Button variant="primary" onClick={() => onTimer("start")}>Start</Button><Button onClick={() => onTimer("pause")}>Pauza</Button><Button onClick={() => onTimer("reset")}>Reset</Button></div></Panel><Panel title="Ranking live" action={<span>{state.teams.length} drużyn</span>}><Ranking ranking={ranking} /></Panel><Panel title="Szybkie akcje"><div className="action-grid"><Button onClick={() => setGameTab("score")}>Oceń stację</Button><Button onClick={() => setGameTab("teams")}>Drużyny</Button><Button onClick={() => setGameTab("prepare")}>Stacje na mapie</Button><Button onClick={() => setGameTab("resources")}>QR i materiały</Button></div></Panel></div>;
+  const elapsedSeconds = Math.max(0, state.game.duration_minutes * 60 - state.game.remaining_seconds);
+  const elapsedMinutes = elapsedSeconds / 60;
+  const [milestones, setMilestones] = useState<TimerMilestone[]>(() => loadTimerMilestones(state.game.id));
+  const alertedRef = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    setMilestones(loadTimerMilestones(state.game.id));
+    alertedRef.current = new Set();
+  }, [state.game.id]);
+
+  useEffect(() => {
+    for (const item of milestones) {
+      if (elapsedMinutes < item.minute || alertedRef.current.has(item.id)) continue;
+      alertedRef.current.add(item.id);
+      if ("Notification" in window && Notification.permission === "granted") {
+        new Notification("Bramka czasu osiągnięta", { body: `${item.label} · ${item.minute} min` });
+      }
+    }
+  }, [elapsedMinutes, milestones]);
+
+  function addMilestone(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const formData = new FormData(form);
+    const minute = Number(formData.get("minute"));
+    const label = String(formData.get("label") || "").trim();
+    if (!minute || !label) return;
+    const next = [...milestones, { id: crypto.randomUUID(), minute, label }].sort((a, b) => a.minute - b.minute);
+    setMilestones(next);
+    saveTimerMilestones(state.game.id, next);
+    form.reset();
+  }
+
+  function removeMilestone(id: string) {
+    const next = milestones.filter((item) => item.id !== id);
+    setMilestones(next);
+    saveTimerMilestones(state.game.id, next);
+  }
+
+  return <div className="run-grid">
+    <Panel kicker="Timer gry" title={state.game.timer_running ? "Odlicza" : "Gotowa"} action={<span>{state.game.duration_minutes} min</span>} className="timer-panel">
+      <div className={`timer ${ratio < .15 ? "danger" : ratio < .35 ? "warning" : ""}`}>{secondsLabel(state.game.remaining_seconds)}</div>
+      <div className="progress"><span style={{ width: `${Math.max(0, Math.min(1, ratio)) * 100}%` }} /></div>
+      {milestones.length > 0 && <div className="timer-milestones">
+        {milestones.map((item) => {
+          const reached = elapsedMinutes >= item.minute;
+          return <div className={`timer-milestone ${reached ? "reached" : ""}`} key={item.id}>
+            <span>{item.minute} min</span>
+            <strong>{item.label}</strong>
+            <em>{reached ? "osiągnięta" : `za ${secondsLabel(Math.max(0, item.minute * 60 - elapsedSeconds))}`}</em>
+            <button type="button" onClick={() => removeMilestone(item.id)} aria-label={`Usuń bramkę ${item.label}`}>×</button>
+          </div>;
+        })}
+      </div>}
+      <form className="timer-milestone-form" onSubmit={addMilestone}>
+        <label>Minuta<input name="minute" type="number" min={1} max={state.game.duration_minutes} placeholder="15" /></label>
+        <label>Nazwa bramki<input name="label" placeholder="np. Zmiana stacji" /></label>
+        <Button>Dodaj bramkę</Button>
+      </form>
+      <div className="button-row"><Button variant="primary" onClick={() => onTimer("start")}>Start</Button><Button onClick={() => onTimer("pause")}>Pauza</Button><Button onClick={() => onTimer("reset")}>Reset</Button></div>
+    </Panel>
+    <Panel title="Ranking live" action={<span>{state.teams.length} drużyn</span>}><Ranking ranking={ranking} /></Panel>
+    <Panel title="Szybkie akcje"><div className="action-grid"><Button onClick={() => setGameTab("score")}>Oceń stację</Button><Button onClick={() => setGameTab("teams")}>Drużyny</Button><Button onClick={() => setGameTab("prepare")}>Stacje na mapie</Button><Button onClick={() => setGameTab("resources")}>QR i materiały</Button></div></Panel>
+  </div>;
 }
 
 function ScoreView({ state, teamId, stationId, score, setTeamId, setStationId, onSave }: any) {
