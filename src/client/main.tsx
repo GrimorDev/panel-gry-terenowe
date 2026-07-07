@@ -275,6 +275,7 @@ function App() {
   const map = useRef<L.Map | null>(null);
   const markers = useRef<L.LayerGroup | null>(null);
   const mapFittedGameRef = useRef<number | null>(null);
+  const latestStateRef = useRef<AppState | null>(null);
   const lastMessageIdRef = useRef(0);
   const readAllInFlightRef = useRef(false);
 
@@ -288,6 +289,10 @@ function App() {
     setPrefsState(next);
     localStorage.setItem("hufc-prefs", JSON.stringify(next));
   }
+
+  useEffect(() => {
+    latestStateRef.current = state;
+  }, [state]);
 
   async function load(gameId?: number) {
     const data = gameId && state
@@ -441,17 +446,40 @@ function App() {
     return () => window.removeEventListener("resize", update);
   }, [view, user?.role, mobileMenuOpen]);
 
-  useEffect(() => {
-    if (!state || view !== "games" || gameTab !== "prepare" || !mapEl.current) return;
+  function destroyGameMap() {
+    if (map.current) {
+      map.current.off();
+      try {
+        map.current.remove();
+      } catch {
+        // Leaflet can throw if React has already detached the map container.
+      }
+    }
+    map.current = null;
+    markers.current = null;
+    mapFittedGameRef.current = null;
+  }
+
+  function ensureGameMap() {
+    const container = mapEl.current;
+    if (!container) return null;
+    if (map.current && map.current.getContainer() !== container) destroyGameMap();
     if (!map.current) {
-      map.current = L.map(mapEl.current);
-      L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 19, attribution: "© OpenStreetMap" }).addTo(map.current);
+      delete (container as HTMLDivElement & { _leaflet_id?: number })._leaflet_id;
+      map.current = L.map(container, { preferCanvas: true });
+      L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+        maxZoom: 19,
+        attribution: "© OpenStreetMap",
+        updateWhenIdle: true,
+        keepBuffer: 3
+      }).addTo(map.current);
       markers.current = L.layerGroup().addTo(map.current);
       map.current.on("click", (event: L.LeafletMouseEvent) => {
         const form = document.querySelector<HTMLFormElement>("#stationForm");
-        if (!form || !state) return;
+        const currentState = latestStateRef.current;
+        if (!form || !currentState) return;
         (form.elements.namedItem("id") as HTMLInputElement).value = "";
-        (form.elements.namedItem("station_order") as HTMLInputElement).value = String(state.stations.length + 1);
+        (form.elements.namedItem("station_order") as HTMLInputElement).value = String(currentState.stations.length + 1);
         (form.elements.namedItem("lat") as HTMLInputElement).value = event.latlng.lat.toFixed(6);
         (form.elements.namedItem("lng") as HTMLInputElement).value = event.latlng.lng.toFixed(6);
         const title = form.elements.namedItem("title") as HTMLInputElement;
@@ -459,8 +487,37 @@ function App() {
         else title.focus();
       });
     }
+    return map.current;
+  }
+
+  useEffect(() => {
+    if (view !== "games" || gameTab !== "prepare") {
+      destroyGameMap();
+      return;
+    }
+    ensureGameMap();
     window.setTimeout(() => map.current?.invalidateSize(), 80);
-    renderMarkers();
+    return () => destroyGameMap();
+  }, [view, gameTab, state?.game.id]);
+
+  useEffect(() => {
+    if (!state || view !== "games" || gameTab !== "prepare") return;
+    const instance = ensureGameMap();
+    if (!instance) return;
+    const refresh = () => {
+      if (!map.current || !mapEl.current) return;
+      map.current.invalidateSize();
+      renderMarkers();
+    };
+    window.requestAnimationFrame(refresh);
+    window.setTimeout(refresh, 120);
+    window.setTimeout(() => {
+      if (mapEl.current && !mapEl.current.querySelector(".leaflet-tile-pane")) {
+        destroyGameMap();
+        ensureGameMap();
+      }
+      refresh();
+    }, 450);
   }, [state, view, gameTab, teamId]);
 
   function renderMarkers() {
