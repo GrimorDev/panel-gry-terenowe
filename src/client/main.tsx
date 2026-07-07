@@ -483,6 +483,61 @@ function App() {
     flash(data.id ? "Gra zapisana" : "Nowa gra utworzona");
   }
 
+  async function deleteGame(id: number) {
+    if (!state || state.games.length <= 1) {
+      flash("Nie można usunąć ostatniej gry");
+      return;
+    }
+    if (!window.confirm(`Usunąć grę "${state.game.name}" razem ze stacjami, drużynami i punktacją?`)) return;
+    const next = await runBusy("Usuwanie gry...", () => api<AppState>(`/api/games/${id}`, { method: "DELETE" }));
+    setState(next);
+    setTeamId(next.teams[0]?.id || null);
+    setStationId(next.stations[0]?.id || null);
+    flash("Gra usunięta");
+  }
+
+  async function focusGameArea(query: string) {
+    const phrase = query.trim();
+    if (!phrase || !map.current) return;
+    await runBusy("Szukam miejsca na mapie...", async () => {
+      const response = await fetch(`https://nominatim.openstreetmap.org/search?format=json&limit=1&q=${encodeURIComponent(phrase)}`);
+      const results = await response.json();
+      if (!Array.isArray(results) || !results[0]) throw new Error("Nie znaleziono miejsca");
+      map.current?.setView([Number(results[0].lat), Number(results[0].lon)], 15);
+      window.setTimeout(() => map.current?.invalidateSize(), 80);
+    });
+    flash("Mapa ustawiona");
+  }
+
+  function useCurrentLocation() {
+    if (!navigator.geolocation || !map.current) {
+      flash("Przeglądarka nie udostępnia lokalizacji");
+      return;
+    }
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        map.current?.setView([position.coords.latitude, position.coords.longitude], 16);
+        window.setTimeout(() => map.current?.invalidateSize(), 80);
+        flash("Mapa ustawiona na Twoją lokalizację");
+      },
+      () => flash("Nie udało się pobrać lokalizacji"),
+      { enableHighAccuracy: true, timeout: 9000 }
+    );
+  }
+
+  function useMapCenterForStation() {
+    if (!state || !map.current) return;
+    const center = map.current.getCenter();
+    const form = document.querySelector<HTMLFormElement>("#stationForm");
+    if (!form) return;
+    (form.elements.namedItem("id") as HTMLInputElement).value = "";
+    (form.elements.namedItem("station_order") as HTMLInputElement).value = String(state.stations.length + 1);
+    (form.elements.namedItem("lat") as HTMLInputElement).value = center.lat.toFixed(6);
+    (form.elements.namedItem("lng") as HTMLInputElement).value = center.lng.toFixed(6);
+    (form.elements.namedItem("title") as HTMLInputElement).focus();
+    flash("Punkt ustawiony w środku mapy");
+  }
+
   async function uploadPhotos(sessionId: number, files: File[]) {
     if (!state) return;
     const nextState = await runBusy(files.length === 1 ? "Wgrywanie zdjęcia..." : "Wgrywanie zdjęć...", async () => {
@@ -539,7 +594,7 @@ function App() {
           {view === "gallery" && <Gallery state={state} onAddGallery={() => { setEditingSession(null); setModal("session"); }} onUploadPhotos={uploadPhotos} onEditPhoto={(photo) => { setEditingPhoto(photo); setModal("photo"); }} onShareInternal={(photo) => { setSharingPhoto(photo); setModal("share"); }} onDeletePhoto={async (id) => setState(await runBusy("Usuwanie zdjęcia...", () => api<AppState>(`/api/photos/${id}?gameId=${state.game.id}`, { method: "DELETE" })))} />}
           {view === "messages" && <MessagesView state={state} user={user} setState={setState} />}
           {view === "staff" && user.role === "administrator" && <StaffView state={state} setState={setState} />}
-          {view === "games" && <GamesModule state={state} gameTab={gameTab} setGameTab={setGameTab} ranking={ranking} teamId={teamId} stationId={stationId} setTeamId={setTeamId} setStationId={setStationId} activeScore={activeScore} mapRef={mapEl} onSaveGame={saveGame} onSaveStation={saveStation} onAddTeam={() => setModal("team")} onDeleteStation={async (id) => setState(await runBusy("Usuwanie stacji...", () => api<AppState>(`/api/stations/${id}?gameId=${state.game.id}`, { method: "DELETE" })))} onTimer={async (command) => setState(await runBusy("Aktualizowanie timera...", () => api<AppState>("/api/timer", { method: "POST", body: JSON.stringify({ game_id: state.game.id, command }) })))} onScore={async (payload) => { setState(await runBusy("Zapisywanie oceny...", () => api<AppState>("/api/scores", { method: "POST", body: JSON.stringify(payload) }))); flash("Ocena zapisana"); }} setState={setState} load={(gameId?: number) => runBusy("Przełączanie gry...", () => load(gameId))} openTv={() => setModal("tv")} />}
+          {view === "games" && <GamesModule state={state} gameTab={gameTab} setGameTab={setGameTab} ranking={ranking} teamId={teamId} stationId={stationId} setTeamId={setTeamId} setStationId={setStationId} activeScore={activeScore} mapRef={mapEl} onSaveGame={saveGame} onDeleteGame={deleteGame} onFocusArea={focusGameArea} onUseCurrentLocation={useCurrentLocation} onUseMapCenter={useMapCenterForStation} onSaveStation={saveStation} onAddTeam={() => setModal("team")} onDeleteStation={async (id) => setState(await runBusy("Usuwanie stacji...", () => api<AppState>(`/api/stations/${id}?gameId=${state.game.id}`, { method: "DELETE" })))} onTimer={async (command) => setState(await runBusy("Aktualizowanie timera...", () => api<AppState>("/api/timer", { method: "POST", body: JSON.stringify({ game_id: state.game.id, command }) })))} onScore={async (payload) => { setState(await runBusy("Zapisywanie oceny...", () => api<AppState>("/api/scores", { method: "POST", body: JSON.stringify(payload) }))); flash("Ocena zapisana"); }} setState={setState} load={(gameId?: number) => runBusy("Przełączanie gry...", () => load(gameId))} openTv={() => setModal("tv")} />}
         </div>
       </div>
     </main>
@@ -817,14 +872,15 @@ function GalleryLightbox({ photo, current, total, onClose, onPrev, onNext, onSha
   </div>;
 }
 
-function GamesModule(props: { state: AppState; gameTab: string; setGameTab: (tab: any) => void; ranking: Team[]; teamId: number | null; stationId: number | null; setTeamId: (id: number) => void; setStationId: (id: number) => void; activeScore: Score | null; mapRef: React.RefObject<HTMLDivElement>; onSaveGame: (form: HTMLFormElement) => void; onSaveStation: (payload: Partial<Station>) => void; onAddTeam: () => void; onDeleteStation: (id: number) => void; onTimer: (command: "start" | "pause" | "reset") => void; onScore: (payload: { team_id: number | null; station_id: number | null; points: number; correct: boolean; cooperation: number; comment: string }) => void; setState: (state: AppState) => void; load: (gameId?: number) => void; openTv: () => void }) {
+function GamesModule(props: { state: AppState; gameTab: string; setGameTab: (tab: any) => void; ranking: Team[]; teamId: number | null; stationId: number | null; setTeamId: (id: number) => void; setStationId: (id: number) => void; activeScore: Score | null; mapRef: React.RefObject<HTMLDivElement>; onSaveGame: (form: HTMLFormElement) => void; onDeleteGame: (id: number) => void; onFocusArea: (query: string) => void; onUseCurrentLocation: () => void; onUseMapCenter: () => void; onSaveStation: (payload: Partial<Station>) => void; onAddTeam: () => void; onDeleteStation: (id: number) => void; onTimer: (command: "start" | "pause" | "reset") => void; onScore: (payload: { team_id: number | null; station_id: number | null; points: number; correct: boolean; cooperation: number; comment: string }) => void; setState: (state: AppState) => void; load: (gameId?: number) => void; openTv: () => void }) {
   const { state } = props;
+  const completedStations = state.scores.filter((score) => score.team_id === props.teamId && score.finished_at).length;
   return <div>
-    <div className="page-head">
-      <div><span className="kicker">Gry terenowe</span><h1>{state.game.name}</h1></div>
-      <div className="button-row"><label className="game-select">Gra<select value={state.game.id} onChange={(event) => props.load(Number(event.target.value))}>{state.games.map((game) => <option key={game.id} value={game.id}>{game.name}</option>)}</select></label><Button onClick={props.openTv} variant="primary">Ekran TV</Button></div>
+    <div className="page-head game-head">
+      <div><span className="kicker">Gry terenowe</span><h1>{state.game.name}</h1><p className="help">{state.stations.length} stacji · {state.teams.length} drużyn · {completedStations}/{state.stations.length} ukończonych dla wybranej drużyny</p></div>
+      <div className="button-row game-toolbar"><label className="game-select">Wybierz grę<select value={state.game.id} onChange={(event) => props.load(Number(event.target.value))}>{state.games.map((game) => <option key={game.id} value={game.id}>{game.name}</option>)}</select></label><Button onClick={props.openTv} variant="primary">Ekran TV</Button><Button variant="danger" onClick={() => props.onDeleteGame(state.game.id)} disabled={state.games.length <= 1}>Usuń grę</Button></div>
     </div>
-    <div className="pill-row">{gameTabs.map(([id, label]) => <button key={id} className={props.gameTab === id ? "pill active" : "pill"} onClick={() => props.setGameTab(id)}>{label}</button>)}</div>
+    <div className="pill-row game-tabs">{gameTabs.map(([id, label]) => <button key={id} className={props.gameTab === id ? "pill active" : "pill"} onClick={() => props.setGameTab(id)}>{label}</button>)}</div>
     {props.gameTab === "prepare" && <GamePrepare {...props} />}
     {props.gameTab === "run" && <GameRun state={state} ranking={props.ranking} onTimer={props.onTimer} setGameTab={props.setGameTab} />}
     {props.gameTab === "score" && <ScoreView state={state} teamId={props.teamId} stationId={props.stationId} score={props.activeScore} setTeamId={props.setTeamId} setStationId={props.setStationId} onSave={props.onScore} />}
@@ -833,10 +889,11 @@ function GamesModule(props: { state: AppState; gameTab: string; setGameTab: (tab
   </div>;
 }
 
-function GamePrepare({ state, onSaveGame, onSaveStation, onAddTeam, onDeleteStation, mapRef }: any) {
+function GamePrepare({ state, onSaveGame, onSaveStation, onAddTeam, onDeleteStation, mapRef, onFocusArea, onUseCurrentLocation, onUseMapCenter }: any) {
   return <div className="flow">
+    <div className="game-steps"><span className="done">1. Gra</span><span className={state.stations.length ? "done" : ""}>2. Stacje</span><span className={state.teams.length ? "done" : ""}>3. Drużyny</span><span>4. Start</span></div>
     <Panel kicker="Krok 1" title="Ustaw grę"><form id="gameForm" className="form-grid" onSubmit={(event) => { event.preventDefault(); onSaveGame(event.currentTarget); }}><input name="id" type="hidden" defaultValue={state.game.id} /><label>Nazwa gry<input name="name" defaultValue={state.game.name} required /></label><label>Typ<select name="template" defaultValue={state.game.template}>{templates.map((item) => <option key={item}>{item}</option>)}</select></label><label>Data<input name="game_date" type="date" defaultValue={String(state.game.game_date).slice(0, 10)} /></label><label>Start<input name="start_time" type="time" defaultValue={String(state.game.start_time).slice(0, 5)} /></label><label>Czas minut<input name="duration_minutes" type="number" min={5} max={600} defaultValue={state.game.duration_minutes} /></label><label className="check"><input name="use_template" type="checkbox" /> Dodaj przykładowe stacje</label><div className="form-actions"><Button variant="primary" type="submit">Zapisz grę</Button></div></form></Panel>
-    <Panel kicker="Krok 2" title="Stacje na mapie" action={<span>Kliknij mapę, aby wskazać punkt</span>}><div className="builder"><div ref={mapRef} className="map" /><div className="station-side"><form id="stationForm" className="stack" onSubmit={(event) => { event.preventDefault(); onSaveStation(Object.fromEntries(new FormData(event.currentTarget).entries())); event.currentTarget.reset(); }}><input name="id" type="hidden" /><label>Nazwa stacji<input name="title" placeholder="np. Most nad rzeką" required /></label><label>Kolejność<input name="station_order" type="number" min={1} defaultValue={state.stations.length + 1} /></label><label>Lat<input name="lat" type="number" step="0.000001" placeholder="kliknij mapę" /></label><label>Lng<input name="lng" type="number" step="0.000001" placeholder="kliknij mapę" /></label><Button variant="primary">Zapisz stację</Button></form><div className="station-list-admin">{state.stations.map((station: Station) => <article key={station.id} className="manage-row"><div><strong>{station.station_order}. {station.title}</strong><small>{station.lat ? `${Number(station.lat).toFixed(5)}, ${Number(station.lng).toFixed(5)}` : "bez punktu"}</small></div><Button onClick={() => fillStationForm(station)}>Edytuj</Button><Button variant="danger" onClick={() => onDeleteStation(station.id)}>Usuń</Button></article>)}</div></div></div></Panel>
+    <Panel kicker="Krok 2" title="Stacje na mapie" action={<span>Ustaw obszar, potem dodaj punkty</span>}><form className="map-search" onSubmit={(event) => { event.preventDefault(); const input = event.currentTarget.elements.namedItem("area") as HTMLInputElement; onFocusArea(input.value); }}><label>Obszar gry<input name="area" placeholder="np. Gdańsk, Park Oliwski" /></label><Button variant="primary">Pokaż obszar</Button><Button type="button" onClick={onUseCurrentLocation}>Moja lokalizacja</Button></form><div className="builder"><div className="map-panel"><div ref={mapRef} className="map" /><div className="map-tools"><Button type="button" onClick={onUseMapCenter}>Ustaw punkt w środku mapy</Button><span>Na telefonie przesuń mapę i użyj tego przycisku zamiast trafiać palcem w punkt.</span></div></div><div className="station-side"><form id="stationForm" className="stack" onSubmit={(event) => { event.preventDefault(); onSaveStation(Object.fromEntries(new FormData(event.currentTarget).entries())); event.currentTarget.reset(); }}><input name="id" type="hidden" /><label>Nazwa stacji<input name="title" placeholder="np. Most nad rzeką" required /></label><label>Kolejność<input name="station_order" type="number" min={1} defaultValue={state.stations.length + 1} /></label><div className="coord-grid"><label>Lat<input name="lat" type="number" step="0.000001" placeholder="kliknij mapę" /></label><label>Lng<input name="lng" type="number" step="0.000001" placeholder="kliknij mapę" /></label></div><Button variant="primary">Zapisz stację</Button></form><div className="station-list-admin">{state.stations.map((station: Station) => <article key={station.id} className="manage-row"><div><strong>{station.station_order}. {station.title}</strong><small>{station.lat ? `${Number(station.lat).toFixed(5)}, ${Number(station.lng).toFixed(5)}` : "bez punktu"}</small></div><Button onClick={() => fillStationForm(station)}>Edytuj</Button><Button variant="danger" onClick={() => onDeleteStation(station.id)}>Usuń</Button></article>)}</div></div></div></Panel>
     <Panel kicker="Krok 3" title="Drużyny" action={<Button variant="primary" onClick={onAddTeam}>Dodaj drużynę</Button>}><div className="mini-grid">{state.teams.map((team: Team) => <div key={team.id} className="mini-row"><span style={{ background: team.color }} /><strong>{team.name}</strong><small>{team.total_points} pkt</small></div>)}</div></Panel>
   </div>;
 }
@@ -859,7 +916,10 @@ function GameRun({ state, ranking, onTimer, setGameTab }: { state: AppState; ran
 function ScoreView({ state, teamId, stationId, score, setTeamId, setStationId, onSave }: any) {
   const [points, setPoints] = useState(score?.points || 7);
   useEffect(() => setPoints(score?.points || 7), [score?.points, teamId, stationId]);
-  return <div className="score-grid"><Panel title="Drużyna">{state.teams.map((team: Team) => <button key={team.id} className={`choice ${team.id === teamId ? "active" : ""}`} onClick={() => setTeamId(team.id)}><strong>{team.name}</strong><small>{team.total_points} pkt</small></button>)}</Panel><Panel title="Stacja">{state.stations.map((station: Station) => <button key={station.id} className={`choice ${station.id === stationId ? "active" : ""}`} onClick={() => setStationId(station.id)}><strong>{station.title}</strong><small>{state.scores.some((s: Score) => s.team_id === teamId && s.station_id === station.id) ? "ukończona" : "nieodwiedzona"}</small></button>)}</Panel><Panel title={state.stations.find((s: Station) => s.id === stationId)?.title || "Ocena"}><form className="stack" onSubmit={(event) => { event.preventDefault(); const form = event.currentTarget; onSave({ team_id: teamId, station_id: stationId, points, correct: form.correct.checked, cooperation: Number(form.cooperation.value), comment: form.comment.value }); }}><label>Punkty<input type="range" min={0} max={10} value={points} onChange={(event) => setPoints(Number(event.target.value))} /></label><div className="stepper"><Button type="button" onClick={() => setPoints(Math.max(0, points - 1))}>-</Button><strong>{points}</strong><Button type="button" onClick={() => setPoints(Math.min(10, points + 1))}>+</Button></div><label className="check"><input name="correct" type="checkbox" defaultChecked={score?.correct} /> Poprawna odpowiedź</label><label>Współpraca<select name="cooperation" defaultValue={score?.cooperation || 5}><option value="5">5 - świetna</option><option value="4">4 - dobra</option><option value="3">3 - OK</option><option value="2">2 - słaba</option><option value="1">1 - problem</option></select></label><label>Komentarz<textarea name="comment" defaultValue={score?.comment || ""} /></label><Button variant="primary">Zapisz ocenę</Button></form></Panel></div>;
+  return <div className="score-grid"><Panel title="Drużyna">{state.teams.map((team: Team) => <button key={team.id} className={`choice ` + (team.id === teamId ? "active" : "")} onClick={() => setTeamId(team.id)}><strong>{team.name}</strong><small>{team.total_points} pkt</small></button>)}</Panel><Panel title="Stacja">{state.stations.map((station: Station) => {
+    const done = state.scores.some((s: Score) => s.team_id === teamId && s.station_id === station.id && s.finished_at);
+    return <button key={station.id} className={`choice station-choice ` + (station.id === stationId ? "active " : "") + (done ? "done" : "")} onClick={() => setStationId(station.id)}><span><strong>{station.title}</strong><small>{done ? "uko\u0144czona" : "nieodwiedzona"}</small></span>{done && <b>&#10003;</b>}</button>;
+  })}</Panel><Panel title={state.stations.find((s: Station) => s.id === stationId)?.title || "Ocena"}><form className="stack" onSubmit={(event) => { event.preventDefault(); const form = event.currentTarget; onSave({ team_id: teamId, station_id: stationId, points, correct: form.correct.checked, cooperation: Number(form.cooperation.value), comment: form.comment.value }); }}><label>Punkty<input type="range" min={0} max={10} value={points} onChange={(event) => setPoints(Number(event.target.value))} /></label><div className="stepper"><Button type="button" onClick={() => setPoints(Math.max(0, points - 1))}>-</Button><strong>{points}</strong><Button type="button" onClick={() => setPoints(Math.min(10, points + 1))}>+</Button></div><label className="check"><input name="correct" type="checkbox" defaultChecked={score?.correct} /> Poprawna odpowiedź</label><label>Współpraca<select name="cooperation" defaultValue={score?.cooperation || 5}><option value="5">5 - świetna</option><option value="4">4 - dobra</option><option value="3">3 - OK</option><option value="2">2 - słaba</option><option value="1">1 - problem</option></select></label><label>Komentarz<textarea name="comment" defaultValue={score?.comment || ""} /></label><Button variant="primary">Zapisz ocenę</Button></form></Panel></div>;
 }
 
 function TeamsView({ state, onAdd }: { state: AppState; onAdd: () => void }) {
