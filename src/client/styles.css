@@ -174,6 +174,32 @@ body:has(.app-shell.theme-night) { background: radial-gradient(circle at 16% 0%,
 .app-shell.theme-night .photo-info-menu,
 .app-shell.theme-night .photo-actions-menu { background: #0C1812; color: var(--text-primary); border-color: var(--border-default); }
 .app-shell.theme-night .upload-action.primary-upload { background: var(--forest-600); color: #fff; border-color: var(--forest-600); }
+.app-shell.theme-night .gallery-page-head .btn-secondary,
+.app-shell.theme-night .gallery-page-head .file-button.btn-secondary {
+  background: #0E1E16;
+  color: #EEF6EF;
+  border: 1px solid rgba(238,246,239,.18);
+}
+.app-shell.theme-night .gallery-page-head .btn-primary,
+.app-shell.theme-night .gallery-page-head .file-button.btn-primary {
+  background: var(--forest-600);
+  color: #fff;
+  border: 1px solid rgba(255,255,255,.08);
+  box-shadow: 0 10px 24px rgba(0,0,0,.28);
+}
+.app-shell.theme-night .gallery-tabs button.active {
+  background: #EEF6EF;
+  color: #102016;
+}
+.app-shell.theme-night .gallery-photo-open {
+  background: #102016;
+}
+.app-shell.theme-night .gallery-photo-card {
+  box-shadow: 0 0 0 1px rgba(238,246,239,.08);
+}
+.app-shell.theme-night .gallery-date-group h2 {
+  color: #EEF6EF;
+}
 .app-shell.theme-night .bubble-list,
 .app-shell.theme-night .main-content,
 .app-shell.theme-night .map-tools,
@@ -413,36 +439,45 @@ body:has(.app-shell.theme-night) { background: radial-gradient(circle at 16% 0%,
 .upload-action input { display: none; }
 .upload-action svg { width: 24px; height: 24px; }
 .upload-action span { font-size: 12px; font-weight: 800; line-height: 1.1; }
-.gallery-page { display: grid; gap: 22px; }
-.gallery-page-head { align-items: flex-start; }
-.gallery-top-actions { display: flex; gap: 10px; flex-wrap: wrap; justify-content: flex-end; }
-.file-button { display: inline-flex; align-items: center; gap: 9px; cursor: pointer; }
+.gallery-page { display: grid; gap: 26px; }
+.gallery-page-head { align-items: flex-start; gap: 28px; }
+.gallery-page-head .help { max-width: 640px; }
+.gallery-top-actions { display: flex; gap: 12px; flex-wrap: wrap; justify-content: flex-end; }
+.file-button { min-width: 158px; display: inline-flex; align-items: center; justify-content: center; gap: 9px; padding: 0 18px; cursor: pointer; }
 .file-button input { display: none; }
 .file-button svg { width: 17px; height: 17px; }
-.gallery-tabs { display: inline-flex; width: fit-content; gap: 4px; padding: 5px; border-radius: 14px; background: var(--surface-muted); }
-.gallery-tabs button { min-height: 38px; padding: 0 18px; border: 0; background: transparent; color: var(--text-muted); box-shadow: none; }
+.gallery-tabs { display: inline-flex; width: fit-content; gap: 5px; padding: 5px; border-radius: 14px; background: var(--surface-muted); }
+.gallery-tabs button { min-height: 40px; padding: 0 20px; border: 0; background: transparent; color: var(--text-muted); box-shadow: none; }
 .gallery-tabs button.active { background: #fff; color: var(--text-primary); box-shadow: var(--shadow-card); }
 .selection-bar { position: sticky; top: 88px; z-index: 40; display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 14px 18px; border: 1px solid var(--border-default); border-radius: var(--radius-lg); background: #fff; box-shadow: var(--shadow-card); }
 .selection-bar > div { display: flex; gap: 10px; flex-wrap: wrap; }
-.gallery-date-list { display: grid; gap: 28px; }
-.gallery-date-group h2 { display: flex; align-items: baseline; gap: 8px; margin: 0 0 12px; font-size: 19px; }
+.gallery-date-list { display: grid; gap: 30px; }
+.gallery-date-group h2 { display: flex; align-items: baseline; gap: 8px; margin: 0 0 14px; font-size: 19px; }
 .gallery-date-group h2 span { color: var(--text-muted); font-size: 14px; font-weight: 500; }
-.gallery-photo-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px; max-width: 980px; }
-.gallery-photo-card { position: relative; aspect-ratio: 1; border: 2px solid transparent; border-radius: 14px; overflow: visible; background: var(--surface-muted); }
+.gallery-photo-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(168px, 168px)); gap: 14px; align-items: start; }
+.gallery-photo-card { position: relative; aspect-ratio: 1; border: 2px solid transparent; border-radius: 14px; overflow: visible; background: var(--surface-muted); box-shadow: 0 1px 0 rgba(255,255,255,.35); }
 .gallery-photo-card.selected { border-color: var(--color-brand); }
 .gallery-photo-open { position: absolute; inset: 0; width: 100%; height: 100%; padding: 0; border: 0; border-radius: 12px; overflow: hidden; background: var(--gray-100); box-shadow: none; }
 .gallery-photo-open img { width: 100%; height: 100%; object-fit: cover; transition: transform .18s ease; }
 .gallery-photo-open:hover img { transform: scale(1.03); }
-.gallery-select-box { position: absolute; top: 10px; left: 10px; z-index: 4; width: 30px; height: 30px; min-height: 30px; padding: 0; display: grid; place-items: center; border: 2px solid rgba(255,255,255,.9); border-radius: 8px; background: rgba(15,20,18,.35); color: #fff; font-size: 16px; box-shadow: none; }
+.gallery-select-box { position: absolute; top: 10px; left: 10px; z-index: 4; width: 30px; height: 30px; min-height: 30px; padding: 0; display: grid; place-items: center; border: 2px solid rgba(255,255,255,.92); border-radius: 8px; background: rgba(15,20,18,.22); color: #fff; font-size: 16px; box-shadow: none; }
 .gallery-photo-card.selected .gallery-select-box { background: var(--color-brand); border-color: #fff; }
 .gallery-photo-chip { position: absolute; right: 8px; bottom: 8px; z-index: 3; max-width: calc(100% - 16px); padding: 4px 8px; border-radius: 999px; background: rgba(0,0,0,.62); color: #fff; font-size: 11px; font-weight: 800; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .gallery-card-actions { position: absolute; inset: 0; pointer-events: none; }
-.gallery-info-button, .gallery-menu-button { position: absolute; top: 8px; z-index: 5; width: 30px; height: 30px; min-height: 30px; display: grid; place-items: center; padding: 0; border: 1px solid rgba(255,255,255,.7); border-radius: 999px; background: rgba(15,20,18,.62); color: #fff; pointer-events: auto; box-shadow: 0 8px 20px rgba(0,0,0,.18); }
+.gallery-info-button, .gallery-menu-button { position: absolute; top: 8px; z-index: 5; width: 30px; height: 30px; min-height: 30px; display: grid; place-items: center; padding: 0; border: 1px solid rgba(255,255,255,.72); border-radius: 999px; background: rgba(15,20,18,.68); color: #fff; opacity: 0; transform: translateY(-3px); pointer-events: auto; box-shadow: 0 8px 20px rgba(0,0,0,.18); transition: opacity .16s ease, transform .16s ease; }
+.gallery-photo-card:hover .gallery-info-button,
+.gallery-photo-card:hover .gallery-menu-button,
+.gallery-photo-card:focus-within .gallery-info-button,
+.gallery-photo-card:focus-within .gallery-menu-button { opacity: 1; transform: translateY(0); }
 .gallery-info-button { left: 48px; font-family: Georgia, serif; font-style: italic; }
 .gallery-menu-button { right: 8px; font-size: 12px; letter-spacing: 1px; }
 .gallery-popover { pointer-events: auto; }
 .gallery-card-actions .photo-info-menu { left: 8px; top: 44px; z-index: 80; }
 .gallery-card-actions .photo-actions-menu { right: 8px; top: 44px; z-index: 80; }
+@media (hover: none) {
+  .gallery-info-button { display: none; }
+  .gallery-menu-button { opacity: 1; transform: none; }
+}
 .albums-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 16px; max-width: 900px; }
 .album-card { min-height: 180px; border: 1px solid var(--border-default); border-radius: var(--radius-lg); background: #fff; overflow: hidden; box-shadow: var(--shadow-card); }
 .album-card > button { width: 100%; height: 100%; min-height: 180px; padding: 0; display: grid; grid-template-rows: 1fr auto auto; border: 0; border-radius: inherit; background: transparent; text-align: left; box-shadow: none; overflow: hidden; }
@@ -811,7 +846,7 @@ body:has(.app-shell.theme-night) { background: radial-gradient(circle at 16% 0%,
   .gallery-head span { font-size: 12px; }
   .gallery-page { gap: 16px; }
   .gallery-top-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); width: 100%; }
-  .file-button { justify-content: center; min-width: 0; }
+  .file-button { justify-content: center; min-width: 0; min-height: 42px; padding: 0 10px; }
   .gallery-tabs { width: 100%; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .gallery-tabs button { padding: 0 10px; font-size: 13px; }
   .selection-bar { position: sticky; top: 58px; display: grid; gap: 10px; padding: 12px; border-radius: 16px; }
@@ -820,12 +855,18 @@ body:has(.app-shell.theme-night) { background: radial-gradient(circle at 16% 0%,
   .gallery-date-list { gap: 22px; }
   .gallery-date-group h2 { display: block; font-size: 16px; margin-bottom: 9px; }
   .gallery-date-group h2 span { display: block; margin-top: 2px; font-size: 12px; }
-  .gallery-photo-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; max-width: none; }
+  .gallery-photo-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 7px; max-width: none; }
   .gallery-photo-card { border-radius: 10px; }
   .gallery-photo-open { border-radius: 8px; }
   .gallery-select-box { top: 6px; left: 6px; width: 24px; height: 24px; min-height: 24px; border-radius: 7px; font-size: 13px; }
   .gallery-photo-chip { right: 5px; bottom: 5px; max-width: calc(100% - 10px); padding: 3px 6px; font-size: 9px; }
-  .gallery-info-button, .gallery-menu-button { top: 5px; width: 24px; height: 24px; min-height: 24px; font-size: 12px; }
+  .gallery-info-button, .gallery-menu-button { top: 5px; width: 24px; height: 24px; min-height: 24px; font-size: 12px; opacity: 0; transform: translateY(-3px); }
+  .gallery-info-button { display: none; }
+  .gallery-menu-button { opacity: 1; transform: none; }
+  .gallery-photo-card:focus-within .gallery-info-button,
+  .gallery-photo-card:focus-within .gallery-menu-button,
+  .gallery-photo-card.actions-open .gallery-info-button,
+  .gallery-photo-card.actions-open .gallery-menu-button { opacity: 1; transform: translateY(0); }
   .gallery-info-button { left: 34px; }
   .gallery-menu-button { right: 5px; }
   .gallery-card-actions .photo-info-menu, .gallery-card-actions .photo-actions-menu { top: 34px; }

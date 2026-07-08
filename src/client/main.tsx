@@ -1246,7 +1246,7 @@ function GalleryPhotoCard({ photo, selected, onToggle, onOpen, onEdit, onShareIn
     window.addEventListener("pointerdown", close);
     return () => window.removeEventListener("pointerdown", close);
   }, [menuOpen, infoOpen]);
-  return <div className={`gallery-photo-card ${selected ? "selected" : ""}`}>
+  return <div className={`gallery-photo-card ${selected ? "selected" : ""} ${menuOpen || infoOpen ? "actions-open" : ""}`}>
     <button className="gallery-photo-open" type="button" onClick={() => onOpen(photo)}>
       {photo.image_data ? <img src={photo.image_data} alt={photo.title} loading="lazy" decoding="async" /> : <span />}
     </button>
