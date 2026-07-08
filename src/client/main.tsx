@@ -1091,6 +1091,7 @@ function Gallery({ state, setState, runBusy, onUploadPhotos, onEditPhoto, onShar
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
   const [albumModal, setAlbumModal] = useState(false);
   const [albumName, setAlbumName] = useState("");
+  const [selectedAlbumId, setSelectedAlbumId] = useState<number | null>(null);
   const photos = useMemo(() => state.photos.filter((photo) => photo.image_data).sort((a, b) => Date.parse(b.created_at || b.session_date) - Date.parse(a.created_at || a.session_date)), [state.photos]);
   const defaultSession = useMemo(() => [...state.sessions].sort((a, b) => Date.parse(b.session_date) - Date.parse(a.session_date))[0], [state.sessions]);
   const openIndex = openId ? photos.findIndex((photo) => photo.id === openId) : -1;
@@ -1114,6 +1115,8 @@ function Gallery({ state, setState, runBusy, onUploadPhotos, onEditPhoto, onShar
     }
     return items;
   }, [photos, state.photo_album_items]);
+  const selectedAlbum = selectedAlbumId ? (state.photo_albums || []).find((album) => album.id === selectedAlbumId) : null;
+  const selectedAlbumPhotos = selectedAlbumId ? (albumItems.get(selectedAlbumId) || []) : [];
   const move = (direction: number) => {
     if (!photos.length || openIndex < 0) return;
     const next = (openIndex + direction + photos.length) % photos.length;
@@ -1157,12 +1160,12 @@ function Gallery({ state, setState, runBusy, onUploadPhotos, onEditPhoto, onShar
     <div className="page-head gallery-page-head">
       <div><h1>Galeria</h1><p className="help">Wszystkie zdjęcia w jednym miejscu, uporządkowane według daty. Zaznacz zdjęcia, aby je usunąć albo dodać do albumu.</p></div>
       <div className="gallery-top-actions">
-        <label className="btn btn-secondary file-button">
+        <label className="btn btn-secondary file-button gallery-action-button">
           <UiIcon name="gallery" />
           <span>Wgraj zdjęcia</span>
           <input type="file" accept="image/*" multiple onChange={(event) => { uploadToDefaultSession(event.currentTarget.files); event.currentTarget.value = ""; }} />
         </label>
-        <label className="btn btn-primary file-button">
+        <label className="btn btn-primary file-button gallery-action-button">
           <UiIcon name="camera" />
           <span>Zrób zdjęcie</span>
           <input type="file" accept="image/*" capture="environment" onChange={(event) => { uploadToDefaultSession(event.currentTarget.files); event.currentTarget.value = ""; }} />
@@ -1171,7 +1174,7 @@ function Gallery({ state, setState, runBusy, onUploadPhotos, onEditPhoto, onShar
     </div>
 
     <div className="gallery-tabs" role="tablist">
-      <button className={tab === "all" ? "active" : ""} type="button" onClick={() => setTab("all")}>Wszystkie zdjęcia</button>
+      <button className={tab === "all" ? "active" : ""} type="button" onClick={() => { setTab("all"); setSelectedAlbumId(null); }}>Wszystkie zdjęcia</button>
       <button className={tab === "albums" ? "active" : ""} type="button" onClick={() => setTab("albums")}>Albumy</button>
     </div>
 
@@ -1197,12 +1200,12 @@ function Gallery({ state, setState, runBusy, onUploadPhotos, onEditPhoto, onShar
       })}
     </div>}
 
-    {tab === "albums" && <div className="albums-grid">
+    {tab === "albums" && !selectedAlbum && <div className="albums-grid">
       <button className="album-card new-album" type="button" onClick={() => setAlbumModal(true)}>Utwórz album</button>
       {(state.photo_albums || []).map((album) => {
         const cover = albumItems.get(album.id)?.[0];
         return <article className="album-card" key={album.id}>
-          <button type="button" onClick={() => cover && showPhoto(cover)}>
+          <button type="button" onClick={() => setSelectedAlbumId(album.id)}>
             {cover?.image_data ? <img src={cover.image_data} alt={album.name} loading="lazy" decoding="async" /> : <span />}
             <strong>{album.name}</strong>
             <small>{album.photo_count} zdjęć</small>
@@ -1210,6 +1213,19 @@ function Gallery({ state, setState, runBusy, onUploadPhotos, onEditPhoto, onShar
         </article>;
       })}
     </div>}
+
+    {tab === "albums" && selectedAlbum && <section className="gallery-album-view">
+      <div className="gallery-album-head">
+        <button className="album-back" type="button" onClick={() => setSelectedAlbumId(null)} aria-label="Wróć do albumów">‹</button>
+        <div>
+          <h2>{selectedAlbum.name}</h2>
+          <p className="help">{selectedAlbumPhotos.length} zdjęć</p>
+        </div>
+      </div>
+      {selectedAlbumPhotos.length === 0 ? <Panel title="Album jest pusty"><p className="help">Zaznacz zdjęcia w widoku wszystkich zdjęć i dodaj je do tego albumu.</p></Panel> : <div className="gallery-photo-grid">
+        {selectedAlbumPhotos.map((photo) => <GalleryPhotoCard key={photo.id} photo={photo} selected={selectedSet.has(photo.id)} onToggle={() => togglePhoto(photo.id)} onOpen={showPhoto} onEdit={onEditPhoto} onShareInternal={onShareInternal} onDelete={onDeletePhoto} />)}
+      </div>}
+    </section>}
 
     {albumModal && <Modal title="Dodaj do albumu" onClose={() => setAlbumModal(false)}>
       <div className="album-dialog-body">
