@@ -33,6 +33,12 @@ type NotificationItem = { id: string; title: string; detail: string; time: strin
 type AppPrefs = { sidebar: "full" | "compact"; theme: "forest" | "terra" | "cream" | "night"; email: boolean; push: boolean };
 type BusyRunner = <T>(label: string, task: () => Promise<T>) => Promise<T>;
 type TimerMilestone = { id: string; minute: number; label: string };
+type OfflineRequest = { id: string; url: string; method: string; body?: string; created_at: string };
+
+const offlineQueueKey = "hufc-offline-queue";
+const offlineStateKey = "hufc-offline-state";
+const offlineUserKey = "hufc-offline-user";
+const queueableEndpoints = ["/api/games", "/api/stations", "/api/teams", "/api/scores", "/api/timer", "/api/sessions", "/api/wards", "/api/photo-albums", "/api/messages", "/api/competition", "/api/caregivers", "/api/cohorts", "/api/internal-shares"];
 
 const templates = ["Własna", "Polska", "Włochy", "Olimp"];
 const navItems = [["dashboard", "Pulpit"], ["wards", "Podopieczni"], ["cohorts", "Grupy"], ["sessions", "Zbiórki"], ["gallery", "Galeria"], ["messages", "Wiadomości"], ["competition", "Współzawodnictwo"], ["staff", "Wychowawcy i grupy"], ["games", "Gry terenowe"]] as const;
@@ -40,11 +46,101 @@ const gameTabs = [["prepare", "Przygotowanie"], ["run", "Gra"], ["score", "Ocena
 const viewLabels = Object.fromEntries(navItems) as Record<(typeof navItems)[number][0], string>;
 const defaultPrefs: AppPrefs = { sidebar: "full", theme: "forest", email: true, push: false };
 
+function queueEvent() {
+  window.dispatchEvent(new CustomEvent("hufc-offline-queue-changed"));
+}
+
+function readOfflineQueue(): OfflineRequest[] {
+  try {
+    const items = JSON.parse(localStorage.getItem(offlineQueueKey) || "[]");
+    return Array.isArray(items) ? items : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeOfflineQueue(items: OfflineRequest[]) {
+  localStorage.setItem(offlineQueueKey, JSON.stringify(items));
+  queueEvent();
+}
+
+function cacheState(data: unknown) {
+  if (data && typeof data === "object" && "game" in data && "games" in data) {
+    localStorage.setItem(offlineStateKey, JSON.stringify(data));
+  }
+}
+
+function readCachedState<T>() {
+  try {
+    const value = localStorage.getItem(offlineStateKey);
+    return value ? JSON.parse(value) as T : null;
+  } catch {
+    return null;
+  }
+}
+
+function readCachedUser() {
+  try {
+    const value = localStorage.getItem(offlineUserKey);
+    return value ? JSON.parse(value) as User : null;
+  } catch {
+    return null;
+  }
+}
+
+function cacheUser(user: User | null) {
+  if (user) localStorage.setItem(offlineUserKey, JSON.stringify(user));
+  else localStorage.removeItem(offlineUserKey);
+}
+
+function shouldQueueOffline(url: string, options?: RequestInit) {
+  const method = String(options?.method || "GET").toUpperCase();
+  if (method === "GET" || options?.body instanceof FormData) return false;
+  return queueableEndpoints.some((endpoint) => url.startsWith(endpoint));
+}
+
+function canUseCachedState(url: string) {
+  return url.startsWith("/api/state") || url.startsWith("/api/game-state") || url.startsWith("/api/pulse");
+}
+
+function queueOfflineRequest(url: string, options?: RequestInit) {
+  const body = typeof options?.body === "string" ? options.body : undefined;
+  writeOfflineQueue([...readOfflineQueue(), { id: `${Date.now()}-${Math.random().toString(16).slice(2)}`, url, method: String(options?.method || "POST").toUpperCase(), body, created_at: new Date().toISOString() }]);
+}
+
+async function syncOfflineQueue() {
+  if (!navigator.onLine) return 0;
+  let synced = 0;
+  for (const item of readOfflineQueue()) {
+    const response = await fetch(item.url, { method: item.method, headers: item.body ? { "Content-Type": "application/json" } : undefined, body: item.body });
+    const data = await response.json().catch(() => null);
+    if (!response.ok || data?.ok === false) throw new Error(data?.error || "Blad synchronizacji");
+    cacheState(data);
+    writeOfflineQueue(readOfflineQueue().filter((queued) => queued.id !== item.id));
+    synced += 1;
+  }
+  return synced;
+}
+
 async function api<T>(url: string, options?: RequestInit): Promise<T> {
-  const response = await fetch(url, { headers: options?.body instanceof FormData ? undefined : { "Content-Type": "application/json" }, ...options });
-  const data = await response.json();
-  if (!response.ok || data.ok === false) throw new Error(data.error || "Błąd serwera");
-  return data;
+  try {
+    const response = await fetch(url, { headers: options?.body instanceof FormData ? undefined : { "Content-Type": "application/json" }, ...options });
+    const data = await response.json();
+    if (!response.ok || data.ok === false) throw new Error(data.error || "Błąd serwera");
+    cacheState(data);
+    return data;
+  } catch (error) {
+    if (shouldQueueOffline(url, options)) {
+      queueOfflineRequest(url, options);
+      const cached = readCachedState<T>();
+      if (cached) return cached;
+    }
+    if (String(options?.method || "GET").toUpperCase() === "GET" && canUseCachedState(url)) {
+      const cached = readCachedState<T>();
+      if (cached) return cached;
+    }
+    throw error;
+  }
 }
 
 function dateLabel(value: string) {
@@ -289,6 +385,9 @@ function App() {
   const [stationId, setStationId] = useState<number | null>(null);
   const [toast, setToast] = useState("");
   const [busyLabel, setBusyLabel] = useState("");
+  const [isOnline, setIsOnline] = useState(() => navigator.onLine);
+  const [offlineQueueCount, setOfflineQueueCount] = useState(() => readOfflineQueue().length);
+  const [syncingOffline, setSyncingOffline] = useState(false);
   const [modal, setModal] = useState<null | "ward" | "session" | "team" | "photo" | "share" | "account" | "tv">(null);
   const [settingsTab, setSettingsTab] = useState<"profil" | "wyglad" | "powiadomienia" | "konto">("profil");
   const [notifOpen, setNotifOpen] = useState(false);
@@ -351,6 +450,41 @@ function App() {
     }
   }
 
+  useEffect(() => {
+    const refreshOfflineStatus = () => {
+      setIsOnline(navigator.onLine);
+      setOfflineQueueCount(readOfflineQueue().length);
+    };
+    const trySync = async () => {
+      refreshOfflineStatus();
+      if (!navigator.onLine || readOfflineQueue().length === 0) return;
+      setSyncingOffline(true);
+      try {
+        const synced = await syncOfflineQueue();
+        refreshOfflineStatus();
+        if (synced > 0) {
+          const currentGameId = latestStateRef.current?.game.id;
+          if (currentGameId) setState(await api<AppState>(`/api/state?gameId=${currentGameId}`));
+          flash(`Zsynchronizowano ${synced} zmian offline`);
+        }
+      } catch {
+        refreshOfflineStatus();
+      } finally {
+        setSyncingOffline(false);
+      }
+    };
+    window.addEventListener("online", trySync);
+    window.addEventListener("offline", refreshOfflineStatus);
+    window.addEventListener("hufc-offline-queue-changed", refreshOfflineStatus);
+    refreshOfflineStatus();
+    trySync();
+    return () => {
+      window.removeEventListener("online", trySync);
+      window.removeEventListener("offline", refreshOfflineStatus);
+      window.removeEventListener("hufc-offline-queue-changed", refreshOfflineStatus);
+    };
+  }, []);
+
   function openAccount(tab: "profil" | "wyglad" | "powiadomienia" | "konto") {
     setSettingsTab(tab);
     setNotifOpen(false);
@@ -394,6 +528,7 @@ function App() {
 
   async function logout() {
     await runBusy("Wylogowywanie...", () => api("/api/logout", { method: "POST" }));
+    cacheUser(null);
     setUser(null);
     setAuth("guest");
     setModal(null);
@@ -403,11 +538,23 @@ function App() {
     api<{ ok: true; user: User }>("/api/me")
       .then(async (result) => {
         setUser(result.user);
+        cacheUser(result.user);
         const data = await load();
         lastMessageIdRef.current = newestMessageId(data.messages);
         setAuth("ready");
       })
-      .catch(() => setAuth("guest"));
+      .catch(() => {
+        const cachedUser = readCachedUser();
+        const cachedState = readCachedState<AppState>();
+        if (!navigator.onLine && cachedUser && cachedState) {
+          setUser(cachedUser);
+          setState(cachedState);
+          lastMessageIdRef.current = newestMessageId(cachedState.messages);
+          setAuth("ready");
+        } else {
+          setAuth("guest");
+        }
+      });
   }, []);
 
   useEffect(() => {
@@ -710,7 +857,7 @@ function App() {
   }
 
   if (auth === "checking") return <div className="loading"><LoadingDots label="Ładowanie panelu..." /></div>;
-  if (auth === "guest" || !user) return <Login onLogin={async (next) => { setUser(next); await load(); setAuth("ready"); }} />;
+  if (auth === "guest" || !user) return <Login onLogin={async (next) => { setUser(next); cacheUser(next); await load(); setAuth("ready"); }} />;
   if (!state) return <div className="loading"><LoadingDots label="Ładowanie danych..." /></div>;
 
   const visibleNavItems = navItems.filter(([id]) => user.role === "administrator" || id !== "staff");
@@ -761,6 +908,7 @@ function App() {
     {modal === "account" && <AccountDialog user={user} initialTab={settingsTab} prefs={prefs} setPrefs={setPrefs} notifications={notifications} onClose={() => setModal(null)} onSaved={(next) => { setUser(next); setModal(null); }} onLogout={logout} />}
     {modal === "team" && <TeamDialog gameId={state.game.id} onClose={() => setModal(null)} onSaved={(next) => { setState(next); setModal(null); }} />}
     {modal === "tv" && <TvDialog state={state} ranking={ranking} onClose={() => setModal(null)} />}
+    <OfflineStatus online={isOnline} pending={offlineQueueCount} syncing={syncingOffline} />
     {busyLabel && <div className="busy-overlay"><LoadingDots label={busyLabel} /></div>}
     <nav className="mobile-bottom-nav" aria-label="Nawigacja mobilna">
       {(["dashboard", "sessions", "messages", "gallery"] as const).map((id) => <button key={id} className={view === id ? "active" : ""} type="button" onClick={() => { setView(id); setMobileMenuOpen(false); setNotifOpen(false); }}>
@@ -774,6 +922,14 @@ function App() {
       </button>
     </nav>
     {toast && <div className="toast">{toast}</div>}
+  </div>;
+}
+
+function OfflineStatus({ online, pending, syncing }: { online: boolean; pending: number; syncing: boolean }) {
+  if (online && pending === 0 && !syncing) return null;
+  return <div className={`offline-status ${online ? "syncing" : "offline"}`}>
+    <strong>{online ? syncing ? "Synchronizacja..." : "Czeka na wysłanie" : "Tryb offline"}</strong>
+    <span>{pending > 0 ? `${pending} zmian zapisanych lokalnie` : "Brak internetu. Pracujesz na ostatnich danych."}</span>
   </div>;
 }
 
@@ -1994,6 +2150,12 @@ function TeamDialog({ gameId, onClose, onSaved }: { gameId: number; onClose: () 
 
 function TvDialog({ state, ranking, onClose }: { state: AppState; ranking: Team[]; onClose: () => void }) {
   return <div className="modal"><div className="tv"><Button onClick={onClose}>Zamknij</Button><div className="tv-timer">{secondsLabel(state.game.remaining_seconds)}</div><Ranking ranking={ranking} /></div></div>;
+}
+
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("/sw.js").catch(() => undefined);
+  });
 }
 
 createRoot(document.getElementById("root")!).render(<App />);
