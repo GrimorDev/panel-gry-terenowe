@@ -333,13 +333,13 @@ async function ensureSchema() {
   await pool.query(
     `INSERT INTO users (email, name, role, password_hash)
      VALUES ($1, $2, $3, $4)
-     ON CONFLICT (email) DO UPDATE SET name=$2, role=$3, password_hash=$4`,
+     ON CONFLICT (email) DO UPDATE SET role=$3`,
     [adminEmail, "Administrator hufca", "administrator", hashPassword(adminPassword)]
   );
   await pool.query(
     `INSERT INTO users (email, name, role, password_hash)
      VALUES ($1, $2, $3, $4)
-     ON CONFLICT (email) DO UPDATE SET name=$2, role=$3, password_hash=$4`,
+     ON CONFLICT (email) DO UPDATE SET role=$3`,
     [demoEmail, "Demo wychowawca", "wychowawca", hashPassword(demoPassword)]
   );
   await pool.query("UPDATE games SET owner_user_id = (SELECT id FROM users WHERE lower(email)=lower($1) LIMIT 1) WHERE owner_user_id IS NULL", [adminEmail]);

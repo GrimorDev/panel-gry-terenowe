@@ -238,14 +238,19 @@ function Login({ onLogin }: { onLogin: (user: User) => void }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
+  const [isSubmitting, setIsSubmitting] = useState(false);
   async function submit(event: React.FormEvent) {
     event.preventDefault();
+    if (isSubmitting) return;
     setError("");
+    setIsSubmitting(true);
     try {
       const result = await api<{ ok: true; user: User }>("/api/login", { method: "POST", body: JSON.stringify({ email, password }) });
       onLogin(result.user);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Nie udało się zalogować");
+    } finally {
+      setIsSubmitting(false);
     }
   }
   return <main className="login">
@@ -262,7 +267,10 @@ function Login({ onLogin }: { onLogin: (user: User) => void }) {
         <label>E-mail<input value={email} onChange={(event) => setEmail(event.target.value)} type="email" autoComplete="off" required /></label>
         <label>Hasło<input value={password} onChange={(event) => setPassword(event.target.value)} type="password" autoComplete="new-password" required /></label>
         {error && <div className="form-error">{error}</div>}
-        <Button variant="primary" type="submit">Zaloguj się</Button>
+        <Button className="login-submit" variant="primary" type="submit" disabled={isSubmitting}>
+          {isSubmitting && <span className="button-dots" aria-hidden="true"><i /><i /><i /></span>}
+          <span>{isSubmitting ? "Logowanie..." : "Zaloguj się"}</span>
+        </Button>
         <small>Nie masz konta? Skontaktuj się z komendantem hufca.</small>
       </form>
     </section>
