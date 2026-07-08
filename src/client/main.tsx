@@ -39,6 +39,7 @@ type BeforeInstallPromptEvent = Event & { prompt: () => Promise<void>; userChoic
 const offlineQueueKey = "hufc-offline-queue";
 const offlineStateKey = "hufc-offline-state";
 const offlineUserKey = "hufc-offline-user";
+const installDismissedKey = "hufc-install-dismissed";
 const offlineStateMaxLength = 1_800_000;
 const queueableEndpoints = ["/api/games", "/api/stations", "/api/teams", "/api/scores", "/api/timer", "/api/sessions", "/api/wards", "/api/photo-albums", "/api/messages", "/api/competition", "/api/caregivers", "/api/cohorts", "/api/internal-shares"];
 
@@ -342,6 +343,34 @@ function LoadingDots({ label = "Przetwarzanie..." }: { label?: string }) {
   </div>;
 }
 
+function InstallPromptDialog({ platform, canPrompt, onInstall, onClose }: { platform: "ios" | "android" | "mobile"; canPrompt: boolean; onInstall: () => void; onClose: () => void }) {
+  const isIos = platform === "ios";
+  return <div className="modal install-modal" onClick={onClose}>
+    <div className="dialog install-dialog" onClick={(event) => event.stopPropagation()}>
+      <button className="install-close" type="button" onClick={onClose} aria-label="Zamknij"><UiIcon name="close" /></button>
+      <div className="install-hero">
+        <span className="brand-mark">H</span>
+        <div>
+          <span>Wersja na telefon</span>
+          <h2>Pobierz Mój Hufiec</h2>
+        </div>
+      </div>
+      <p className="install-lead">Dodaj aplikację do ekranu telefonu, żeby działała jak osobna apka: szybciej, wygodniej i z trybem offline po pierwszym uruchomieniu online.</p>
+      <div className="install-benefits">
+        <span>Offline w terenie</span>
+        <span>Ikona na ekranie</span>
+        <span>Bez paska przeglądarki</span>
+      </div>
+      {isIos ? <ol className="install-steps">
+        <li>Otwórz stronę w Safari.</li>
+        <li>Kliknij ikonę udostępniania.</li>
+        <li>Wybierz „Do ekranu początkowego”.</li>
+      </ol> : <button className="install-primary" type="button" onClick={onInstall}>{canPrompt ? "Zainstaluj aplikację" : "Pokaż instrukcję instalacji"}</button>}
+      <button className="install-secondary" type="button" onClick={onClose}>Nie teraz</button>
+    </div>
+  </div>;
+}
+
 function UiIcon({ name }: { name: string }) {
   const common = { fill: "none", stroke: "currentColor", strokeWidth: 1.9, strokeLinecap: "round" as const, strokeLinejoin: "round" as const };
   if (name === "dashboard") return <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="8" height="8" rx="2" {...common} /><rect x="13" y="3" width="8" height="8" rx="2" {...common} /><rect x="3" y="13" width="8" height="8" rx="2" {...common} /><rect x="13" y="13" width="8" height="8" rx="2" {...common} /></svg>;
@@ -425,6 +454,8 @@ function App() {
   const [syncingOffline, setSyncingOffline] = useState(false);
   const [installPrompt, setInstallPrompt] = useState<BeforeInstallPromptEvent | null>(null);
   const [isStandaloneApp, setIsStandaloneApp] = useState(() => window.matchMedia("(display-mode: standalone)").matches || Boolean((navigator as Navigator & { standalone?: boolean }).standalone));
+  const [installDialogOpen, setInstallDialogOpen] = useState(false);
+  const [installDismissed, setInstallDismissed] = useState(() => localStorage.getItem(installDismissedKey) === "1");
   const [modal, setModal] = useState<null | "ward" | "session" | "team" | "photo" | "share" | "account" | "tv">(null);
   const [settingsTab, setSettingsTab] = useState<"profil" | "wyglad" | "powiadomienia" | "konto">("profil");
   const [notifOpen, setNotifOpen] = useState(false);
@@ -452,6 +483,15 @@ function App() {
   const notifications = useMemo(() => state && user ? buildNotifications(state, user) : [], [state, user]);
   const visibleNotifications = useMemo(() => notifications.filter((item) => !clearedNotificationIds.has(item.id)), [notifications, clearedNotificationIds]);
   const unreadNotifications = useMemo(() => visibleNotifications.filter((item) => !readNotificationIds.has(item.id)), [visibleNotifications, readNotificationIds]);
+  const userAgent = navigator.userAgent || "";
+  const mobilePlatform: "ios" | "android" | "mobile" =
+    /iPad|iPhone|iPod/.test(userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1)
+      ? "ios"
+      : /Android/i.test(userAgent)
+        ? "android"
+        : "mobile";
+  const isMobileDevice = /Android|iPhone|iPad|iPod|Mobile/i.test(userAgent) || (navigator.maxTouchPoints > 1 && window.innerWidth <= 900);
+  const canOfferInstall = isMobileDevice && !isStandaloneApp;
 
   function setPrefs(next: AppPrefs) {
     setPrefsState(next);
@@ -505,6 +545,12 @@ function App() {
     };
   }, []);
 
+  useEffect(() => {
+    if (!canOfferInstall || installDismissed) return;
+    const timer = window.setTimeout(() => setInstallDialogOpen(true), 900);
+    return () => window.clearTimeout(timer);
+  }, [canOfferInstall, installDismissed]);
+
   async function installApp() {
     if (!installPrompt) {
       flash("Na iPhone: Udostępnij → Do ekranu początkowego. Na Androidzie użyj menu przeglądarki: Zainstaluj aplikację.");
@@ -516,8 +562,21 @@ function App() {
     const choice = await prompt.userChoice;
     if (choice.outcome === "accepted") {
       setIsStandaloneApp(true);
-      flash("Aplikacja Hufc została dodana do telefonu");
+      setInstallDialogOpen(false);
+      flash("Aplikacja Mój Hufiec została dodana do telefonu");
     }
+  }
+
+  function openInstallDialog() {
+    setInstallDismissed(false);
+    localStorage.removeItem(installDismissedKey);
+    setInstallDialogOpen(true);
+  }
+
+  function closeInstallDialog() {
+    localStorage.setItem(installDismissedKey, "1");
+    setInstallDismissed(true);
+    setInstallDialogOpen(false);
   }
 
   useEffect(() => {
@@ -927,7 +986,11 @@ function App() {
   }
 
   if (auth === "checking") return <div className="loading"><LoadingDots label="Ładowanie panelu..." /></div>;
-  if (auth === "guest" || !user) return <Login installAvailable={Boolean(installPrompt) && !isStandaloneApp} onInstallApp={installApp} onLogin={async (next) => { setUser(next); cacheUser(next); await load(); setAuth("ready"); }} />;
+  if (auth === "guest" || !user) return <>
+    <Login installAvailable={canOfferInstall} onInstallApp={openInstallDialog} onLogin={async (next) => { setUser(next); cacheUser(next); await load(); setAuth("ready"); }} />
+    {installDialogOpen && <InstallPromptDialog platform={mobilePlatform} canPrompt={Boolean(installPrompt)} onInstall={installApp} onClose={closeInstallDialog} />}
+    {toast && <div className="toast">{toast}</div>}
+  </>;
   if (!state) return <div className="loading"><LoadingDots label="Ładowanie danych..." /></div>;
 
   const visibleNavItems = navItems.filter(([id]) => user.role === "administrator" || id !== "staff");
@@ -955,7 +1018,7 @@ function App() {
     </aside>
 
     <main className="main full">
-      <TopBar view={view} user={user} notifications={visibleNotifications} readNotificationIds={readNotificationIds} notifOpen={notifOpen} setNotifOpen={setNotificationsOpen} onClearNotification={clearNotification} onClearAllNotifications={clearAllNotifications} openAccount={openAccount} installAvailable={Boolean(installPrompt) && !isStandaloneApp} onInstallApp={installApp} />
+      <TopBar view={view} user={user} notifications={visibleNotifications} readNotificationIds={readNotificationIds} notifOpen={notifOpen} setNotifOpen={setNotificationsOpen} onClearNotification={clearNotification} onClearAllNotifications={clearAllNotifications} openAccount={openAccount} installAvailable={canOfferInstall} onInstallApp={openInstallDialog} />
       <div className="main-content">
         <div className="view-stage" key={view}>
           {view === "dashboard" && <Dashboard state={state} user={user} setView={setView} />}
@@ -978,6 +1041,7 @@ function App() {
     {modal === "account" && <AccountDialog user={user} initialTab={settingsTab} prefs={prefs} setPrefs={setPrefs} notifications={notifications} onClose={() => setModal(null)} onSaved={(next) => { setUser(next); setModal(null); }} onLogout={logout} />}
     {modal === "team" && <TeamDialog gameId={state.game.id} onClose={() => setModal(null)} onSaved={(next) => { setState(next); setModal(null); }} />}
     {modal === "tv" && <TvDialog state={state} ranking={ranking} onClose={() => setModal(null)} />}
+    {installDialogOpen && <InstallPromptDialog platform={mobilePlatform} canPrompt={Boolean(installPrompt)} onInstall={installApp} onClose={closeInstallDialog} />}
     <OfflineStatus online={isOnline} pending={offlineQueueCount} syncing={syncingOffline} />
     {busyLabel && <div className="busy-overlay"><LoadingDots label={busyLabel} /></div>}
     <nav className="mobile-bottom-nav" aria-label="Nawigacja mobilna">

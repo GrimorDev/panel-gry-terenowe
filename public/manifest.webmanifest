@@ -1,6 +1,6 @@
 {
-  "name": "Hufc - panel wychowawcy",
-  "short_name": "Hufc",
+  "name": "Mój Hufiec",
+  "short_name": "Mój Hufiec",
   "description": "Panel wychowawcy z trybem terenowym i synchronizacja po odzyskaniu internetu.",
   "id": "/",
   "start_url": "/?source=pwa",
