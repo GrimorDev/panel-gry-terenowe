@@ -180,6 +180,20 @@ async function ensureSchema() {
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
 
+    CREATE TABLE IF NOT EXISTS photo_albums (
+      id SERIAL PRIMARY KEY,
+      name VARCHAR(160) NOT NULL,
+      created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS photo_album_items (
+      album_id INTEGER NOT NULL REFERENCES photo_albums(id) ON DELETE CASCADE,
+      photo_id INTEGER NOT NULL REFERENCES session_photos(id) ON DELETE CASCADE,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (album_id, photo_id)
+    );
+
     CREATE TABLE IF NOT EXISTS games (
       id SERIAL PRIMARY KEY,
       name VARCHAR(160) NOT NULL,
@@ -461,7 +475,7 @@ async function state(gameId?: number, user?: User) {
   if (!game) throw new Error("Nie znaleziono gry");
   game.remaining_seconds = remaining(game);
 
-  const [teams, stations, scores, materials, questions, games, cohorts, wards, sessions, photos, shares, messages, messageUnreads, caregivers, competitionTents, competitionMembers, competitionPoints] = await Promise.all([
+  const [teams, stations, scores, materials, questions, games, cohorts, wards, sessions, photos, photoAlbums, photoAlbumItems, shares, messages, messageUnreads, caregivers, competitionTents, competitionMembers, competitionPoints] = await Promise.all([
     pool.query(`
       SELECT t.*,
         COALESCE(SUM(ts.points), 0)::int AS total_points,
@@ -518,10 +532,22 @@ async function state(gameId?: number, user?: User) {
       ORDER BY s.session_date ASC, s.id ASC
     `, [isAdmin(user), user?.id || 0]),
     pool.query(`
-      SELECT p.*, s.title AS session_title, s.session_date
+      SELECT p.*, s.title AS session_title, s.session_date, s.location AS session_location
       FROM session_photos p
       JOIN sessions s ON s.id = p.session_id
-      ORDER BY s.session_date DESC, p.id ASC
+      ORDER BY COALESCE(p.created_at, s.session_date::timestamptz) DESC, p.id DESC
+    `),
+    pool.query(`
+      SELECT a.*, COALESCE(COUNT(i.photo_id), 0)::int AS photo_count
+      FROM photo_albums a
+      LEFT JOIN photo_album_items i ON i.album_id = a.id
+      GROUP BY a.id
+      ORDER BY a.created_at DESC, a.id DESC
+    `),
+    pool.query(`
+      SELECT *
+      FROM photo_album_items
+      ORDER BY created_at DESC
     `),
     pool.query(`
       SELECT sh.*, p.title AS photo_title, c.name AS cohort_name, u.name AS created_by_name
@@ -630,6 +656,8 @@ async function state(gameId?: number, user?: User) {
     wards: wards.rows,
     sessions: sessions.rows,
     photos: photos.rows,
+    photo_albums: photoAlbums.rows,
+    photo_album_items: photoAlbumItems.rows,
     shares: shares.rows,
     messages: messages.rows,
     message_unreads: messageUnreads.rows,
@@ -1145,6 +1173,35 @@ app.delete("/api/photos/:id", async (req, res) => {
   await pool.query("DELETE FROM session_photos WHERE id=$1", [Number(req.params.id)]);
   res.json(await stateFor(req, req.query.gameId ? Number(req.query.gameId) : undefined));
 });
+
+app.post("/api/photos/bulk-delete", async (req, res) => {
+  const ids = Array.isArray(req.body.ids) ? req.body.ids.map((id: unknown) => Number(id)).filter(Boolean) : [];
+  if (ids.length) {
+    await pool.query("DELETE FROM session_photos WHERE id = ANY($1::int[])", [ids]);
+  }
+  res.json(await stateFor(req, Number(req.body.game_id || 0) || undefined));
+});
+
+app.post("/api/photo-albums", async (req, res) => {
+  const photoIds = Array.isArray(req.body.photo_ids) ? req.body.photo_ids.map((id: unknown) => Number(id)).filter(Boolean) : [];
+  let albumId = Number(req.body.album_id || 0);
+  const name = String(req.body.name || "").trim();
+  if (!albumId) {
+    if (!name) return res.status(400).json({ ok: false, error: "Podaj nazwę albumu" });
+    const created = await pool.query("INSERT INTO photo_albums (name, created_by) VALUES ($1,$2) RETURNING id", [name, req.user?.id || null]);
+    albumId = Number(created.rows[0].id);
+  }
+  for (const photoId of photoIds) {
+    await pool.query("INSERT INTO photo_album_items (album_id, photo_id) VALUES ($1,$2) ON CONFLICT DO NOTHING", [albumId, photoId]);
+  }
+  res.json(await stateFor(req, Number(req.body.game_id || 0) || undefined));
+});
+
+app.delete("/api/photo-albums/:id", async (req, res) => {
+  await pool.query("DELETE FROM photo_albums WHERE id=$1", [Number(req.params.id)]);
+  res.json(await stateFor(req, req.query.gameId ? Number(req.query.gameId) : undefined));
+});
+
 app.post("/api/internal-shares", async (req, res) => {
   const photoId = Number(req.body.photo_id);
   const targetType = String(req.body.target_type || "hufiec");

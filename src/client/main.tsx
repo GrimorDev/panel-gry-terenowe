@@ -11,7 +11,9 @@ type Caregiver = { id: number; email: string; name: string; role: string; group_
 type Cohort = { id: number; name: string; caretaker: string; caretaker_user_id: number | null; caretaker_user_name: string | null; caretaker_email: string | null; ward_count: number };
 type Ward = { id: number; name: string; age: number; parent_name: string; contact: string; cohort_id: number | null; cohort_name: string | null };
 type Session = { id: number; title: string; session_date: string; location: string; attendance: number; total: number; cohort_id: number | null; cohort_name: string | null; scope: string; owner_user_id: number | null; owner_name: string | null; participant_user_ids: number[]; participant_names: string };
-type Photo = { id: number; session_id: number; session_title: string; session_date: string; title: string; color: string; image_data: string | null; mime_type: string | null; share_token: string | null; created_at: string };
+type Photo = { id: number; session_id: number; session_title: string; session_date: string; session_location: string | null; title: string; color: string; image_data: string | null; mime_type: string | null; share_token: string | null; created_at: string };
+type PhotoAlbum = { id: number; name: string; photo_count: number; created_at: string; created_by: number | null };
+type PhotoAlbumItem = { album_id: number; photo_id: number; created_at: string };
 type Game = { id: number; name: string; template: string; game_date: string; start_time: string; duration_minutes: number; remaining_seconds: number; timer_running: boolean; status: string; owner_user_id: number | null; owner_name: string | null; team_count?: number; station_count?: number };
 type Team = { id: number; game_id: number; name: string; color: string; total_points: number; avg_cooperation: number; correct_count: number; finished_count: number };
 type Station = { id: number; game_id: number; title: string; station_order: number; lat: string | null; lng: string | null; qr_code: string };
@@ -24,7 +26,7 @@ type MessageUnread = { target_type: string; target_id: number; unread_count: num
 type CompetitionTent = { id: number; name: string; color: string; total_points: number; member_count: number; created_at: string };
 type CompetitionMember = { tent_id: number; ward_id: number; ward_name: string; age: number; cohort_name: string | null; tent_name: string };
 type CompetitionPoint = { id: number; tent_id: number; tent_name: string; category: string; points: number; reason: string; created_by: number | null; created_by_name: string | null; created_at: string };
-type AppState = { ok: true; game: Game; games: Game[]; teams: Team[]; stations: Station[]; scores: Score[]; materials: Material[]; questions: Question[]; cohorts: Cohort[]; wards: Ward[]; sessions: Session[]; photos: Photo[]; shares: InternalShare[]; messages: Message[]; message_unreads: MessageUnread[]; caregivers: Caregiver[]; competition_tents: CompetitionTent[]; competition_members: CompetitionMember[]; competition_points: CompetitionPoint[] };
+type AppState = { ok: true; game: Game; games: Game[]; teams: Team[]; stations: Station[]; scores: Score[]; materials: Material[]; questions: Question[]; cohorts: Cohort[]; wards: Ward[]; sessions: Session[]; photos: Photo[]; photo_albums: PhotoAlbum[]; photo_album_items: PhotoAlbumItem[]; shares: InternalShare[]; messages: Message[]; message_unreads: MessageUnread[]; caregivers: Caregiver[]; competition_tents: CompetitionTent[]; competition_members: CompetitionMember[]; competition_points: CompetitionPoint[] };
 type GameState = Pick<AppState, "ok" | "game" | "games" | "teams" | "stations" | "scores" | "materials" | "questions">;
 type PulseState = GameState & Pick<AppState, "messages" | "message_unreads">;
 type NotificationItem = { id: string; title: string; detail: string; time: string; kind: "ward" | "session" | "message" | "today" };
@@ -743,7 +745,7 @@ function App() {
           {view === "wards" && <Wards state={state} onAdd={() => { setEditingWard(null); setModal("ward"); }} onEdit={(ward) => { setEditingWard(ward); setModal("ward"); }} />}
           {view === "cohorts" && <Cohorts state={state} />}
           {view === "sessions" && <Sessions user={user} state={state} onAdd={() => { setEditingSession(null); setModal("session"); }} onEdit={(session) => { setEditingSession(session); setModal("session"); }} onDelete={async (id) => setState(await runBusy("Usuwanie zbiórki...", () => api<AppState>(`/api/sessions/${id}?gameId=${state.game.id}`, { method: "DELETE" })))} />}
-          {view === "gallery" && <Gallery state={state} onAddGallery={() => { setEditingSession(null); setModal("session"); }} onUploadPhotos={uploadPhotos} onEditPhoto={(photo) => { setEditingPhoto(photo); setModal("photo"); }} onShareInternal={(photo) => { setSharingPhoto(photo); setModal("share"); }} onDeletePhoto={async (id) => setState(await runBusy("Usuwanie zdjęcia...", () => api<AppState>(`/api/photos/${id}?gameId=${state.game.id}`, { method: "DELETE" })))} />}
+          {view === "gallery" && <Gallery state={state} setState={setState} runBusy={runBusy} onUploadPhotos={uploadPhotos} onEditPhoto={(photo) => { setEditingPhoto(photo); setModal("photo"); }} onShareInternal={(photo) => { setSharingPhoto(photo); setModal("share"); }} onDeletePhoto={async (id) => setState(await runBusy("Usuwanie zdjęcia...", () => api<AppState>(`/api/photos/${id}?gameId=${state.game.id}`, { method: "DELETE" })))} />}
           {view === "messages" && <MessagesView state={state} user={user} setState={setState} />}
           {view === "competition" && <CompetitionView state={state} setState={setState} runBusy={runBusy} />}
           {view === "staff" && user.role === "administrator" && <StaffView state={state} setState={setState} />}
@@ -1083,45 +1085,190 @@ async function sharePhoto(photo: Photo) {
   field.remove();
 }
 
-function Gallery({ state, onAddGallery, onUploadPhotos, onEditPhoto, onShareInternal, onDeletePhoto }: { state: AppState; onAddGallery: () => void; onUploadPhotos: (sessionId: number, files: File[]) => void; onEditPhoto: (photo: Photo) => void; onShareInternal: (photo: Photo) => void; onDeletePhoto: (id: number) => void }) {
+function Gallery({ state, setState, runBusy, onUploadPhotos, onEditPhoto, onShareInternal, onDeletePhoto }: { state: AppState; setState: (state: AppState) => void; runBusy: BusyRunner; onUploadPhotos: (sessionId: number, files: File[]) => void; onEditPhoto: (photo: Photo) => void; onShareInternal: (photo: Photo) => void; onDeletePhoto: (id: number) => void }) {
   const [openId, setOpenId] = useState<number | null>(null);
-  const photos = state.photos.filter((photo) => photo.image_data);
+  const [tab, setTab] = useState<"all" | "albums">("all");
+  const [selectedIds, setSelectedIds] = useState<number[]>([]);
+  const [albumModal, setAlbumModal] = useState(false);
+  const [albumName, setAlbumName] = useState("");
+  const photos = useMemo(() => state.photos.filter((photo) => photo.image_data).sort((a, b) => Date.parse(b.created_at || b.session_date) - Date.parse(a.created_at || a.session_date)), [state.photos]);
+  const defaultSession = useMemo(() => [...state.sessions].sort((a, b) => Date.parse(b.session_date) - Date.parse(a.session_date))[0], [state.sessions]);
   const openIndex = openId ? photos.findIndex((photo) => photo.id === openId) : -1;
   const openPhoto = openIndex >= 0 ? photos[openIndex] : null;
   const showPhoto = (photo: Photo) => photo.image_data && setOpenId(photo.id);
+  const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds]);
+  const groupedPhotos = useMemo(() => {
+    const groups = new Map<string, Photo[]>();
+    for (const photo of photos) {
+      const key = String(photo.created_at || photo.session_date).slice(0, 10);
+      groups.set(key, [...(groups.get(key) || []), photo]);
+    }
+    return [...groups.entries()];
+  }, [photos]);
+  const albumItems = useMemo(() => {
+    const items = new Map<number, Photo[]>();
+    for (const link of state.photo_album_items || []) {
+      const photo = photos.find((item) => item.id === link.photo_id);
+      if (!photo) continue;
+      items.set(link.album_id, [...(items.get(link.album_id) || []), photo]);
+    }
+    return items;
+  }, [photos, state.photo_album_items]);
   const move = (direction: number) => {
     if (!photos.length || openIndex < 0) return;
     const next = (openIndex + direction + photos.length) % photos.length;
     setOpenId(photos[next].id);
   };
+  const uploadToDefaultSession = (files: FileList | null) => {
+    const selected = Array.from(files || []);
+    if (!selected.length) return;
+    if (!defaultSession) {
+      alert("Najpierw zaplanuj zbiórkę, żeby zdjęcia miały miejsce w galerii.");
+      return;
+    }
+    onUploadPhotos(defaultSession.id, selected);
+  };
+  const togglePhoto = (id: number) => setSelectedIds((current) => current.includes(id) ? current.filter((item) => item !== id) : [...current, id]);
+  const clearSelection = () => setSelectedIds([]);
+  const addToAlbum = async (albumId?: number) => {
+    const name = albumName.trim();
+    if (!albumId && !name) return;
+    const next = await runBusy(albumId ? "Dodawanie do albumu..." : "Tworzenie albumu...", () => api<AppState>("/api/photo-albums", {
+      method: "POST",
+      body: JSON.stringify({ album_id: albumId || undefined, name, photo_ids: selectedIds, game_id: state.game.id })
+    }));
+    setState(next);
+    setAlbumName("");
+    setAlbumModal(false);
+    clearSelection();
+  };
+  const deleteSelected = async () => {
+    if (!selectedIds.length || !confirm(`Usunąć ${selectedIds.length} zaznaczonych zdjęć?`)) return;
+    const next = await runBusy("Usuwanie zdjęć...", () => api<AppState>("/api/photos/bulk-delete", {
+      method: "POST",
+      body: JSON.stringify({ ids: selectedIds, game_id: state.game.id })
+    }));
+    setState(next);
+    clearSelection();
+  };
+  const dateGroupLabel = (value: string) => new Date(value).toLocaleDateString("pl-PL", { weekday: "long", day: "numeric", month: "long" });
 
-  return <div>
-    <div className="page-head">
-      <div><h1>Galeria</h1><p className="help">Galerie tworzą się automatycznie dla zbiórek. Zdjęcia można robić aparatem, dodawać z telefonu lub komputera, powiększać i udostępniać.</p></div>
-      <Button variant="primary" onClick={onAddGallery}>Nowa galeria</Button>
+  return <div className="gallery-page">
+    <div className="page-head gallery-page-head">
+      <div><h1>Galeria</h1><p className="help">Wszystkie zdjęcia w jednym miejscu, uporządkowane według daty. Zaznacz zdjęcia, aby je usunąć albo dodać do albumu.</p></div>
+      <div className="gallery-top-actions">
+        <label className="btn btn-secondary file-button">
+          <UiIcon name="gallery" />
+          <span>Wgraj zdjęcia</span>
+          <input type="file" accept="image/*" multiple onChange={(event) => { uploadToDefaultSession(event.currentTarget.files); event.currentTarget.value = ""; }} />
+        </label>
+        <label className="btn btn-primary file-button">
+          <UiIcon name="camera" />
+          <span>Zrób zdjęcie</span>
+          <input type="file" accept="image/*" capture="environment" onChange={(event) => { uploadToDefaultSession(event.currentTarget.files); event.currentTarget.value = ""; }} />
+        </label>
+      </div>
     </div>
-    {state.sessions.map((session) => {
-      const sessionPhotos = state.photos.filter((photo) => photo.session_id === session.id);
-      return <section className="gallery-section" key={session.id}>
-        <div className="gallery-head"><div><h2>{session.title}</h2><span>{dateLabel(session.session_date)} · {sessionPhotos.length} zdjęć</span></div></div>
-        <div className="gallery-grid">
-          {sessionPhotos.map((photo) => <PhotoTile key={photo.id} photo={photo} onOpen={showPhoto} onEdit={onEditPhoto} onShareInternal={onShareInternal} onDelete={onDeletePhoto} />)}
-          <div className="photo-upload-card">
-            <label className="upload-action primary-upload">
-              <input type="file" accept="image/*" capture="environment" onChange={(event) => { const file = event.currentTarget.files?.[0]; if (file) onUploadPhotos(session.id, [file]); event.currentTarget.value = ""; }} />
-              <UiIcon name="camera" />
-              <span>Aparat</span>
-            </label>
-            <label className="upload-action">
-              <input type="file" accept="image/*" multiple onChange={(event) => { const files = Array.from(event.currentTarget.files || []); if (files.length) onUploadPhotos(session.id, files); event.currentTarget.value = ""; }} />
-              <UiIcon name="gallery" />
-              <span>Galeria</span>
-            </label>
+
+    <div className="gallery-tabs" role="tablist">
+      <button className={tab === "all" ? "active" : ""} type="button" onClick={() => setTab("all")}>Wszystkie zdjęcia</button>
+      <button className={tab === "albums" ? "active" : ""} type="button" onClick={() => setTab("albums")}>Albumy</button>
+    </div>
+
+    {selectedIds.length > 0 && <div className="selection-bar">
+      <strong>{selectedIds.length} zaznaczonych</strong>
+      <div>
+        <Button onClick={() => setAlbumModal(true)}>Dodaj do albumu</Button>
+        <Button variant="danger" onClick={deleteSelected}>Usuń</Button>
+        <Button onClick={clearSelection}>Anuluj</Button>
+      </div>
+    </div>}
+
+    {tab === "all" && <div className="gallery-date-list">
+      {groupedPhotos.length === 0 && <Panel title="Brak zdjęć"><p className="help">Wgraj pierwsze zdjęcia albo zrób je aparatem telefonu.</p></Panel>}
+      {groupedPhotos.map(([date, datePhotos]) => {
+        const location = datePhotos.find((photo) => photo.session_location)?.session_location;
+        return <section className="gallery-date-group" key={date}>
+          <h2>{dateGroupLabel(date)} {location && <span>· {location}</span>}</h2>
+          <div className="gallery-photo-grid">
+            {datePhotos.map((photo) => <GalleryPhotoCard key={photo.id} photo={photo} selected={selectedSet.has(photo.id)} onToggle={() => togglePhoto(photo.id)} onOpen={showPhoto} onEdit={onEditPhoto} onShareInternal={onShareInternal} onDelete={onDeletePhoto} />)}
           </div>
-        </div>
-      </section>;
-    })}
+        </section>;
+      })}
+    </div>}
+
+    {tab === "albums" && <div className="albums-grid">
+      <button className="album-card new-album" type="button" onClick={() => setAlbumModal(true)}>Utwórz album</button>
+      {(state.photo_albums || []).map((album) => {
+        const cover = albumItems.get(album.id)?.[0];
+        return <article className="album-card" key={album.id}>
+          <button type="button" onClick={() => cover && showPhoto(cover)}>
+            {cover?.image_data ? <img src={cover.image_data} alt={album.name} loading="lazy" decoding="async" /> : <span />}
+            <strong>{album.name}</strong>
+            <small>{album.photo_count} zdjęć</small>
+          </button>
+        </article>;
+      })}
+    </div>}
+
+    {albumModal && <Modal title="Dodaj do albumu" onClose={() => setAlbumModal(false)}>
+      <div className="album-dialog-body">
+        {(state.photo_albums || []).map((album) => {
+          const cover = albumItems.get(album.id)?.[0];
+          return <button className="album-option" key={album.id} type="button" onClick={() => addToAlbum(album.id)} disabled={!selectedIds.length}>
+            {cover?.image_data ? <img src={cover.image_data} alt="" /> : <span />}
+            <strong>{album.name}</strong>
+            <small>{album.photo_count} zdjęć</small>
+          </button>;
+        })}
+        <form className="album-create-row" onSubmit={(event) => { event.preventDefault(); addToAlbum(); }}>
+          <input value={albumName} onChange={(event) => setAlbumName(event.target.value)} placeholder="Nazwa nowego albumu" />
+          <Button variant="primary">Utwórz</Button>
+        </form>
+      </div>
+    </Modal>}
     {openPhoto && <GalleryLightbox photo={openPhoto} current={openIndex + 1} total={photos.length} onClose={() => setOpenId(null)} onPrev={() => move(-1)} onNext={() => move(1)} onShare={() => sharePhoto(openPhoto)} />}
+  </div>;
+}
+
+function GalleryPhotoCard({ photo, selected, onToggle, onOpen, onEdit, onShareInternal, onDelete }: { photo: Photo; selected: boolean; onToggle: () => void; onOpen: (photo: Photo) => void; onEdit: (photo: Photo) => void; onShareInternal: (photo: Photo) => void; onDelete: (id: number) => void }) {
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [infoOpen, setInfoOpen] = useState(false);
+  const cardRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!menuOpen && !infoOpen) return;
+    const close = (event: PointerEvent) => {
+      if (!cardRef.current?.contains(event.target as Node)) {
+        setMenuOpen(false);
+        setInfoOpen(false);
+      }
+    };
+    window.addEventListener("pointerdown", close);
+    return () => window.removeEventListener("pointerdown", close);
+  }, [menuOpen, infoOpen]);
+  return <div className={`gallery-photo-card ${selected ? "selected" : ""}`}>
+    <button className="gallery-photo-open" type="button" onClick={() => onOpen(photo)}>
+      {photo.image_data ? <img src={photo.image_data} alt={photo.title} loading="lazy" decoding="async" /> : <span />}
+    </button>
+    <button className="gallery-select-box" type="button" aria-label={selected ? "Odznacz zdjęcie" : "Zaznacz zdjęcie"} onClick={onToggle}>{selected ? "✓" : ""}</button>
+    <span className="gallery-photo-chip">{photo.session_title}</span>
+    <div className="gallery-card-actions" ref={cardRef}>
+      <button className="gallery-info-button" type="button" onClick={() => { setInfoOpen(!infoOpen); setMenuOpen(false); }}>i</button>
+      <button className="gallery-menu-button" type="button" aria-label="Opcje zdjęcia" onClick={() => { setMenuOpen(!menuOpen); setInfoOpen(false); }}>•••</button>
+      {infoOpen && <div className="photo-info-menu gallery-popover">
+        <strong>{photo.title}</strong>
+        <span>{dateLabel(photo.created_at || photo.session_date)}</span>
+        <span>{photo.session_title}</span>
+        {photo.session_location && <span>{photo.session_location}</span>}
+        {photo.mime_type && <small>{photo.mime_type}</small>}
+      </div>}
+      {menuOpen && <div className="photo-actions-menu gallery-popover open">
+        <button type="button" onClick={() => { setMenuOpen(false); onEdit(photo); }}>Edytuj</button>
+        <button type="button" onClick={() => { setMenuOpen(false); sharePhoto(photo); }}>Kopiuj link</button>
+        <button type="button" onClick={() => { setMenuOpen(false); onShareInternal(photo); }}>Udostępnij w hufcu</button>
+        <button className="danger" type="button" onClick={() => { setMenuOpen(false); onDelete(photo.id); }}>Usuń</button>
+      </div>}
+    </div>
   </div>;
 }
 
