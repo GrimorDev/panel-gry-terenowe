@@ -6,6 +6,7 @@ RUN npm ci
 FROM deps AS build
 COPY tsconfig*.json vite.config.ts ./
 COPY index.html ./
+COPY public ./public
 COPY src ./src
 RUN npm run build
 

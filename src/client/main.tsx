@@ -38,6 +38,7 @@ type OfflineRequest = { id: string; url: string; method: string; body?: string; 
 const offlineQueueKey = "hufc-offline-queue";
 const offlineStateKey = "hufc-offline-state";
 const offlineUserKey = "hufc-offline-user";
+const offlineStateMaxLength = 1_800_000;
 const queueableEndpoints = ["/api/games", "/api/stations", "/api/teams", "/api/scores", "/api/timer", "/api/sessions", "/api/wards", "/api/photo-albums", "/api/messages", "/api/competition", "/api/caregivers", "/api/cohorts", "/api/internal-shares"];
 
 const templates = ["Własna", "Polska", "Włochy", "Olimp"];
@@ -60,13 +61,41 @@ function readOfflineQueue(): OfflineRequest[] {
 }
 
 function writeOfflineQueue(items: OfflineRequest[]) {
-  localStorage.setItem(offlineQueueKey, JSON.stringify(items));
+  try {
+    localStorage.setItem(offlineQueueKey, JSON.stringify(items));
+  } catch {
+    // Queue storage is best-effort. It cannot be allowed to break the app.
+  }
   queueEvent();
 }
 
 function cacheState(data: unknown) {
   if (data && typeof data === "object" && "game" in data && "games" in data) {
-    localStorage.setItem(offlineStateKey, JSON.stringify(data));
+    const state = data as AppState;
+    const lightState: AppState = {
+      ...state,
+      photos: (state.photos || []).slice(0, 80).map((photo) => ({ ...photo, image_data: null })),
+      messages: (state.messages || []).slice(-200).map((message) => ({
+        ...message,
+        photo_image_data: null,
+        attachment_data: null
+      }))
+    };
+
+    try {
+      const serialized = JSON.stringify(lightState);
+      if (serialized.length <= offlineStateMaxLength) {
+        localStorage.setItem(offlineStateKey, serialized);
+      } else {
+        localStorage.removeItem(offlineStateKey);
+      }
+    } catch {
+      try {
+        localStorage.removeItem(offlineStateKey);
+      } catch {
+        // Offline cache is optional. Login and normal work must continue.
+      }
+    }
   }
 }
 
@@ -89,8 +118,12 @@ function readCachedUser() {
 }
 
 function cacheUser(user: User | null) {
-  if (user) localStorage.setItem(offlineUserKey, JSON.stringify(user));
-  else localStorage.removeItem(offlineUserKey);
+  try {
+    if (user) localStorage.setItem(offlineUserKey, JSON.stringify(user));
+    else localStorage.removeItem(offlineUserKey);
+  } catch {
+    // Cached user only enables offline entry, so storage failures are non-fatal.
+  }
 }
 
 function shouldQueueOffline(url: string, options?: RequestInit) {
@@ -332,7 +365,7 @@ function UiIcon({ name }: { name: string }) {
   return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 21V3M6 4.5c2.8-1.6 4.7 1.4 7.5-.1s4.5 1.3 4.5 1.3v8.1c-2.8 1.6-4.7-1.4-7.5.1S6 12.5 6 12.5v-8z" {...common} /></svg>;
 }
 
-function Login({ onLogin }: { onLogin: (user: User) => void }) {
+function Login({ onLogin }: { onLogin: (user: User) => Promise<void> }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
@@ -344,7 +377,7 @@ function Login({ onLogin }: { onLogin: (user: User) => void }) {
     setIsSubmitting(true);
     try {
       const result = await api<{ ok: true; user: User }>("/api/login", { method: "POST", body: JSON.stringify({ email, password }) });
-      onLogin(result.user);
+      await onLogin(result.user);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Nie udało się zalogować");
     } finally {

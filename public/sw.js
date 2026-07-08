@@ -1,4 +1,4 @@
-const CACHE_NAME = "hufc-app-v1";
+const CACHE_NAME = "hufc-app-v2";
 const APP_SHELL = ["/", "/manifest.webmanifest", "/icon-192.svg", "/icon-512.svg"];
 
 self.addEventListener("install", (event) => {
