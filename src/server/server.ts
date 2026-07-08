@@ -510,7 +510,7 @@ async function state(gameId?: number, user?: User) {
         END::int AS target_id,
         COUNT(*)::int AS unread_count
       FROM messages m
-      JOIN users current_user ON current_user.id = $1
+      JOIN users account_user ON account_user.id = $1
       LEFT JOIN message_reads r
         ON r.user_id = $1
        AND r.target_type = m.target_type
@@ -519,7 +519,7 @@ async function state(gameId?: number, user?: User) {
          ELSE COALESCE(m.target_id, 0)
        END
       WHERE COALESCE(m.sender_id, 0) <> $1
-        AND m.created_at >= current_user.created_at
+        AND m.created_at >= account_user.created_at
         AND (
           m.target_type IN ('hufiec', 'staff', 'parents', 'team')
           OR (m.target_type='user' AND m.target_id = $1)
@@ -685,7 +685,7 @@ async function pulseState(gameId?: number, user?: User) {
         END::int AS target_id,
         COUNT(*)::int AS unread_count
       FROM messages m
-      JOIN users current_user ON current_user.id = $1
+      JOIN users account_user ON account_user.id = $1
       LEFT JOIN message_reads r
         ON r.user_id = $1
        AND r.target_type = m.target_type
@@ -694,7 +694,7 @@ async function pulseState(gameId?: number, user?: User) {
          ELSE COALESCE(m.target_id, 0)
        END
       WHERE COALESCE(m.sender_id, 0) <> $1
-        AND m.created_at >= current_user.created_at
+        AND m.created_at >= account_user.created_at
         AND (
           m.target_type IN ('hufiec', 'staff', 'parents', 'team')
           OR (m.target_type='user' AND m.target_id = $1)
