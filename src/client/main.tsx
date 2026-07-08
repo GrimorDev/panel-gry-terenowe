@@ -1518,6 +1518,25 @@ function MessagesView({ state, user, setState }: { state: AppState; user: User; 
     return [];
   }
   const searchQuery = search.trim().toLowerCase();
+  const latestMessageByConversation = new Map<string, Message | null>();
+  for (const conversation of allConversations) {
+    let latest: Message | null = null;
+    for (const message of state.messages) {
+      if (!messageBelongsToConversation(message, conversation)) continue;
+      if (!latest || Number(message.id) > Number(latest.id)) latest = message;
+    }
+    latestMessageByConversation.set(conversation.key, latest);
+  }
+  function latestMessageForConversation(conversation: Conversation) {
+    return latestMessageByConversation.get(conversation.key) || null;
+  }
+  function conversationPreview(conversation: Conversation) {
+    const message = latestMessageForConversation(conversation);
+    if (!message) return conversation.hint;
+    const author = message.sender_id === user.id ? "Ty" : (message.sender_name || "System");
+    const text = message.body || message.photo_title || message.attachment_name || "Załącznik";
+    return `${author}: ${text}`;
+  }
   const visibleConversations = allConversations.filter((conversation) => {
     const members = membersForConversation(conversation);
     const text = `${conversation.label} ${conversation.hint} ${members.map((member) => `${member.name} ${member.hint}`).join(" ")}`.toLowerCase();
@@ -1527,8 +1546,17 @@ function MessagesView({ state, user, setState }: { state: AppState; user: User; 
     const isAssignedGroup = conversation.target_type === "cohort" && (user.role === "administrator" || state.cohorts.some((cohort) => cohort.id === Number(conversation.target_id) && cohort.caretaker_user_id === user.id));
     const isSystemDefault = ["hufiec", "staff"].includes(conversation.target_type);
     if (matchesSearch) return true;
+    if (searchQuery) return false;
     if (closedConversationKeys.has(conversation.key) && !hasUnread) return false;
     return isSystemDefault || isAssignedGroup || hasMessages || hasUnread;
+  }).sort((left, right) => {
+    const leftLatest = Number(latestMessageForConversation(left)?.id || 0);
+    const rightLatest = Number(latestMessageForConversation(right)?.id || 0);
+    if (rightLatest !== leftLatest) return rightLatest - leftLatest;
+    const leftDefault = left.visibleByDefault ? 1 : 0;
+    const rightDefault = right.visibleByDefault ? 1 : 0;
+    if (rightDefault !== leftDefault) return rightDefault - leftDefault;
+    return left.label.localeCompare(right.label, "pl");
   });
   function openConversation(conversation: Conversation) {
     if (closedConversationKeys.has(conversation.key)) {
@@ -1626,7 +1654,7 @@ function MessagesView({ state, user, setState }: { state: AppState; user: User; 
           const count = messageUnreadFor(state, conversation.target_type, conversation.target_id);
           return <button key={conversation.key} className={"conversation-button " + (active.key === conversation.key ? "active" : "")} onClick={() => openConversation(conversation)}>
             <span>{initials(conversation.label)}</span>
-            <div><strong>{conversation.label}</strong><small>{conversation.hint}</small></div>
+            <div><strong>{conversation.label}</strong><small>{conversationPreview(conversation)}</small></div>
             {count > 0 && <em>{count}</em>}
           </button>;
         })}

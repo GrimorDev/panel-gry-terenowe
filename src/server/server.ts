@@ -3,6 +3,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import express, { type Request, type Response, type NextFunction } from "express";
 import pg from "pg";
+import { Redis } from "ioredis";
 
 const { Pool } = pg;
 
@@ -20,6 +21,55 @@ const pool = new Pool({
   user: process.env.DB_USER || "field_games",
   password: process.env.DB_PASS || "field_games_password"
 });
+
+const redis = process.env.REDIS_URL
+  ? new Redis(process.env.REDIS_URL, { enableOfflineQueue: false, maxRetriesPerRequest: 1 })
+  : null;
+
+redis?.on("error", (error: Error) => {
+  console.warn("Redis cache disabled temporarily:", error.message);
+});
+
+async function cacheGet<T>(key: string): Promise<T | null> {
+  if (!redis) return null;
+  try {
+    const value = await redis.get(key);
+    return value ? JSON.parse(value) as T : null;
+  } catch {
+    return null;
+  }
+}
+
+async function cacheSet(key: string, value: unknown, ttlSeconds: number) {
+  if (!redis) return;
+  try {
+    await redis.set(key, JSON.stringify(value), "EX", ttlSeconds);
+  } catch {
+    // Cache is optional. Database remains the source of truth.
+  }
+}
+
+async function cacheDelPrefix(prefix: string) {
+  if (!redis) return;
+  try {
+    let cursor = "0";
+    do {
+      const [nextCursor, keys] = await redis.scan(cursor, "MATCH", `${prefix}*`, "COUNT", "100");
+      cursor = nextCursor;
+      if (keys.length) await redis.del(...keys);
+    } while (cursor !== "0");
+  } catch {
+    // Cache invalidation failure should not block writes.
+  }
+}
+
+function pulseCacheKey(gameId?: number, user?: User) {
+  return `hufc:pulse:${Number(user?.id || 0)}:${gameId || "auto"}`;
+}
+
+async function invalidateMessageCache() {
+  await cacheDelPrefix("hufc:pulse:");
+}
 
 type User = { id: number; email: string; name: string; role: string };
 
@@ -652,6 +702,10 @@ async function gameState(gameId?: number, user?: User) {
 }
 
 async function pulseState(gameId?: number, user?: User) {
+  const cacheKey = pulseCacheKey(gameId, user);
+  const cached = await cacheGet<Record<string, unknown>>(cacheKey);
+  if (cached) return cached;
+
   const userId = Number(user?.id || 0) || undefined;
   const [game, messages, messageUnreads] = await Promise.all([
     gameState(gameId, user),
@@ -711,11 +765,13 @@ async function pulseState(gameId?: number, user?: User) {
     `, [userId, user?.role || "wychowawca"]) : Promise.resolve({ rows: [] })
   ]);
 
-  return {
+  const next = {
     ...game,
     messages: messages.rows,
     message_unreads: messageUnreads.rows
   };
+  await cacheSet(cacheKey, next, 1);
+  return next;
 }
 
 async function markConversationRead(userId: number, targetType: string, targetId: number) {
@@ -1103,6 +1159,7 @@ app.post("/api/internal-shares", async (req, res) => {
     [req.user?.id || null, targetType, targetId, note.trim() || "Udostępniono zdjęcie", photoId]
   );
   if (req.user?.id) await markConversationRead(Number(req.user.id), targetType, targetId || 0);
+  await invalidateMessageCache();
   res.json(await stateFor(req, Number(req.body.game_id || 0) || undefined));
 });
 
@@ -1120,6 +1177,7 @@ app.post("/api/messages", async (req, res) => {
     [req.user?.id || null, targetType, targetId, body, Number(req.body.photo_id || 0) || null, replyToId, attachmentName || null, attachmentMime || null, attachmentData || null]
   );
   if (req.user?.id) await markConversationRead(Number(req.user.id), targetType, targetId || 0);
+  await invalidateMessageCache();
   res.json(await stateFor(req, Number(req.body.game_id || 0) || undefined));
 });
 
@@ -1127,6 +1185,7 @@ app.post("/api/messages/read-all", async (req, res) => {
   const userId = Number(req.user?.id || 0);
   if (!userId) return res.status(401).json({ ok: false, error: "Brak sesji" });
   await markAllMessagesRead(userId);
+  await invalidateMessageCache();
   res.json(await stateFor(req, Number(req.body.game_id || 0) || undefined));
 });
 
@@ -1137,6 +1196,7 @@ app.post("/api/messages/read", async (req, res) => {
   const targetType = String(req.body.target_type || "hufiec");
   const targetId = Number(req.body.target_id || 0) || 0;
   await markConversationRead(userId, targetType, targetId);
+  await invalidateMessageCache();
 
   res.json(await stateFor(req, Number(req.body.game_id || 0) || undefined));
 });
@@ -1150,6 +1210,7 @@ app.post("/api/messages/:id", async (req, res) => {
     [body, id, req.user?.id || 0]
   );
   if (!result.rowCount) return res.status(403).json({ ok: false, error: "Możesz edytować tylko własne wiadomości" });
+  await invalidateMessageCache();
   res.json(await stateFor(req, Number(req.body.game_id || 0) || undefined));
 });
 

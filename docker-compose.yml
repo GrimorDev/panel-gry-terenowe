@@ -18,8 +18,11 @@ services:
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-PrywatnieNr7!}
       DEMO_EMAIL: ${DEMO_EMAIL:-admin@hufc.local}
       DEMO_PASSWORD: ${DEMO_PASSWORD:-hufc1234}
+      REDIS_URL: redis://redis:6379
     depends_on:
       db:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     networks:
       default:
@@ -43,8 +46,21 @@ services:
       timeout: 5s
       retries: 10
 
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
 volumes:
   postgres_data:
+  redis_data:
 
 networks:
   proxy:
