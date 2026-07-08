@@ -218,6 +218,9 @@ function UiIcon({ name }: { name: string }) {
   if (name === "sessions") return <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="16" rx="2.5" {...common} /><path d="M3 10h18M8 3v4M16 3v4" {...common} /></svg>;
   if (name === "gallery") return <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2.5" {...common} /><circle cx="9" cy="10" r="1.7" {...common} /><path d="M21 16.5l-5.3-5.5-4 4.3L9 13l-6 5" {...common} /></svg>;
   if (name === "messages") return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5.5h16V16H8.5L4 20V5.5z" {...common} /></svg>;
+  if (name === "people") return <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="8" r="3.2" {...common} /><path d="M3.5 20c0-3.4 2.5-5.8 5.5-5.8s5.5 2.4 5.5 5.8" {...common} /><circle cx="17" cy="10" r="2.6" {...common} /><path d="M15.5 14.8c2.7.4 4.5 2.3 4.9 5.2" {...common} /></svg>;
+  if (name === "close") return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" {...common} /></svg>;
+  if (name === "search") return <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7" {...common} /><path d="m20 20-3.6-3.6" {...common} /></svg>;
   if (name === "competition") return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 21h8M12 17v4M7 4h10v4.5a5 5 0 0 1-10 0V4z" {...common} /><path d="M7 6H4v2.5A3.5 3.5 0 0 0 7.5 12M17 6h3v2.5a3.5 3.5 0 0 1-3.5 3.5" {...common} /></svg>;
   if (name === "staff") return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l7 3.2v5.6c0 4.6-3 8.3-7 9.2-4-.9-7-4.6-7-9.2V6.2L12 3z" {...common} /></svg>;
   if (name === "logout") return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9" {...common} /></svg>;
@@ -1436,7 +1439,8 @@ function ShareDialog({ state, photo, onClose, onSaved, runBusy }: { state: AppSt
   return <Modal title="Udostępnij w hufcu" onClose={onClose}><form className="stack" onSubmit={async (event) => { event.preventDefault(); onSaved(await runBusy("Udostępnianie zdjęcia...", () => api<AppState>("/api/internal-shares", { method: "POST", body: JSON.stringify({ ...Object.fromEntries(new FormData(event.currentTarget).entries()), photo_id: photo.id, game_id: state.game.id }) }))); }}><p className="help">{photo.title}</p><label>Odbiorcy<select name="target_type" defaultValue="hufiec"><option value="hufiec">Cały hufiec</option><option value="cohort">Wybrana grupa</option><option value="parents">Rodzice</option><option value="staff">Wychowawcy</option></select></label><label>Grupa, jeśli wybrano grupę<select name="target_id" defaultValue=""><option value="">Bez grupy</option>{state.cohorts.map((cohort) => <option key={cohort.id} value={cohort.id}>{cohort.name}</option>)}</select></label><label>Wiadomość<textarea name="note" placeholder="np. Zdjęcia z dzisiejszej zbiórki są już dostępne." /></label><Button variant="primary">Udostępnij</Button></form></Modal>;
 }
 
-type Conversation = { key: string; label: string; hint: string; target_type: string; target_id: number | null };
+type ConversationMember = { key: string; name: string; hint: string };
+type Conversation = { key: string; label: string; hint: string; target_type: string; target_id: number | null; visibleByDefault?: boolean; members?: ConversationMember[] };
 
 type ChatAttachment = { attachment_name: string; attachment_mime: string; attachment_data: string };
 type MediaPreview = { src: string; title: string; mime?: string | null };
@@ -1445,10 +1449,14 @@ function MessagesView({ state, user, setState }: { state: AppState; user: User; 
   const [attachment, setAttachment] = useState<ChatAttachment | null>(null);
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
+  const [search, setSearch] = useState("");
+  const closedStorageKey = `hufc-closed-conversations-${user.id}`;
+  const [closedConversationKeys, setClosedConversationKeys] = useState<Set<string>>(() => loadIdSet(closedStorageKey));
   const [replyTo, setReplyTo] = useState<Message | null>(null);
   const [editingMessage, setEditingMessage] = useState<Message | null>(null);
   const [messageMenuId, setMessageMenuId] = useState<number | null>(null);
   const [preview, setPreview] = useState<MediaPreview | null>(null);
+  const [membersOpen, setMembersOpen] = useState(false);
   const [mobileThreadOpen, setMobileThreadOpen] = useState(false);
   const bubbleListRef = useRef<HTMLDivElement | null>(null);
   const longPressRef = useRef<number | null>(null);
@@ -1463,8 +1471,17 @@ function MessagesView({ state, user, setState }: { state: AppState; user: User; 
     ...state.cohorts.map((cohort) => ({ key: "cohort-" + cohort.id, label: cohort.name, hint: cohort.caretaker_user_name || cohort.caretaker || "grupa bez opiekuna", target_type: "cohort", target_id: cohort.id })),
     ...state.caregivers.filter((caregiver) => caregiver.id !== user.id).map((caregiver) => ({ key: "user-" + caregiver.id, label: caregiver.name, hint: caregiver.role, target_type: "user", target_id: caregiver.id }))
   ];
-  const [activeKey, setActiveKey] = useState(conversations[0]?.key || "hufiec");
-  const active = conversations.find((conversation) => conversation.key === activeKey) || conversations[0];
+  const teamConversations: Conversation[] = state.teams.map((team) => ({
+    key: "team-" + team.id,
+    label: team.name,
+    hint: "drużyna gry terenowej",
+    target_type: "team",
+    target_id: team.id,
+    members: [{ key: "team-" + team.id, name: team.name, hint: `${team.total_points || 0} pkt` }]
+  }));
+  const allConversations = [...conversations, ...teamConversations];
+  const [activeKey, setActiveKey] = useState(allConversations[0]?.key || "hufiec");
+  const active = allConversations.find((conversation) => conversation.key === activeKey) || allConversations[0];
   function messageBelongsToConversation(message: Message, conversation: Conversation) {
     if (conversation.target_type === "user") {
       return message.target_type === "user"
@@ -1472,6 +1489,67 @@ function MessagesView({ state, user, setState }: { state: AppState; user: User; 
           || (Number(message.target_id) === user.id && Number(message.sender_id) === Number(conversation.target_id)));
     }
     return message.target_type === conversation.target_type && (conversation.target_id == null || Number(message.target_id) === Number(conversation.target_id));
+  }
+  function membersForConversation(conversation: Conversation): ConversationMember[] {
+    if (conversation.members?.length) return conversation.members;
+    if (conversation.target_type === "staff" || conversation.target_type === "hufiec") {
+      return state.caregivers
+        .filter((caregiver) => ["administrator", "wychowawca"].includes(caregiver.role))
+        .map((caregiver) => ({ key: "user-" + caregiver.id, name: caregiver.name, hint: caregiver.role }));
+    }
+    if (conversation.target_type === "parents") {
+      return state.wards.map((ward) => ({ key: "parent-" + ward.id, name: ward.parent_name || `Opiekun: ${ward.name}`, hint: `${ward.name}${ward.contact ? ` · ${ward.contact}` : ""}` }));
+    }
+    if (conversation.target_type === "cohort") {
+      const cohort = state.cohorts.find((item) => item.id === Number(conversation.target_id));
+      const caretaker = cohort?.caretaker_user_name ? [{ key: "caretaker-" + cohort.id, name: cohort.caretaker_user_name, hint: "wychowawca grupy" }] : [];
+      const wards = state.wards
+        .filter((ward) => Number(ward.cohort_id) === Number(conversation.target_id))
+        .map((ward) => ({ key: "ward-" + ward.id, name: ward.name, hint: `${ward.age} lat · ${ward.parent_name || "bez opiekuna"}` }));
+      return [...caretaker, ...wards];
+    }
+    if (conversation.target_type === "user") {
+      const caregiver = state.caregivers.find((item) => item.id === Number(conversation.target_id));
+      return [
+        { key: "me-" + user.id, name: user.name, hint: user.role },
+        ...(caregiver ? [{ key: "user-" + caregiver.id, name: caregiver.name, hint: caregiver.role }] : [])
+      ];
+    }
+    return [];
+  }
+  const searchQuery = search.trim().toLowerCase();
+  const visibleConversations = allConversations.filter((conversation) => {
+    const members = membersForConversation(conversation);
+    const text = `${conversation.label} ${conversation.hint} ${members.map((member) => `${member.name} ${member.hint}`).join(" ")}`.toLowerCase();
+    const matchesSearch = searchQuery.length > 0 && text.includes(searchQuery);
+    const hasMessages = state.messages.some((message) => messageBelongsToConversation(message, conversation));
+    const hasUnread = messageUnreadFor(state, conversation.target_type, conversation.target_id) > 0;
+    const isAssignedGroup = conversation.target_type === "cohort" && (user.role === "administrator" || state.cohorts.some((cohort) => cohort.id === Number(conversation.target_id) && cohort.caretaker_user_id === user.id));
+    const isSystemDefault = ["hufiec", "staff"].includes(conversation.target_type);
+    if (matchesSearch) return true;
+    if (closedConversationKeys.has(conversation.key) && !hasUnread) return false;
+    return isSystemDefault || isAssignedGroup || hasMessages || hasUnread;
+  });
+  function openConversation(conversation: Conversation) {
+    if (closedConversationKeys.has(conversation.key)) {
+      const next = new Set(closedConversationKeys);
+      next.delete(conversation.key);
+      setClosedConversationKeys(next);
+      saveIdSet(closedStorageKey, next);
+    }
+    setActiveKey(conversation.key);
+    setMobileThreadOpen(true);
+  }
+  function closeActiveConversation() {
+    const next = new Set(closedConversationKeys);
+    next.add(active.key);
+    setClosedConversationKeys(next);
+    saveIdSet(closedStorageKey, next);
+    setMembersOpen(false);
+    setSearch("");
+    const fallback = visibleConversations.find((conversation) => conversation.key !== active.key) || allConversations.find((conversation) => conversation.key !== active.key);
+    setActiveKey(fallback?.key || "hufiec");
+    setMobileThreadOpen(false);
   }
   const thread = state.messages
     .filter((message) => messageBelongsToConversation(message, active))
@@ -1536,10 +1614,17 @@ function MessagesView({ state, user, setState }: { state: AppState; user: User; 
     <div className="page-head"><div><h1>Wiadomości</h1><p className="help">Rozmowy z hufcem, grupami, rodzicami i konkretnymi wychowawcami.</p></div></div>
     <section className={"chat-shell " + (mobileThreadOpen ? "mobile-thread-open" : "mobile-list-open")}>
       <aside className="chat-list">
-        <strong>Rozmowy</strong>
-        {conversations.map((conversation) => {
+        <div className="conversation-tools">
+          <strong>Rozmowy</strong>
+          <label className="conversation-search">
+            <UiIcon name="search" />
+            <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Szukaj osoby, grupy..." />
+          </label>
+        </div>
+        {visibleConversations.length === 0 && <div className="conversation-empty">Nie znaleziono rozmowy.</div>}
+        {visibleConversations.map((conversation) => {
           const count = messageUnreadFor(state, conversation.target_type, conversation.target_id);
-          return <button key={conversation.key} className={"conversation-button " + (active.key === conversation.key ? "active" : "")} onClick={() => { setActiveKey(conversation.key); setMobileThreadOpen(true); }}>
+          return <button key={conversation.key} className={"conversation-button " + (active.key === conversation.key ? "active" : "")} onClick={() => openConversation(conversation)}>
             <span>{initials(conversation.label)}</span>
             <div><strong>{conversation.label}</strong><small>{conversation.hint}</small></div>
             {count > 0 && <em>{count}</em>}
@@ -1548,6 +1633,10 @@ function MessagesView({ state, user, setState }: { state: AppState; user: User; 
       </aside>
       <section className="chat-thread">
         <div className="chat-head"><button className="chat-back" type="button" aria-label="Wróć do rozmów" onClick={() => setMobileThreadOpen(false)}>‹</button><div><h2>{active.label}</h2><span>{active.hint}</span></div></div>
+        <div className="chat-floating-actions">
+          <button className="icon-button" type="button" aria-label="CzĹ‚onkowie rozmowy" onClick={() => setMembersOpen(true)}><UiIcon name="people" /></button>
+          <button className="icon-button" type="button" aria-label="Zamknij rozmowÄ™" onClick={closeActiveConversation}><UiIcon name="close" /></button>
+        </div>
         <div className="bubble-list" ref={bubbleListRef}>
           {thread.length === 0 && <div className="empty-chat">Nie ma jeszcze wiadomości w tej rozmowie.</div>}
           {thread.map((message) => {
@@ -1640,6 +1729,15 @@ function MessagesView({ state, user, setState }: { state: AppState; user: User; 
         </form>
       </section>
     </section>
+    {membersOpen && <Modal title={`Członkowie: ${active.label}`} onClose={() => setMembersOpen(false)}>
+      <div className="member-list">
+        {membersForConversation(active).length === 0 && <p className="help">Brak przypisanych osób w tej rozmowie.</p>}
+        {membersForConversation(active).map((member) => <div className="member-row" key={member.key}>
+          <span>{initials(member.name)}</span>
+          <div><strong>{member.name}</strong><small>{member.hint}</small></div>
+        </div>)}
+      </div>
+    </Modal>}
     {preview && <MediaLightbox media={preview} onClose={() => setPreview(null)} />}
   </div>;
 }

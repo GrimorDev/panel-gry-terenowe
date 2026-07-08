@@ -258,6 +258,9 @@ async function ensureSchema() {
   await pool.query("ALTER TABLE session_photos ADD COLUMN IF NOT EXISTS image_data TEXT");
   await pool.query("ALTER TABLE session_photos ADD COLUMN IF NOT EXISTS mime_type VARCHAR(80)");
   await pool.query("ALTER TABLE session_photos ADD COLUMN IF NOT EXISTS share_token VARCHAR(80) UNIQUE");
+  await pool.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ");
+  await pool.query("UPDATE users SET created_at = NOW() WHERE created_at IS NULL");
+  await pool.query("ALTER TABLE users ALTER COLUMN created_at SET DEFAULT NOW()");
   await pool.query("ALTER TABLE sessions ADD COLUMN IF NOT EXISTS owner_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL");
   await pool.query("ALTER TABLE games ADD COLUMN IF NOT EXISTS owner_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL");
   await pool.query("ALTER TABLE cohorts ADD COLUMN IF NOT EXISTS caretaker_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL");
@@ -507,6 +510,7 @@ async function state(gameId?: number, user?: User) {
         END::int AS target_id,
         COUNT(*)::int AS unread_count
       FROM messages m
+      JOIN users current_user ON current_user.id = $1
       LEFT JOIN message_reads r
         ON r.user_id = $1
        AND r.target_type = m.target_type
@@ -515,13 +519,21 @@ async function state(gameId?: number, user?: User) {
          ELSE COALESCE(m.target_id, 0)
        END
       WHERE COALESCE(m.sender_id, 0) <> $1
-        AND (m.target_type <> 'user' OR m.target_id = $1)
+        AND m.created_at >= current_user.created_at
+        AND (
+          m.target_type IN ('hufiec', 'staff', 'parents', 'team')
+          OR (m.target_type='user' AND m.target_id = $1)
+          OR (m.target_type='cohort' AND (
+            $2 = 'administrator'
+            OR EXISTS (SELECT 1 FROM cohorts c WHERE c.id = m.target_id AND c.caretaker_user_id = $1)
+          ))
+        )
         AND m.id > COALESCE(r.last_read_message_id, 0)
       GROUP BY m.target_type, CASE
         WHEN m.target_type='user' AND m.target_id=$1 THEN COALESCE(m.sender_id, 0)
         ELSE COALESCE(m.target_id, 0)
       END
-    `, [user.id]) : Promise.resolve({ rows: [] }),
+    `, [user.id, user.role]) : Promise.resolve({ rows: [] }),
     pool.query(`
       SELECT u.id, u.email, u.name, u.role, u.created_at,
         COALESCE((SELECT COUNT(*) FROM cohorts c WHERE c.caretaker_user_id = u.id), 0)::int AS group_count
@@ -673,6 +685,7 @@ async function pulseState(gameId?: number, user?: User) {
         END::int AS target_id,
         COUNT(*)::int AS unread_count
       FROM messages m
+      JOIN users current_user ON current_user.id = $1
       LEFT JOIN message_reads r
         ON r.user_id = $1
        AND r.target_type = m.target_type
@@ -681,13 +694,21 @@ async function pulseState(gameId?: number, user?: User) {
          ELSE COALESCE(m.target_id, 0)
        END
       WHERE COALESCE(m.sender_id, 0) <> $1
-        AND (m.target_type <> 'user' OR m.target_id = $1)
+        AND m.created_at >= current_user.created_at
+        AND (
+          m.target_type IN ('hufiec', 'staff', 'parents', 'team')
+          OR (m.target_type='user' AND m.target_id = $1)
+          OR (m.target_type='cohort' AND (
+            $2 = 'administrator'
+            OR EXISTS (SELECT 1 FROM cohorts c WHERE c.id = m.target_id AND c.caretaker_user_id = $1)
+          ))
+        )
         AND m.id > COALESCE(r.last_read_message_id, 0)
       GROUP BY m.target_type, CASE
         WHEN m.target_type='user' AND m.target_id=$1 THEN COALESCE(m.sender_id, 0)
         ELSE COALESCE(m.target_id, 0)
       END
-    `, [userId]) : Promise.resolve({ rows: [] })
+    `, [userId, user?.role || "wychowawca"]) : Promise.resolve({ rows: [] })
   ]);
 
   return {
