@@ -34,6 +34,7 @@ type AppPrefs = { sidebar: "full" | "compact"; theme: "forest" | "terra" | "crea
 type BusyRunner = <T>(label: string, task: () => Promise<T>) => Promise<T>;
 type TimerMilestone = { id: string; minute: number; label: string };
 type OfflineRequest = { id: string; url: string; method: string; body?: string; created_at: string };
+type BeforeInstallPromptEvent = Event & { prompt: () => Promise<void>; userChoice: Promise<{ outcome: "accepted" | "dismissed"; platform: string }> };
 
 const offlineQueueKey = "hufc-offline-queue";
 const offlineStateKey = "hufc-offline-state";
@@ -365,7 +366,7 @@ function UiIcon({ name }: { name: string }) {
   return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 21V3M6 4.5c2.8-1.6 4.7 1.4 7.5-.1s4.5 1.3 4.5 1.3v8.1c-2.8 1.6-4.7-1.4-7.5.1S6 12.5 6 12.5v-8z" {...common} /></svg>;
 }
 
-function Login({ onLogin }: { onLogin: (user: User) => Promise<void> }) {
+function Login({ onLogin, installAvailable, onInstallApp }: { onLogin: (user: User) => Promise<void>; installAvailable: boolean; onInstallApp: () => void }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
@@ -402,6 +403,7 @@ function Login({ onLogin }: { onLogin: (user: User) => Promise<void> }) {
           {isSubmitting && <span className="button-dots" aria-hidden="true"><i /><i /><i /></span>}
           <span>{isSubmitting ? "Logowanie..." : "Zaloguj się"}</span>
         </Button>
+        {installAvailable && <Button className="login-install" type="button" onClick={onInstallApp}>Zainstaluj aplikację na telefonie</Button>}
         <small>Nie masz konta? Skontaktuj się z komendantem hufca.</small>
       </form>
     </section>
@@ -421,6 +423,8 @@ function App() {
   const [isOnline, setIsOnline] = useState(() => navigator.onLine);
   const [offlineQueueCount, setOfflineQueueCount] = useState(() => readOfflineQueue().length);
   const [syncingOffline, setSyncingOffline] = useState(false);
+  const [installPrompt, setInstallPrompt] = useState<BeforeInstallPromptEvent | null>(null);
+  const [isStandaloneApp, setIsStandaloneApp] = useState(() => window.matchMedia("(display-mode: standalone)").matches || Boolean((navigator as Navigator & { standalone?: boolean }).standalone));
   const [modal, setModal] = useState<null | "ward" | "session" | "team" | "photo" | "share" | "account" | "tv">(null);
   const [settingsTab, setSettingsTab] = useState<"profil" | "wyglad" | "powiadomienia" | "konto">("profil");
   const [notifOpen, setNotifOpen] = useState(false);
@@ -480,6 +484,39 @@ function App() {
       return await task();
     } finally {
       setBusyLabel("");
+    }
+  }
+
+  useEffect(() => {
+    const media = window.matchMedia("(display-mode: standalone)");
+    const updateStandalone = () => setIsStandaloneApp(media.matches || Boolean((navigator as Navigator & { standalone?: boolean }).standalone));
+    const beforeInstall = (event: Event) => {
+      event.preventDefault();
+      setInstallPrompt(event as BeforeInstallPromptEvent);
+    };
+    window.addEventListener("beforeinstallprompt", beforeInstall);
+    window.addEventListener("appinstalled", updateStandalone);
+    media.addEventListener?.("change", updateStandalone);
+    updateStandalone();
+    return () => {
+      window.removeEventListener("beforeinstallprompt", beforeInstall);
+      window.removeEventListener("appinstalled", updateStandalone);
+      media.removeEventListener?.("change", updateStandalone);
+    };
+  }, []);
+
+  async function installApp() {
+    if (!installPrompt) {
+      flash("Na iPhone: Udostępnij → Do ekranu początkowego. Na Androidzie użyj menu przeglądarki: Zainstaluj aplikację.");
+      return;
+    }
+    const prompt = installPrompt;
+    setInstallPrompt(null);
+    await prompt.prompt();
+    const choice = await prompt.userChoice;
+    if (choice.outcome === "accepted") {
+      setIsStandaloneApp(true);
+      flash("Aplikacja Hufc została dodana do telefonu");
     }
   }
 
@@ -890,7 +927,7 @@ function App() {
   }
 
   if (auth === "checking") return <div className="loading"><LoadingDots label="Ładowanie panelu..." /></div>;
-  if (auth === "guest" || !user) return <Login onLogin={async (next) => { setUser(next); cacheUser(next); await load(); setAuth("ready"); }} />;
+  if (auth === "guest" || !user) return <Login installAvailable={Boolean(installPrompt) && !isStandaloneApp} onInstallApp={installApp} onLogin={async (next) => { setUser(next); cacheUser(next); await load(); setAuth("ready"); }} />;
   if (!state) return <div className="loading"><LoadingDots label="Ładowanie danych..." /></div>;
 
   const visibleNavItems = navItems.filter(([id]) => user.role === "administrator" || id !== "staff");
@@ -918,7 +955,7 @@ function App() {
     </aside>
 
     <main className="main full">
-      <TopBar view={view} user={user} notifications={visibleNotifications} readNotificationIds={readNotificationIds} notifOpen={notifOpen} setNotifOpen={setNotificationsOpen} onClearNotification={clearNotification} onClearAllNotifications={clearAllNotifications} openAccount={openAccount} />
+      <TopBar view={view} user={user} notifications={visibleNotifications} readNotificationIds={readNotificationIds} notifOpen={notifOpen} setNotifOpen={setNotificationsOpen} onClearNotification={clearNotification} onClearAllNotifications={clearAllNotifications} openAccount={openAccount} installAvailable={Boolean(installPrompt) && !isStandaloneApp} onInstallApp={installApp} />
       <div className="main-content">
         <div className="view-stage" key={view}>
           {view === "dashboard" && <Dashboard state={state} user={user} setView={setView} />}
@@ -966,13 +1003,14 @@ function OfflineStatus({ online, pending, syncing }: { online: boolean; pending:
   </div>;
 }
 
-function TopBar({ view, user, notifications, readNotificationIds, notifOpen, setNotifOpen, onClearNotification, onClearAllNotifications, openAccount }: { view: (typeof navItems)[number][0]; user: User; notifications: NotificationItem[]; readNotificationIds: Set<string>; notifOpen: boolean; setNotifOpen: (open: boolean) => void; onClearNotification: (id: string) => void; onClearAllNotifications: () => void; openAccount: (tab: "profil" | "wyglad" | "powiadomienia" | "konto") => void }) {
+function TopBar({ view, user, notifications, readNotificationIds, notifOpen, setNotifOpen, onClearNotification, onClearAllNotifications, openAccount, installAvailable, onInstallApp }: { view: (typeof navItems)[number][0]; user: User; notifications: NotificationItem[]; readNotificationIds: Set<string>; notifOpen: boolean; setNotifOpen: (open: boolean) => void; onClearNotification: (id: string) => void; onClearAllNotifications: () => void; openAccount: (tab: "profil" | "wyglad" | "powiadomienia" | "konto") => void; installAvailable: boolean; onInstallApp: () => void }) {
   const firstName = user.name.split(" ")[0] || user.name;
   const unreadCount = notifications.filter((item) => !readNotificationIds.has(item.id)).length;
   return <header className="topbar">
     <div className="mobile-top-title"><span className="brand-mark">H</span><strong>{viewLabels[view]}</strong></div>
     <div className="breadcrumb">Panel wychowawcy · {viewLabels[view]}</div>
     <div className="top-actions">
+      {installAvailable && <button className="install-button" type="button" onClick={onInstallApp}>Zainstaluj</button>}
       <div className="notification-wrap">
         <button className="icon-button" type="button" aria-label="Powiadomienia" onClick={() => setNotifOpen(!notifOpen)}>
           <UiIcon name="bell" />

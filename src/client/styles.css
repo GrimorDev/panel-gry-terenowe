@@ -65,6 +65,7 @@ label { display: grid; gap: 6px; color: var(--text-muted); font-size: 13px; }
 .brand-lock strong { line-height: 1.15; }
 .login-pane { display: grid; place-items: center; padding: 32px; }
 .login-card { width: min(380px, 100%); display: grid; gap: 14px; padding: 32px; border-radius: var(--radius-lg); background: #fff; box-shadow: var(--shadow-card); }
+.login-install { background: var(--surface-muted); color: var(--color-brand); border: 1px solid var(--border-default); box-shadow: none; }
 .form-error { color: var(--color-danger); font-weight: 700; }
 
 .app-shell { min-height: 100vh; display: grid; grid-template-columns: var(--sidebar-width) minmax(0, 1fr); }
@@ -139,6 +140,7 @@ body:has(.app-shell.theme-night) { background: radial-gradient(circle at 16% 0%,
 .app-shell.theme-night select,
 .app-shell.theme-night textarea,
 .app-shell.theme-night .btn,
+.app-shell.theme-night .install-button,
 .app-shell.theme-night .icon-button,
 .app-shell.theme-night .top-user-chip,
 .app-shell.theme-night .conversation-button,
@@ -146,6 +148,7 @@ body:has(.app-shell.theme-night) { background: radial-gradient(circle at 16% 0%,
 .app-shell.theme-night .member-row,
 .app-shell.theme-night .attach-button { background: #0C1812; color: var(--text-primary); border-color: var(--border-default); }
 .app-shell.theme-night .conversation-button.active { background: var(--surface-muted); border-color: rgba(238,246,239,.70); box-shadow: 0 0 0 3px rgba(238,246,239,.08); }
+.app-shell.theme-night .install-button { color: #EEF6EF; }
 .app-shell.theme-night .btn-primary,
 .app-shell.theme-night .pill.active,
 .app-shell.theme-night .segmented button.active { background: var(--forest-600); color: #fff; }
@@ -282,6 +285,8 @@ body:has(.app-shell.theme-night) { background: radial-gradient(circle at 16% 0%,
 .topbar { position: sticky; top: 0; z-index: 800; display: flex; justify-content: space-between; align-items: center; gap: 20px; min-height: 78px; padding: 18px 44px; background: rgba(250,247,241,.82); backdrop-filter: blur(12px); border-bottom: 1px solid rgba(28,35,33,.07); }
 .top-actions, .button-row, .form-actions { display: flex; gap: 10px; flex-wrap: wrap; }
 .top-actions { align-items: center; flex-wrap: nowrap; }
+.install-button { min-height: 38px; padding: 0 14px; border: 1px solid rgba(31,77,46,.18); border-radius: 11px; background: var(--surface-card); color: var(--color-brand); box-shadow: var(--shadow-card); font-size: 13px; white-space: nowrap; transition: background-color .18s ease, transform .18s ease, box-shadow .18s ease; }
+.install-button:hover { background: var(--color-brand-soft); transform: translateY(-1px); box-shadow: 0 6px 16px rgba(20,20,15,.10); }
 .breadcrumb { color: rgba(28,35,33,.50); font-size: 13px; font-weight: 700; }
 .notification-wrap { position: relative; }
 .icon-button { position: relative; width: 38px; height: 38px; display: grid; place-items: center; padding: 0; border: 1px solid rgba(28,35,33,.10); border-radius: 11px; background: #fff; color: var(--text-primary); transition: box-shadow .15s ease, transform .15s ease; }

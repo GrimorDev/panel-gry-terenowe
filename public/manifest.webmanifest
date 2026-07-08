@@ -2,12 +2,28 @@
   "name": "Hufc - panel wychowawcy",
   "short_name": "Hufc",
   "description": "Panel wychowawcy z trybem terenowym i synchronizacja po odzyskaniu internetu.",
-  "start_url": "/",
+  "id": "/",
+  "start_url": "/?source=pwa",
   "scope": "/",
   "display": "standalone",
+  "display_override": ["standalone", "minimal-ui"],
+  "orientation": "portrait-primary",
   "background_color": "#FAF7F1",
   "theme_color": "#1F4D2E",
+  "categories": ["productivity", "education"],
   "icons": [
+    {
+      "src": "/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
     {
       "src": "/icon-192.svg",
       "sizes": "192x192",
