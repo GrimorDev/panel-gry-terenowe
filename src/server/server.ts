@@ -108,7 +108,9 @@ function readCookies(req: Request) {
 }
 
 function requireAuth(req: Request, res: Response, next: NextFunction) {
-  const token = readCookies(req).hufc_session;
+  const authHeader = String(req.headers.authorization || "");
+  const bearer = authHeader.toLowerCase().startsWith("bearer ") ? authHeader.slice(7).trim() : "";
+  const token = bearer || readCookies(req).hufc_session;
   if (!token) return res.status(401).json({ ok: false, error: "Brak logowania" });
   const [payload, signature] = token.split(".");
   if (!payload || signature !== sign(payload)) return res.status(401).json({ ok: false, error: "Sesja wygasła" });
@@ -869,8 +871,9 @@ app.post("/api/login", async (req, res) => {
     return res.status(401).json({ ok: false, error: "Nieprawidłowy e-mail albo hasło" });
   }
   const safeUser = { id: user.id, email: user.email, name: user.name, role: user.role };
-  res.setHeader("Set-Cookie", `hufc_session=${sessionCookie(safeUser)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=604800`);
-  return res.json({ ok: true, user: safeUser });
+  const token = sessionCookie(safeUser);
+  res.setHeader("Set-Cookie", `hufc_session=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=604800`);
+  return res.json({ ok: true, user: safeUser, token });
 });
 
 app.post("/api/logout", (_req, res) => {
