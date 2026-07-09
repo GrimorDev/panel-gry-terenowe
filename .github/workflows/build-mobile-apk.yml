@@ -28,6 +28,23 @@ jobs:
       - name: Create native project files
         run: flutter create --platforms=android .
 
+      - name: Ensure Android internet permission
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          manifest = Path("android/app/src/main/AndroidManifest.xml")
+          text = manifest.read_text(encoding="utf-8")
+          permission = '<uses-permission android:name="android.permission.INTERNET"/>'
+          if permission not in text:
+              text = text.replace(
+                  '<manifest xmlns:android="http://schemas.android.com/apk/res/android">',
+                  '<manifest xmlns:android="http://schemas.android.com/apk/res/android">\\n    ' + permission,
+                  1,
+              )
+              manifest.write_text(text, encoding="utf-8")
+          PY
+
       - name: Install dependencies
         run: flutter pub get
 

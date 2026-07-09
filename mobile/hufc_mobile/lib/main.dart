@@ -31,6 +31,7 @@ class _HufcMobileAppState extends State<HufcMobileApp> {
   bool _online = false;
   bool _syncing = false;
   int _queueCount = 0;
+  String _apiBaseUrl = ApiClient.defaultBaseUrl;
 
   @override
   void initState() {
@@ -40,12 +41,15 @@ class _HufcMobileAppState extends State<HufcMobileApp> {
   }
 
   Future<void> _boot() async {
+    final savedApiBaseUrl = await widget.store.get('api_base_url');
+    if (savedApiBaseUrl != null) widget.api.setBaseUrl(savedApiBaseUrl);
     final auth = await widget.store.readAuth();
     final cached = await widget.store.readState();
     final online = await _isOnline();
     setState(() {
       _session = auth;
       _state = cached;
+      _apiBaseUrl = widget.api.baseUrl;
       _online = online;
       _booting = false;
     });
@@ -81,6 +85,13 @@ class _HufcMobileAppState extends State<HufcMobileApp> {
       _state = state;
       _online = true;
     });
+  }
+
+  Future<void> _setApiBaseUrl(String value) async {
+    widget.api.setBaseUrl(value);
+    await widget.store.put('api_base_url', widget.api.baseUrl);
+    if (!mounted) return;
+    setState(() => _apiBaseUrl = widget.api.baseUrl);
   }
 
   Future<void> _logout() async {
@@ -137,7 +148,11 @@ class _HufcMobileAppState extends State<HufcMobileApp> {
       home: _booting
           ? const BootScreen()
           : _session == null
-              ? LoginScreen(onLogin: _login, cachedSession: _session)
+              ? LoginScreen(
+                  onLogin: _login,
+                  apiBaseUrl: _apiBaseUrl,
+                  onApiBaseUrlChanged: _setApiBaseUrl,
+                )
               : ShellScreen(
                   session: _session!,
                   state: _state,
@@ -162,10 +177,16 @@ class BootScreen extends StatelessWidget {
 }
 
 class LoginScreen extends StatefulWidget {
-  const LoginScreen({super.key, required this.onLogin, this.cachedSession});
+  const LoginScreen({
+    super.key,
+    required this.onLogin,
+    required this.apiBaseUrl,
+    required this.onApiBaseUrlChanged,
+  });
 
   final Future<void> Function(String email, String password) onLogin;
-  final AuthSession? cachedSession;
+  final String apiBaseUrl;
+  final Future<void> Function(String value) onApiBaseUrlChanged;
 
   @override
   State<LoginScreen> createState() => _LoginScreenState();
@@ -174,25 +195,43 @@ class LoginScreen extends StatefulWidget {
 class _LoginScreenState extends State<LoginScreen> {
   final _email = TextEditingController();
   final _password = TextEditingController();
+  final _apiBaseUrl = TextEditingController();
   bool _loading = false;
+  bool _passwordVisible = false;
+  bool _showServerSettings = false;
   String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    _apiBaseUrl.text = widget.apiBaseUrl;
+  }
 
   @override
   void dispose() {
     _email.dispose();
     _password.dispose();
+    _apiBaseUrl.dispose();
     super.dispose();
   }
 
   Future<void> _submit() async {
+    final email = _email.text.trim();
+    final password = _password.text;
+    if (email.isEmpty || password.isEmpty) {
+      setState(() => _error = 'Wpisz e-mail i hasło.');
+      return;
+    }
+    FocusScope.of(context).unfocus();
     setState(() {
       _loading = true;
       _error = null;
     });
     try {
-      await widget.onLogin(_email.text.trim(), _password.text);
+      await widget.onApiBaseUrlChanged(_apiBaseUrl.text);
+      await widget.onLogin(email, password);
     } catch (error) {
-      setState(() => _error = error.toString());
+      if (mounted) setState(() => _error = error.toString());
     } finally {
       if (mounted) setState(() => _loading = false);
     }
@@ -200,46 +239,177 @@ class _LoginScreenState extends State<LoginScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
     return Scaffold(
+      resizeToAvoidBottomInset: true,
       body: SafeArea(
-        child: Center(
-          child: SingleChildScrollView(
-            padding: const EdgeInsets.all(24),
-            child: ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 420),
-              child: Card(
-                elevation: 0,
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(22)),
-                child: Padding(
-                  padding: const EdgeInsets.all(24),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      const Text('Logowanie', style: TextStyle(fontSize: 22, fontWeight: FontWeight.w800)),
-                      const SizedBox(height: 6),
-                      const Text('Konto wychowawcy'),
-                      const SizedBox(height: 22),
-                      TextField(controller: _email, keyboardType: TextInputType.emailAddress, decoration: const InputDecoration(labelText: 'E-mail')),
-                      const SizedBox(height: 12),
-                      TextField(controller: _password, obscureText: true, decoration: const InputDecoration(labelText: 'Hasło')),
-                      if (_error != null) ...[
-                        const SizedBox(height: 12),
-                        Text(_error!, style: TextStyle(color: Theme.of(context).colorScheme.error)),
-                      ],
-                      const SizedBox(height: 18),
-                      FilledButton(
-                        onPressed: _loading ? null : _submit,
-                        child: _loading ? const HufcLoader(size: 26, color: Colors.white) : const Text('Zaloguj się'),
-                      ),
-                      const SizedBox(height: 12),
-                      const Text('Po pierwszym zalogowaniu aplikacja startuje także bez internetu.', style: TextStyle(fontSize: 12)),
+        child: Stack(
+          children: [
+            Positioned.fill(
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                    colors: [
+                      const Color(0xFFF7F3EC),
+                      const Color(0xFFF7F3EC),
+                      theme.colorScheme.primary.withOpacity(0.08),
                     ],
                   ),
                 ),
               ),
             ),
-          ),
+            Center(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.all(22),
+                keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 420),
+                  child: Card(
+                    elevation: 0,
+                    color: Colors.white.withOpacity(0.96),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(28)),
+                    child: Padding(
+                      padding: const EdgeInsets.all(24),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Row(
+                            children: [
+                              Container(
+                                width: 42,
+                                height: 42,
+                                alignment: Alignment.center,
+                                decoration: BoxDecoration(
+                                  color: theme.colorScheme.primary,
+                                  borderRadius: BorderRadius.circular(14),
+                                  boxShadow: [
+                                    BoxShadow(
+                                      color: theme.colorScheme.primary.withOpacity(0.25),
+                                      blurRadius: 18,
+                                      offset: const Offset(0, 8),
+                                    ),
+                                  ],
+                                ),
+                                child: const Text('H', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w900)),
+                              ),
+                              const SizedBox(width: 12),
+                              const Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text('Mój Hufiec', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w900)),
+                                    Text('Aplikacja wychowawcy', style: TextStyle(color: Colors.black54)),
+                                  ],
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 28),
+                          const Text('Logowanie', style: TextStyle(fontSize: 28, fontWeight: FontWeight.w900)),
+                          const SizedBox(height: 8),
+                          const Text(
+                            'Zaloguj się raz z internetem. Potem aplikacja zapisze dane do pracy w terenie.',
+                            style: TextStyle(color: Colors.black54),
+                          ),
+                          const SizedBox(height: 24),
+                          TextField(
+                            controller: _email,
+                            enabled: !_loading,
+                            keyboardType: TextInputType.emailAddress,
+                            textInputAction: TextInputAction.next,
+                            autocorrect: false,
+                            decoration: const InputDecoration(
+                              labelText: 'E-mail',
+                              prefixIcon: Icon(Icons.mail_outline),
+                              border: OutlineInputBorder(),
+                            ),
+                          ),
+                          const SizedBox(height: 14),
+                          TextField(
+                            controller: _password,
+                            enabled: !_loading,
+                            obscureText: !_passwordVisible,
+                            enableSuggestions: false,
+                            autocorrect: false,
+                            textInputAction: TextInputAction.done,
+                            onSubmitted: (_) => _loading ? null : _submit(),
+                            decoration: InputDecoration(
+                              labelText: 'Hasło',
+                              prefixIcon: const Icon(Icons.lock_outline),
+                              border: const OutlineInputBorder(),
+                              suffixIcon: IconButton(
+                                tooltip: _passwordVisible ? 'Ukryj hasło' : 'Pokaż hasło',
+                                onPressed: _loading ? null : () => setState(() => _passwordVisible = !_passwordVisible),
+                                icon: Icon(_passwordVisible ? Icons.visibility_off_outlined : Icons.visibility_outlined),
+                              ),
+                            ),
+                          ),
+                          const SizedBox(height: 10),
+                          TextButton.icon(
+                            onPressed: _loading ? null : () => setState(() => _showServerSettings = !_showServerSettings),
+                            icon: Icon(_showServerSettings ? Icons.expand_less : Icons.tune),
+                            label: const Text('Adres serwera'),
+                          ),
+                          AnimatedCrossFade(
+                            duration: const Duration(milliseconds: 180),
+                            crossFadeState: _showServerSettings ? CrossFadeState.showSecond : CrossFadeState.showFirst,
+                            firstChild: const SizedBox.shrink(),
+                            secondChild: Padding(
+                              padding: const EdgeInsets.only(top: 4, bottom: 10),
+                              child: TextField(
+                                controller: _apiBaseUrl,
+                                enabled: !_loading,
+                                keyboardType: TextInputType.url,
+                                autocorrect: false,
+                                decoration: const InputDecoration(
+                                  labelText: 'Adres API',
+                                  helperText: 'Np. https://twoja-domena.pl',
+                                  prefixIcon: Icon(Icons.public),
+                                  border: OutlineInputBorder(),
+                                ),
+                              ),
+                            ),
+                          ),
+                          if (_error != null) ...[
+                            const SizedBox(height: 10),
+                            Container(
+                              padding: const EdgeInsets.all(14),
+                              decoration: BoxDecoration(
+                                color: theme.colorScheme.errorContainer,
+                                borderRadius: BorderRadius.circular(16),
+                              ),
+                              child: Text(_error!, style: TextStyle(color: theme.colorScheme.onErrorContainer)),
+                            ),
+                          ],
+                          const SizedBox(height: 18),
+                          FilledButton(
+                            onPressed: _loading ? null : _submit,
+                            style: FilledButton.styleFrom(
+                              minimumSize: const Size.fromHeight(54),
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+                            ),
+                            child: _loading
+                                ? const Row(
+                                    mainAxisAlignment: MainAxisAlignment.center,
+                                    children: [
+                                      HufcLoader(size: 24, color: Colors.white),
+                                      SizedBox(width: 12),
+                                      Text('Logowanie...'),
+                                    ],
+                                  )
+                                : const Text('Zaloguj się'),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ],
         ),
       ),
     );
