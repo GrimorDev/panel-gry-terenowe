@@ -670,8 +670,35 @@ async function state(gameId?: number, user?: User) {
   };
 }
 
-function stateFor(req: Request, gameId?: number) {
-  return state(gameId, req.user);
+function wantsMobileState(req: Request) {
+  return req.query.mobile === "1" || req.header("X-Hufc-Mobile") === "1";
+}
+
+function stripHeavyMedia(row: Record<string, unknown>) {
+  const next = { ...row };
+  for (const key of Object.keys(next)) {
+    if (key.includes("image_data") || key.includes("attachment_data")) {
+      next[key] = null;
+    }
+  }
+  return next;
+}
+
+function mobileStatePayload(payload: Awaited<ReturnType<typeof state>>) {
+  return {
+    ...payload,
+    photos: payload.photos.slice(0, 80).map(stripHeavyMedia),
+    messages: payload.messages.slice(0, 80).map(stripHeavyMedia),
+    shares: payload.shares.slice(0, 80).map(stripHeavyMedia),
+    materials: payload.materials.slice(0, 80),
+    questions: payload.questions.slice(0, 80),
+    competition_points: payload.competition_points.slice(0, 80)
+  };
+}
+
+async function stateFor(req: Request, gameId?: number) {
+  const payload = await state(gameId, req.user);
+  return wantsMobileState(req) ? mobileStatePayload(payload) : payload;
 }
 
 async function gameState(gameId?: number, user?: User) {

@@ -43,7 +43,10 @@ class ApiClient {
   }
 
   Future<AppState> state(String token, {int? gameId}) async {
-    final uri = Uri.parse('$baseUrl/api/state').replace(queryParameters: gameId == null ? null : {'gameId': '$gameId'});
+    final uri = Uri.parse('$baseUrl/api/state').replace(queryParameters: {
+      'mobile': '1',
+      if (gameId != null) 'gameId': '$gameId',
+    });
     final response = await _send(() => http.get(uri, headers: _headers(token)));
     final json = _decode(response);
     if (json['ok'] == false) {
@@ -55,7 +58,7 @@ class ApiClient {
   Future<AppState> postState(String token, String url, Map<String, dynamic> body) async {
     final response = await _send(
       () => http.post(
-        Uri.parse('$baseUrl$url'),
+        _mobileUri(url),
         headers: _headers(token),
         body: jsonEncode(body),
       ),
@@ -68,7 +71,7 @@ class ApiClient {
   }
 
   Future<AppState> deleteState(String token, String url) async {
-    final response = await _send(() => http.delete(Uri.parse('$baseUrl$url'), headers: _headers(token)));
+    final response = await _send(() => http.delete(_mobileUri(url), headers: _headers(token)));
     final json = _decode(response);
     if (json['ok'] == false) {
       throw ApiException(jsonString(json['error'], fallback: 'Nie udało się usunąć'));
@@ -79,7 +82,16 @@ class ApiClient {
   Map<String, String> _headers(String token) => {
         'Authorization': 'Bearer $token',
         'Content-Type': 'application/json',
+        'X-Hufc-Mobile': '1',
       };
+
+  Uri _mobileUri(String url) {
+    final uri = Uri.parse('$baseUrl$url');
+    return uri.replace(queryParameters: {
+      ...uri.queryParameters,
+      'mobile': '1',
+    });
+  }
 
   Future<http.Response> _send(Future<http.Response> Function() request) async {
     try {
