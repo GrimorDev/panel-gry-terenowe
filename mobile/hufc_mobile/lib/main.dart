@@ -451,13 +451,13 @@ class _GamesPageState extends State<GamesPage> {
         CardPanel(
           title: 'Ocena stacji',
           child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-            DropdownButtonFormField<int>(value: _teamId, items: teams.map((team) => DropdownMenuItem(value: team.id, child: Text(team.name))).toList(), onChanged: (value) => setState(() => _teamId = value), decoration: const InputDecoration(labelText: 'Drużyna')),
+            DropdownButtonFormField<int>(initialValue: _teamId, items: teams.map((team) => DropdownMenuItem(value: team.id, child: Text(team.name))).toList(), onChanged: (value) => setState(() => _teamId = value), decoration: const InputDecoration(labelText: 'Drużyna')),
             const SizedBox(height: 10),
-            DropdownButtonFormField<int>(value: _stationId, items: stations.map((station) => DropdownMenuItem(value: station.id, child: Text(station.title))).toList(), onChanged: (value) => setState(() => _stationId = value), decoration: const InputDecoration(labelText: 'Stacja')),
+            DropdownButtonFormField<int>(initialValue: _stationId, items: stations.map((station) => DropdownMenuItem(value: station.id, child: Text(station.title))).toList(), onChanged: (value) => setState(() => _stationId = value), decoration: const InputDecoration(labelText: 'Stacja')),
             Slider(value: _points.toDouble(), min: 0, max: 10, divisions: 10, label: '$_points', onChanged: (value) => setState(() => _points = value.round())),
             Center(child: Text('$_points pkt', style: const TextStyle(fontSize: 34, fontWeight: FontWeight.w900))),
             SwitchListTile(value: _correct, onChanged: (value) => setState(() => _correct = value), title: const Text('Poprawna odpowiedź')),
-            DropdownButtonFormField<int>(value: _cooperation, items: [1, 2, 3, 4, 5].map((value) => DropdownMenuItem(value: value, child: Text('Współpraca $value/5'))).toList(), onChanged: (value) => setState(() => _cooperation = value ?? 3), decoration: const InputDecoration(labelText: 'Współpraca')),
+            DropdownButtonFormField<int>(initialValue: _cooperation, items: [1, 2, 3, 4, 5].map((value) => DropdownMenuItem(value: value, child: Text('Współpraca $value/5'))).toList(), onChanged: (value) => setState(() => _cooperation = value ?? 3), decoration: const InputDecoration(labelText: 'Współpraca')),
             const SizedBox(height: 12),
             FilledButton(onPressed: _saveScore, child: const Text('Zapisz lokalnie')),
           ]),
@@ -522,9 +522,9 @@ class _CompetitionPageState extends State<CompetitionPage> {
         CardPanel(
           title: 'Dodaj punkty',
           child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-            DropdownButtonFormField<int>(value: _tentId, items: tents.map((tent) => DropdownMenuItem(value: tent.id, child: Text(tent.name))).toList(), onChanged: (value) => setState(() => _tentId = value), decoration: const InputDecoration(labelText: 'Namiot')),
+            DropdownButtonFormField<int>(initialValue: _tentId, items: tents.map((tent) => DropdownMenuItem(value: tent.id, child: Text(tent.name))).toList(), onChanged: (value) => setState(() => _tentId = value), decoration: const InputDecoration(labelText: 'Namiot')),
             const SizedBox(height: 10),
-            DropdownButtonFormField<String>(value: _category, items: ['Porządek', 'Zachowanie', 'Aktywność', 'Dodatkowe'].map((value) => DropdownMenuItem(value: value, child: Text(value))).toList(), onChanged: (value) => setState(() => _category = value ?? 'Porządek'), decoration: const InputDecoration(labelText: 'Kategoria')),
+            DropdownButtonFormField<String>(initialValue: _category, items: ['Porządek', 'Zachowanie', 'Aktywność', 'Dodatkowe'].map((value) => DropdownMenuItem(value: value, child: Text(value))).toList(), onChanged: (value) => setState(() => _category = value ?? 'Porządek'), decoration: const InputDecoration(labelText: 'Kategoria')),
             const SizedBox(height: 10),
             Row(children: [
               IconButton.filledTonal(onPressed: () => setState(() => _points--), icon: const Icon(Icons.remove)),
