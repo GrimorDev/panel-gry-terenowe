@@ -39,6 +39,19 @@ Flutter nie jest uruchamiany jako stack w Portainerze. Z repo buduje sie plik AP
 5. Wpisz `api_url`, np. `https://vipile.com`.
 6. Po zakonczeniu pobierz artifact `moj-hufiec-android-apk`.
 
+### iPhone / iOS
+
+iOS nie pozwala zainstalowac zwyklego pliku `.ipa` tak swobodnie jak Android instaluje `.apk`. Aplikacja musi byc podpisana przez Apple.
+
+Najprostsze opcje:
+
+- **TestFlight** - najlepsza droga testowa. Wymaga konta Apple Developer, ale nie publikuje aplikacji publicznie w App Store.
+- **Ad Hoc** - instalacja tylko na wpisanych UDID konkretnych iPhone'ow. Tez wymaga Apple Developer.
+- **Apple Developer Enterprise Program** - tylko dla wewnetrznej dystrybucji organizacji, z ostrymi zasadami Apple.
+- **Alternatywna dystrybucja w UE/Brazylii/Japonii** - istnieje, ale nadal wymaga formalnego procesu Apple i nie jest zwyklym kliknieciem dowolnego `.ipa`.
+
+W repo jest workflow **Build iOS unsigned**. Buduje paczke iOS bez podpisu, czyli material do dalszego podpisania na Macu albo w CI z certyfikatem Apple. Tego pliku nie da sie normalnie zainstalowac na iPhone bez podpisania.
+
 ### Lokalnie z Flutter SDK
 
 ```bash

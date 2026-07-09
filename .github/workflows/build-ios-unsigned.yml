@@ -1,0 +1,47 @@
+name: Build iOS unsigned
+
+on:
+  workflow_dispatch:
+    inputs:
+      api_url:
+        description: Backend URL, for example https://vipile.com
+        required: true
+        default: https://vipile.com
+
+jobs:
+  ios:
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: mobile/hufc_mobile
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Create native project files
+        run: flutter create --platforms=ios .
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Analyze
+        run: flutter analyze
+
+      - name: Build iOS app without code signing
+        run: flutter build ios --release --no-codesign --dart-define=API_URL=${{ inputs.api_url }}
+
+      - name: Pack unsigned app
+        run: ditto -c -k --sequesterRsrc --keepParent build/ios/iphoneos/Runner.app moj-hufiec-ios-unsigned.zip
+
+      - name: Upload unsigned iOS app
+        uses: actions/upload-artifact@v4
+        with:
+          name: moj-hufiec-ios-unsigned
+          path: mobile/hufc_mobile/moj-hufiec-ios-unsigned.zip
