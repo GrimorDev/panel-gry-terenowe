@@ -122,17 +122,25 @@ class _HufcMobileAppState extends State<HufcMobileApp> {
   Future<void> _mutate(String url, Map<String, dynamic> body, AppState optimistic) async {
     await _saveLocal(optimistic);
     if (_session == null) return;
-    if (_online) {
-      try {
-        final latest = await widget.api.postState(_session!.token, url, body);
-        await _saveLocal(latest);
-        return;
-      } catch (_) {
-        if (mounted) setState(() => _online = false);
-      }
+    if (!_online) {
+      await widget.store.enqueue(url, 'POST', body);
+      await _refreshQueue();
+      return;
     }
-    await widget.store.enqueue(url, 'POST', body);
-    await _refreshQueue();
+    unawaited(_sendMutationInBackground(url, body));
+  }
+
+  Future<void> _sendMutationInBackground(String url, Map<String, dynamic> body) async {
+    if (_session == null) return;
+    try {
+      final latest = await widget.api.postState(_session!.token, url, body);
+      if (mounted && url != '/api/timer') await _saveLocal(latest);
+    } catch (_) {
+      await widget.store.enqueue(url, 'POST', body);
+      if (mounted) setState(() => _online = false);
+    } finally {
+      await _refreshQueue();
+    }
   }
 
   @override
@@ -448,37 +456,75 @@ class _ShellScreenState extends State<ShellScreen> {
   @override
   Widget build(BuildContext context) {
     final state = widget.state;
-    final pages = [
-      DashboardPage(session: widget.session, state: state, online: widget.online, queueCount: widget.queueCount),
-      GamesPage(state: state, onMutate: widget.onMutate),
-      CompetitionPage(state: state, onMutate: widget.onMutate),
-      SyncPage(online: widget.online, syncing: widget.syncing, queueCount: widget.queueCount, onSync: widget.onSync, onLogout: widget.onLogout),
+    final pages = <_MobilePage>[
+      _MobilePage('Pulpit', Icons.dashboard_outlined, Icons.dashboard, DashboardPage(session: widget.session, state: state, online: widget.online, queueCount: widget.queueCount)),
+      _MobilePage('Podopieczni', Icons.person_outline, Icons.person, WardsPage(state: state)),
+      _MobilePage('Grupy', Icons.groups_outlined, Icons.groups, GroupsPage(state: state)),
+      _MobilePage('Zbiórki', Icons.calendar_month_outlined, Icons.calendar_month, MeetingsPage(state: state)),
+      _MobilePage('Galeria', Icons.photo_library_outlined, Icons.photo_library, MobileGalleryPage(state: state)),
+      _MobilePage('Wiadomości', Icons.chat_bubble_outline, Icons.chat_bubble, MessagesPage(state: state, user: widget.session.user)),
+      _MobilePage('Gry', Icons.flag_outlined, Icons.flag, GamesPage(state: state, onMutate: widget.onMutate)),
+      _MobilePage('Namioty', Icons.emoji_events_outlined, Icons.emoji_events, CompetitionPage(state: state, onMutate: widget.onMutate)),
+      _MobilePage('Sync', Icons.cloud_sync_outlined, Icons.cloud_sync, SyncPage(online: widget.online, syncing: widget.syncing, queueCount: widget.queueCount, onSync: widget.onSync, onLogout: widget.onLogout)),
     ];
+    final visibleDestinations = [0, 3, 5, 6, 8];
     return Scaffold(
       appBar: AppBar(
-        title: Text(widget.online ? 'Mój Hufiec' : 'Mój Hufiec - offline'),
+        title: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(pages[_tab].label, style: const TextStyle(fontWeight: FontWeight.w900)),
+            Text(widget.online ? 'Połączono z serwerem' : 'Tryb offline', style: const TextStyle(fontSize: 12)),
+          ],
+        ),
         actions: [
           if (widget.syncing) const Padding(padding: EdgeInsets.all(14), child: HufcLoader(size: 22)),
+          PopupMenuButton<int>(
+            icon: const Icon(Icons.more_horiz),
+            onSelected: (value) => setState(() => _tab = value),
+            itemBuilder: (context) => [
+              for (var index = 0; index < pages.length; index++)
+                PopupMenuItem(
+                  value: index,
+                  child: Row(children: [Icon(pages[index].icon, size: 20), const SizedBox(width: 12), Text(pages[index].label)]),
+                ),
+            ],
+          ),
           IconButton(onPressed: widget.onSync, icon: const Icon(Icons.sync)),
         ],
       ),
-      body: AnimatedSwitcher(duration: const Duration(milliseconds: 220), child: pages[_tab]),
+      body: AnimatedSwitcher(
+        duration: const Duration(milliseconds: 220),
+        switchInCurve: Curves.easeOutCubic,
+        switchOutCurve: Curves.easeInCubic,
+        child: KeyedSubtree(key: ValueKey(_tab), child: pages[_tab].child),
+      ),
       bottomNavigationBar: NavigationBar(
-        selectedIndex: _tab,
-        onDestinationSelected: (value) => setState(() => _tab = value),
+        selectedIndex: visibleDestinations.contains(_tab) ? visibleDestinations.indexOf(_tab) : visibleDestinations.length - 1,
+        onDestinationSelected: (value) => setState(() => _tab = visibleDestinations[value]),
         destinations: [
-          const NavigationDestination(icon: Icon(Icons.dashboard_outlined), selectedIcon: Icon(Icons.dashboard), label: 'Pulpit'),
-          const NavigationDestination(icon: Icon(Icons.flag_outlined), selectedIcon: Icon(Icons.flag), label: 'Gry'),
-          const NavigationDestination(icon: Icon(Icons.emoji_events_outlined), selectedIcon: Icon(Icons.emoji_events), label: 'Namioty'),
+          NavigationDestination(icon: Icon(pages[0].icon), selectedIcon: Icon(pages[0].selectedIcon), label: pages[0].label),
+          NavigationDestination(icon: Icon(pages[3].icon), selectedIcon: Icon(pages[3].selectedIcon), label: pages[3].label),
+          NavigationDestination(icon: Icon(pages[5].icon), selectedIcon: Icon(pages[5].selectedIcon), label: pages[5].label),
+          NavigationDestination(icon: Icon(pages[6].icon), selectedIcon: Icon(pages[6].selectedIcon), label: pages[6].label),
           NavigationDestination(
-            icon: Badge(isLabelVisible: widget.queueCount > 0, label: Text('${widget.queueCount}'), child: const Icon(Icons.cloud_sync_outlined)),
-            selectedIcon: Badge(isLabelVisible: widget.queueCount > 0, label: Text('${widget.queueCount}'), child: const Icon(Icons.cloud_sync)),
-            label: 'Sync',
+            icon: Badge(isLabelVisible: widget.queueCount > 0, label: Text('${widget.queueCount}'), child: Icon(pages[8].icon)),
+            selectedIcon: Badge(isLabelVisible: widget.queueCount > 0, label: Text('${widget.queueCount}'), child: Icon(pages[8].selectedIcon)),
+            label: pages[8].label,
           ),
         ],
       ),
     );
   }
+}
+
+class _MobilePage {
+  const _MobilePage(this.label, this.icon, this.selectedIcon, this.child);
+
+  final String label;
+  final IconData icon;
+  final IconData selectedIcon;
+  final Widget child;
 }
 
 class DashboardPage extends StatelessWidget {
@@ -504,6 +550,151 @@ class DashboardPage extends StatelessWidget {
     );
   }
 }
+
+
+class WardsPage extends StatelessWidget {
+  const WardsPage({super.key, required this.state});
+  final AppState? state;
+
+  @override
+  Widget build(BuildContext context) {
+    if (state == null) return const EmptyNotice(text: 'Brak listy podopiecznych w telefonie.');
+    final wards = jsonList(state!.raw['wards']);
+    final groups = {for (final item in jsonList(state!.raw['cohorts'])) jsonInt(item['id']): jsonString(item['name'], fallback: 'Bez grupy')};
+    return HufcPage(
+      title: 'Podopieczni',
+      subtitle: 'Lista osób pod opieką, dostępna także offline.',
+      children: [
+        if (wards.isEmpty) const EmptyNotice(text: 'Nie ma jeszcze podopiecznych.'),
+        for (final ward in wards)
+          HufcListCard(
+            leading: _Initials(text: jsonString(ward['name'], fallback: 'P')),
+            title: jsonString(ward['name'], fallback: 'Podopieczny'),
+            subtitle: '${jsonInt(ward['age'])} lat · ${groups[jsonInt(ward['cohort_id'])] ?? 'Bez grupy'} · ${jsonString(ward['parent_name'], fallback: 'brak opiekuna')}',
+            trailing: const Icon(Icons.chevron_right),
+          ),
+      ],
+    );
+  }
+}
+
+class GroupsPage extends StatelessWidget {
+  const GroupsPage({super.key, required this.state});
+  final AppState? state;
+
+  @override
+  Widget build(BuildContext context) {
+    if (state == null) return const EmptyNotice(text: 'Brak grup w telefonie.');
+    final groups = jsonList(state!.raw['cohorts']);
+    final wards = jsonList(state!.raw['wards']);
+    return HufcPage(
+      title: 'Grupy',
+      subtitle: 'Roczniki, drużyny i przypisani wychowawcy.',
+      children: [
+        for (final group in groups)
+          CardPanel(
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Row(children: [
+                Expanded(child: Text(jsonString(group['name'], fallback: 'Grupa'), style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w900))),
+                Text('${jsonInt(group['ward_count'])} osób'),
+              ]),
+              const SizedBox(height: 6),
+              Text('Wychowawca: ${jsonString(group['caretaker_user_name'], fallback: jsonString(group['caretaker'], fallback: 'Bez opiekuna'))}'),
+              const SizedBox(height: 10),
+              Text(
+                wards.where((ward) => jsonInt(ward['cohort_id']) == jsonInt(group['id'])).map((ward) => jsonString(ward['name'])).where((name) => name.isNotEmpty).join(', ').isEmpty
+                    ? 'Brak podopiecznych w tej grupie.'
+                    : wards.where((ward) => jsonInt(ward['cohort_id']) == jsonInt(group['id'])).map((ward) => jsonString(ward['name'])).where((name) => name.isNotEmpty).join(', '),
+                style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant),
+              ),
+            ]),
+          ),
+      ],
+    );
+  }
+}
+
+class MeetingsPage extends StatelessWidget {
+  const MeetingsPage({super.key, required this.state});
+  final AppState? state;
+
+  @override
+  Widget build(BuildContext context) {
+    if (state == null) return const EmptyNotice(text: 'Brak zbiórek w telefonie.');
+    final sessions = jsonList(state!.raw['sessions']);
+    return HufcPage(
+      title: 'Zbiórki',
+      subtitle: 'Harmonogram i frekwencja w jednym miejscu.',
+      children: [
+        for (final session in sessions)
+          CardPanel(
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Row(children: [
+                Expanded(child: Text(jsonString(session['title'], fallback: 'Zbiórka'), style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w900))),
+                Text(_shortDate(jsonString(session['session_date']))),
+              ]),
+              const SizedBox(height: 10),
+              LinearProgressIndicator(value: _attendanceRatio(session)),
+              const SizedBox(height: 8),
+              Text('Obecność: ${jsonInt(session['present_count'])}/${jsonInt(session['planned_count'])} · ${jsonString(session['location'], fallback: 'brak lokalizacji')}'),
+            ]),
+          ),
+      ],
+    );
+  }
+}
+
+class MobileGalleryPage extends StatelessWidget {
+  const MobileGalleryPage({super.key, required this.state});
+  final AppState? state;
+
+  @override
+  Widget build(BuildContext context) {
+    if (state == null) return const EmptyNotice(text: 'Brak galerii w telefonie.');
+    final photos = jsonList(state!.raw['photos']).where((photo) => jsonString(photo['image_data']).isNotEmpty || jsonString(photo['color']).isNotEmpty).toList();
+    return HufcPage(
+      title: 'Galeria',
+      subtitle: 'Zdjęcia z zajęć zapisane lokalnie do podglądu.',
+      children: [
+        GridView.builder(
+          shrinkWrap: true,
+          physics: const NeverScrollableScrollPhysics(),
+          itemCount: photos.length,
+          gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(crossAxisCount: 2, crossAxisSpacing: 12, mainAxisSpacing: 12),
+          itemBuilder: (context, index) => _PhotoTile(photo: photos[index]),
+        ),
+        if (photos.isEmpty) const EmptyNotice(text: 'Nie ma jeszcze zdjęć w lokalnym cache.'),
+      ],
+    );
+  }
+}
+
+class MessagesPage extends StatelessWidget {
+  const MessagesPage({super.key, required this.state, required this.user});
+  final AppState? state;
+  final AppUser user;
+
+  @override
+  Widget build(BuildContext context) {
+    if (state == null) return const EmptyNotice(text: 'Brak wiadomości w telefonie.');
+    final messages = jsonList(state!.raw['messages']).reversed.take(8).toList();
+    return HufcPage(
+      title: 'Wiadomości',
+      subtitle: 'Ostatnie rozmowy zapisane offline. Pełny czat zostaje w PWA.',
+      children: [
+        if (messages.isEmpty) const EmptyNotice(text: 'Nie ma jeszcze wiadomości w lokalnym cache.'),
+        for (final message in messages)
+          HufcListCard(
+            leading: _Initials(text: jsonString(message['sender_name'], fallback: 'W')),
+            title: jsonString(message['sender_name'], fallback: 'Wiadomość'),
+            subtitle: jsonString(message['body'], fallback: jsonString(message['attachment_name'], fallback: 'Załącznik')),
+            trailing: message['sender_id'] == user.id ? const Text('Ty') : null,
+          ),
+      ],
+    );
+  }
+}
+
 
 class GamesPage extends StatefulWidget {
   const GamesPage({super.key, required this.state, required this.onMutate});
@@ -597,13 +788,23 @@ class _GamesPageState extends State<GamesPage> {
     final stations = state.stations.where((station) => station.gameId == game.id).toList()..sort((a, b) => a.order.compareTo(b.order));
     _teamId ??= teams.isNotEmpty ? teams.first.id : null;
     _stationId ??= stations.isNotEmpty ? stations.first.id : null;
+    final selectedTeamId = _teamId;
+    Team? selectedTeam;
+    for (final team in teams) {
+      if (team.id == selectedTeamId) selectedTeam = team;
+    }
+    final finishedStationIds = state.scores.where((score) => score.teamId == selectedTeamId && score.finished).map((score) => score.stationId).toSet();
+    final stationsTitle = selectedTeam == null ? 'Stacje' : 'Stacje · ${selectedTeam.name}';
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
+        Text('Gry terenowe', style: Theme.of(context).textTheme.labelLarge),
         Text(game.name, style: Theme.of(context).textTheme.headlineMedium?.copyWith(fontWeight: FontWeight.w900)),
+        Text('${stations.length} stacji · ${teams.length} drużyn · ${finishedStationIds.length}/${stations.length} ukończonych dla wybranej drużyny'),
         const SizedBox(height: 12),
         CardPanel(
           child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+            Text(game.timerRunning ? 'Gra trwa' : 'Timer gotowy', style: const TextStyle(fontWeight: FontWeight.w800)),
             Text(_formatSeconds(_remaining(game)), style: const TextStyle(fontSize: 68, fontWeight: FontWeight.w900, color: Color(0xFF1F5C36))),
             LinearProgressIndicator(value: (1 - (_remaining(game) / (game.durationMinutes * 60)).clamp(0, 1)).toDouble()),
             const SizedBox(height: 14),
@@ -613,6 +814,35 @@ class _GamesPageState extends State<GamesPage> {
               OutlinedButton(onPressed: () => _timer('reset'), child: const Text('Reset')),
             ]),
           ]),
+        ),
+        CardPanel(
+          title: stationsTitle,
+          child: Column(
+            children: stations.map((station) {
+              final done = finishedStationIds.contains(station.id);
+              return Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: InkWell(
+                  borderRadius: BorderRadius.circular(16),
+                  onTap: () => setState(() => _stationId = station.id),
+                  child: Container(
+                    padding: const EdgeInsets.all(14),
+                    decoration: BoxDecoration(
+                      color: done ? const Color(0xFF1F5C36) : Theme.of(context).colorScheme.surface,
+                      border: Border.all(color: _stationId == station.id ? const Color(0xFF1F5C36) : Theme.of(context).dividerColor),
+                      borderRadius: BorderRadius.circular(16),
+                    ),
+                    child: Row(children: [
+                      Expanded(child: Text(station.title, style: TextStyle(fontWeight: FontWeight.w900, color: done ? Colors.white : null))),
+                      Text(done ? 'ukończona' : 'nieodwiedzona', style: TextStyle(color: done ? Colors.white70 : Theme.of(context).colorScheme.onSurfaceVariant)),
+                      const SizedBox(width: 10),
+                      if (done) const CircleAvatar(radius: 14, backgroundColor: Colors.white, child: Icon(Icons.check, size: 18, color: Color(0xFF1F5C36))),
+                    ]),
+                  ),
+                ),
+              );
+            }).toList(),
+          ),
         ),
         CardPanel(
           title: 'Ranking',
@@ -745,6 +975,104 @@ class SyncPage extends StatelessWidget {
   }
 }
 
+
+class HufcPage extends StatelessWidget {
+  const HufcPage({super.key, required this.title, required this.subtitle, required this.children});
+
+  final String title;
+  final String subtitle;
+  final List<Widget> children;
+
+  @override
+  Widget build(BuildContext context) {
+    return ListView(
+      padding: const EdgeInsets.fromLTRB(16, 18, 16, 24),
+      children: [
+        Text(title, style: Theme.of(context).textTheme.headlineMedium?.copyWith(fontWeight: FontWeight.w900)),
+        const SizedBox(height: 6),
+        Text(subtitle, style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant)),
+        const SizedBox(height: 14),
+        ...children,
+      ],
+    );
+  }
+}
+
+class HufcListCard extends StatelessWidget {
+  const HufcListCard({super.key, required this.leading, required this.title, required this.subtitle, this.trailing});
+
+  final Widget leading;
+  final String title;
+  final String subtitle;
+  final Widget? trailing;
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      elevation: 0,
+      margin: const EdgeInsets.only(bottom: 10),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+      child: ListTile(
+        contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+        leading: leading,
+        title: Text(title, style: const TextStyle(fontWeight: FontWeight.w900)),
+        subtitle: Text(subtitle, maxLines: 2, overflow: TextOverflow.ellipsis),
+        trailing: trailing,
+      ),
+    );
+  }
+}
+
+class _Initials extends StatelessWidget {
+  const _Initials({required this.text});
+  final String text;
+
+  @override
+  Widget build(BuildContext context) {
+    final parts = text.trim().split(RegExp(r'\s+')).where((part) => part.isNotEmpty).toList();
+    final initials = parts.take(2).map((part) => part.substring(0, 1).toUpperCase()).join();
+    return CircleAvatar(
+      backgroundColor: const Color(0xFFE0F2E7),
+      foregroundColor: const Color(0xFF1F5C36),
+      child: Text(initials.isEmpty ? 'H' : initials, style: const TextStyle(fontWeight: FontWeight.w900)),
+    );
+  }
+}
+
+class _PhotoTile extends StatelessWidget {
+  const _PhotoTile({required this.photo});
+  final Map<String, dynamic> photo;
+
+  @override
+  Widget build(BuildContext context) {
+    final imageData = jsonString(photo['image_data']);
+    final title = jsonString(photo['title'], fallback: 'Zdjęcie');
+    Widget preview;
+    if (imageData.startsWith('data:image')) {
+      final comma = imageData.indexOf(',');
+      try {
+        preview = Image.memory(base64Decode(imageData.substring(comma + 1)), fit: BoxFit.cover);
+      } catch (_) {
+        preview = DecoratedBox(decoration: BoxDecoration(color: _colorFromString(jsonString(photo['color'], fallback: '#1F5C36'))));
+      }
+    } else {
+      preview = DecoratedBox(decoration: BoxDecoration(color: _colorFromString(jsonString(photo['color'], fallback: '#1F5C36'))));
+    }
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(18),
+      child: Stack(
+        fit: StackFit.expand,
+        children: [
+          preview,
+          const DecoratedBox(decoration: BoxDecoration(gradient: LinearGradient(begin: Alignment.topCenter, end: Alignment.bottomCenter, colors: [Colors.transparent, Colors.black54]))),
+          Positioned(left: 10, right: 10, bottom: 10, child: Text(title, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w900))),
+        ],
+      ),
+    );
+  }
+}
+
+
 class HufcHero extends StatelessWidget {
   const HufcHero({super.key, required this.name, required this.subtitle});
   final String name;
@@ -819,4 +1147,22 @@ String _formatSeconds(int seconds) {
   final minutes = (seconds ~/ 60).toString().padLeft(2, '0');
   final secs = (seconds % 60).toString().padLeft(2, '0');
   return '$minutes:$secs';
+}
+
+String _shortDate(String value) {
+  final parsed = DateTime.tryParse(value);
+  if (parsed == null) return value;
+  return '${parsed.day.toString().padLeft(2, '0')}.${parsed.month.toString().padLeft(2, '0')}.${parsed.year}';
+}
+
+double _attendanceRatio(Map<String, dynamic> session) {
+  final planned = jsonInt(session['planned_count']);
+  if (planned <= 0) return 0;
+  return (jsonInt(session['present_count']) / planned).clamp(0, 1).toDouble();
+}
+
+Color _colorFromString(String value) {
+  final normalized = value.replaceAll('#', '').trim();
+  final parsed = int.tryParse(normalized.length == 6 ? 'FF$normalized' : normalized, radix: 16);
+  return Color(parsed ?? 0xFF1F5C36);
 }
