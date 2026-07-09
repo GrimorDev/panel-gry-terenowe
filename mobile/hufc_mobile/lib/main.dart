@@ -3,6 +3,7 @@ import 'dart:convert';
 
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/material.dart';
+import 'package:image_picker/image_picker.dart';
 
 import 'src/core/api_client.dart';
 import 'src/core/local_store.dart';
@@ -164,6 +165,7 @@ class _HufcMobileAppState extends State<HufcMobileApp> {
               : ShellScreen(
                   session: _session!,
                   state: _state,
+                  apiBaseUrl: _apiBaseUrl,
                   online: _online,
                   syncing: _syncing,
                   queueCount: _queueCount,
@@ -429,6 +431,7 @@ class ShellScreen extends StatefulWidget {
     super.key,
     required this.session,
     required this.state,
+    required this.apiBaseUrl,
     required this.online,
     required this.syncing,
     required this.queueCount,
@@ -439,6 +442,7 @@ class ShellScreen extends StatefulWidget {
 
   final AuthSession session;
   final AppState? state;
+  final String apiBaseUrl;
   final bool online;
   final bool syncing;
   final int queueCount;
@@ -461,8 +465,8 @@ class _ShellScreenState extends State<ShellScreen> {
       _MobilePage('Podopieczni', Icons.person_outline, Icons.person, WardsPage(state: state)),
       _MobilePage('Grupy', Icons.groups_outlined, Icons.groups, GroupsPage(state: state)),
       _MobilePage('Zbiórki', Icons.calendar_month_outlined, Icons.calendar_month, MeetingsPage(state: state)),
-      _MobilePage('Galeria', Icons.photo_library_outlined, Icons.photo_library, MobileGalleryPage(state: state)),
-      _MobilePage('Wiadomości', Icons.chat_bubble_outline, Icons.chat_bubble, MessagesPage(state: state, user: widget.session.user)),
+      _MobilePage('Galeria', Icons.photo_library_outlined, Icons.photo_library, MobileGalleryPage(state: state, session: widget.session, apiBaseUrl: widget.apiBaseUrl, onMutate: widget.onMutate)),
+      _MobilePage('Wiadomości', Icons.chat_bubble_outline, Icons.chat_bubble, MessagesPage(state: state, session: widget.session, apiBaseUrl: widget.apiBaseUrl, onMutate: widget.onMutate)),
       _MobilePage('Gry', Icons.flag_outlined, Icons.flag, GamesPage(state: state, onMutate: widget.onMutate)),
       _MobilePage('Namioty', Icons.emoji_events_outlined, Icons.emoji_events, CompetitionPage(state: state, onMutate: widget.onMutate)),
       _MobilePage('Sync', Icons.cloud_sync_outlined, Icons.cloud_sync, SyncPage(online: widget.online, syncing: widget.syncing, queueCount: widget.queueCount, onSync: widget.onSync, onLogout: widget.onLogout)),
@@ -644,24 +648,93 @@ class MeetingsPage extends StatelessWidget {
   }
 }
 
-class MobileGalleryPage extends StatelessWidget {
-  const MobileGalleryPage({super.key, required this.state});
+class MobileGalleryPage extends StatefulWidget {
+  const MobileGalleryPage({super.key, required this.state, required this.session, required this.apiBaseUrl, required this.onMutate});
   final AppState? state;
+  final AuthSession session;
+  final String apiBaseUrl;
+  final Future<void> Function(String url, Map<String, dynamic> body, AppState optimistic) onMutate;
+
+  @override
+  State<MobileGalleryPage> createState() => _MobileGalleryPageState();
+}
+
+class _MobileGalleryPageState extends State<MobileGalleryPage> {
+  bool _uploading = false;
+
+  Future<void> _pick(ImageSource source) async {
+    final state = widget.state;
+    if (state == null || _uploading) return;
+    final sessions = jsonList(state.raw['sessions']);
+    if (sessions.isEmpty) {
+      _toast('Najpierw dodaj zbiórkę, żeby przypisać zdjęcie do galerii.');
+      return;
+    }
+    final picker = ImagePicker();
+    final file = await picker.pickImage(source: source, imageQuality: 72, maxWidth: 1600);
+    if (file == null) return;
+    setState(() => _uploading = true);
+    try {
+      final bytes = await file.readAsBytes();
+      final mime = file.mimeType ?? 'image/jpeg';
+      final title = file.name.replaceAll(RegExp(r'\.[^.]+$'), '').trim().isEmpty ? 'Zdjęcie' : file.name.replaceAll(RegExp(r'\.[^.]+$'), '');
+      final imageData = 'data:$mime;base64,${base64Encode(bytes)}';
+      final session = sessions.first;
+      final photo = {
+        'id': -DateTime.now().millisecondsSinceEpoch,
+        'session_id': jsonInt(session['id']),
+        'title': title,
+        'image_data': imageData,
+        'mime_type': mime,
+        'color': '#1F5C36',
+        'created_at': DateTime.now().toIso8601String(),
+        'session_title': jsonString(session['title'], fallback: 'Galeria'),
+        'session_date': jsonString(session['session_date']),
+        'session_location': jsonString(session['location']),
+      };
+      final raw = Map<String, dynamic>.from(state.raw);
+      raw['photos'] = [photo, ...jsonList(raw['photos'])];
+      await widget.onMutate('/api/photos', {
+        'session_id': jsonInt(session['id']),
+        'title': title,
+        'image_data': imageData,
+        'mime_type': mime,
+        'game_id': state.game.id,
+      }, state.copyWithRaw(raw));
+    } finally {
+      if (mounted) setState(() => _uploading = false);
+    }
+  }
+
+  void _toast(String text) {
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(text)));
+  }
 
   @override
   Widget build(BuildContext context) {
+    final state = widget.state;
     if (state == null) return const EmptyNotice(text: 'Brak galerii w telefonie.');
-    final photos = jsonList(state!.raw['photos']).where((photo) => jsonString(photo['image_data']).isNotEmpty || jsonString(photo['color']).isNotEmpty).toList();
+    final photos = jsonList(state.raw['photos']);
     return HufcPage(
       title: 'Galeria',
-      subtitle: 'Zdjęcia z zajęć zapisane lokalnie do podglądu.',
+      subtitle: 'Zdjęcia z zajęć. Możesz robić zdjęcia, wgrywać je i otwierać podgląd.',
+      actions: [
+        FilledButton.icon(onPressed: _uploading ? null : () => _pick(ImageSource.camera), icon: const Icon(Icons.photo_camera), label: const Text('Zrób')),
+        OutlinedButton.icon(onPressed: _uploading ? null : () => _pick(ImageSource.gallery), icon: const Icon(Icons.photo_library), label: const Text('Wgraj')),
+      ],
       children: [
+        if (_uploading) const Padding(padding: EdgeInsets.only(bottom: 12), child: LinearProgressIndicator()),
         GridView.builder(
           shrinkWrap: true,
           physics: const NeverScrollableScrollPhysics(),
           itemCount: photos.length,
           gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(crossAxisCount: 2, crossAxisSpacing: 12, mainAxisSpacing: 12),
-          itemBuilder: (context, index) => _PhotoTile(photo: photos[index]),
+          itemBuilder: (context, index) => _PhotoTile(
+            photo: photos[index],
+            token: widget.session.token,
+            apiBaseUrl: widget.apiBaseUrl,
+            onTap: () => showDialog(context: context, builder: (_) => _PhotoPreviewDialog(photo: photos[index], token: widget.session.token, apiBaseUrl: widget.apiBaseUrl)),
+          ),
         ),
         if (photos.isEmpty) const EmptyNotice(text: 'Nie ma jeszcze zdjęć w lokalnym cache.'),
       ],
@@ -669,27 +742,202 @@ class MobileGalleryPage extends StatelessWidget {
   }
 }
 
-class MessagesPage extends StatelessWidget {
-  const MessagesPage({super.key, required this.state, required this.user});
+class MessagesPage extends StatefulWidget {
+  const MessagesPage({super.key, required this.state, required this.session, required this.apiBaseUrl, required this.onMutate});
   final AppState? state;
-  final AppUser user;
+  final AuthSession session;
+  final String apiBaseUrl;
+  final Future<void> Function(String url, Map<String, dynamic> body, AppState optimistic) onMutate;
+
+  @override
+  State<MessagesPage> createState() => _MessagesPageState();
+}
+
+class _MessagesPageState extends State<MessagesPage> {
+  final _controller = TextEditingController();
+  _Conversation? _selected;
+  bool _sending = false;
+  bool _attaching = false;
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  Future<void> _send() async {
+    final state = widget.state;
+    final selected = _selected;
+    final text = _controller.text.trim();
+    if (state == null || selected == null || text.isEmpty || _sending) return;
+    _controller.clear();
+    setState(() => _sending = true);
+    try {
+      final message = {
+        'id': -DateTime.now().millisecondsSinceEpoch,
+        'sender_id': widget.session.user.id,
+        'sender_name': widget.session.user.name,
+        'target_type': selected.targetType,
+        'target_id': selected.targetId == 0 ? null : selected.targetId,
+        'body': text,
+        'created_at': DateTime.now().toIso8601String(),
+      };
+      final raw = Map<String, dynamic>.from(state.raw);
+      raw['messages'] = [message, ...jsonList(raw['messages'])];
+      await widget.onMutate('/api/messages', {
+        'target_type': selected.targetType,
+        'target_id': selected.targetId,
+        'body': text,
+        'game_id': state.game.id,
+      }, state.copyWithRaw(raw));
+    } finally {
+      if (mounted) setState(() => _sending = false);
+    }
+  }
+
+  Future<void> _attachImage() async {
+    final state = widget.state;
+    final selected = _selected;
+    if (state == null || selected == null || _sending || _attaching) return;
+    setState(() => _attaching = true);
+    try {
+      final picker = ImagePicker();
+      final file = await picker.pickImage(source: ImageSource.gallery, imageQuality: 72, maxWidth: 1600);
+      if (file == null) return;
+      final bytes = await file.readAsBytes();
+      final mime = file.mimeType ?? 'image/jpeg';
+      final data = 'data:$mime;base64,${base64Encode(bytes)}';
+      final name = file.name.isEmpty ? 'zdjecie.jpg' : file.name;
+      final message = {
+        'id': -DateTime.now().millisecondsSinceEpoch,
+        'sender_id': widget.session.user.id,
+        'sender_name': widget.session.user.name,
+        'target_type': selected.targetType,
+        'target_id': selected.targetId == 0 ? null : selected.targetId,
+        'body': '',
+        'attachment_name': name,
+        'attachment_mime': mime,
+        'attachment_data': data,
+        'created_at': DateTime.now().toIso8601String(),
+      };
+      final raw = Map<String, dynamic>.from(state.raw);
+      raw['messages'] = [message, ...jsonList(raw['messages'])];
+      await widget.onMutate('/api/messages', {
+        'target_type': selected.targetType,
+        'target_id': selected.targetId,
+        'body': '',
+        'attachment_name': name,
+        'attachment_mime': mime,
+        'attachment_data': data,
+        'game_id': state.game.id,
+      }, state.copyWithRaw(raw));
+    } finally {
+      if (mounted) setState(() => _attaching = false);
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
+    final state = widget.state;
     if (state == null) return const EmptyNotice(text: 'Brak wiadomości w telefonie.');
-    final messages = jsonList(state!.raw['messages']).reversed.take(8).toList();
-    return HufcPage(
-      title: 'Wiadomości',
-      subtitle: 'Ostatnie rozmowy zapisane offline. Pełny czat zostaje w PWA.',
+    final conversations = _buildConversations(state, widget.session.user);
+    final selected = _selected == null || !conversations.any((item) => item.key == _selected!.key)
+        ? (conversations.isEmpty ? null : conversations.first)
+        : conversations.firstWhere((item) => item.key == _selected!.key);
+
+    if (selected == null) {
+      return const EmptyNotice(text: 'Nie ma jeszcze rozmów.');
+    }
+
+    if (_selected == null) {
+      return HufcPage(
+        title: 'Wiadomości',
+        subtitle: 'Wybierz rozmowę. Wiadomości zapisują się lokalnie i zsynchronizują po odzyskaniu internetu.',
+        children: [
+          for (final conversation in conversations)
+            HufcListCard(
+              onTap: () => setState(() => _selected = conversation),
+              leading: _Initials(text: conversation.title),
+              title: conversation.title,
+              subtitle: conversation.lastText,
+              trailing: const Icon(Icons.chevron_right),
+            ),
+        ],
+      );
+    }
+
+    final messages = jsonList(state.raw['messages']).where((message) => selected.matches(message, widget.session.user.id)).toList().reversed.toList();
+    return Column(
       children: [
-        if (messages.isEmpty) const EmptyNotice(text: 'Nie ma jeszcze wiadomości w lokalnym cache.'),
-        for (final message in messages)
-          HufcListCard(
-            leading: _Initials(text: jsonString(message['sender_name'], fallback: 'W')),
-            title: jsonString(message['sender_name'], fallback: 'Wiadomość'),
-            subtitle: jsonString(message['body'], fallback: jsonString(message['attachment_name'], fallback: 'Załącznik')),
-            trailing: message['sender_id'] == user.id ? const Text('Ty') : null,
+        Material(
+          color: Theme.of(context).scaffoldBackgroundColor,
+          child: SafeArea(
+            bottom: false,
+            child: ListTile(
+              leading: IconButton(icon: const Icon(Icons.arrow_back), onPressed: () => setState(() => _selected = null)),
+              title: Text(selected.title, style: const TextStyle(fontWeight: FontWeight.w900)),
+              subtitle: Text(selected.subtitle),
+            ),
           ),
+        ),
+        Expanded(
+          child: messages.isEmpty
+              ? const Center(child: EmptyNotice(text: 'Nie ma jeszcze wiadomości w tej rozmowie.'))
+              : ListView.builder(
+                  padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
+                  itemCount: messages.length,
+                  itemBuilder: (context, index) {
+                    final message = messages[index];
+                    final mine = jsonInt(message['sender_id']) == widget.session.user.id;
+                    return Align(
+                      alignment: mine ? Alignment.centerRight : Alignment.centerLeft,
+                      child: Container(
+                        constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.78),
+                        margin: const EdgeInsets.only(bottom: 8),
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: mine ? const Color(0xFF1F5C36) : Colors.white,
+                          borderRadius: BorderRadius.circular(18),
+                        ),
+                        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                          Text(jsonString(message['sender_name'], fallback: mine ? 'Ty' : selected.title), style: TextStyle(fontSize: 12, color: mine ? Colors.white70 : Theme.of(context).colorScheme.onSurfaceVariant)),
+                          const SizedBox(height: 4),
+                          if (jsonString(message['body']).isNotEmpty)
+                            Text(jsonString(message['body']), style: TextStyle(color: mine ? Colors.white : null, fontWeight: FontWeight.w700)),
+                          _MessageAttachment(message: message, token: widget.session.token, apiBaseUrl: widget.apiBaseUrl, mine: mine),
+                        ]),
+                      ),
+                    );
+                  },
+                ),
+        ),
+        SafeArea(
+          top: false,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(12, 8, 12, 10),
+            child: Row(children: [
+              IconButton.filledTonal(
+                onPressed: _attaching ? null : _attachImage,
+                icon: _attaching ? const HufcLoader(size: 18) : const Icon(Icons.attach_file),
+              ),
+              const SizedBox(width: 6),
+              Expanded(
+                child: TextField(
+                  controller: _controller,
+                  minLines: 1,
+                  maxLines: 4,
+                  decoration: InputDecoration(hintText: 'Napisz do: ${selected.title}', filled: true, fillColor: Colors.white, border: OutlineInputBorder(borderRadius: BorderRadius.circular(22))),
+                ),
+              ),
+              const SizedBox(width: 8),
+              FilledButton(
+                onPressed: _sending ? null : _send,
+                style: FilledButton.styleFrom(shape: const CircleBorder(), padding: const EdgeInsets.all(14)),
+                child: _sending ? const HufcLoader(size: 20, color: Colors.white) : const Icon(Icons.arrow_forward),
+              ),
+            ]),
+          ),
+        ),
       ],
     );
   }
@@ -977,11 +1225,12 @@ class SyncPage extends StatelessWidget {
 
 
 class HufcPage extends StatelessWidget {
-  const HufcPage({super.key, required this.title, required this.subtitle, required this.children});
+  const HufcPage({super.key, required this.title, required this.subtitle, required this.children, this.actions = const []});
 
   final String title;
   final String subtitle;
   final List<Widget> children;
+  final List<Widget> actions;
 
   @override
   Widget build(BuildContext context) {
@@ -991,6 +1240,8 @@ class HufcPage extends StatelessWidget {
         Text(title, style: Theme.of(context).textTheme.headlineMedium?.copyWith(fontWeight: FontWeight.w900)),
         const SizedBox(height: 6),
         Text(subtitle, style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant)),
+        if (actions.isNotEmpty) const SizedBox(height: 14),
+        if (actions.isNotEmpty) Wrap(spacing: 10, runSpacing: 10, children: actions),
         const SizedBox(height: 14),
         ...children,
       ],
@@ -999,12 +1250,13 @@ class HufcPage extends StatelessWidget {
 }
 
 class HufcListCard extends StatelessWidget {
-  const HufcListCard({super.key, required this.leading, required this.title, required this.subtitle, this.trailing});
+  const HufcListCard({super.key, required this.leading, required this.title, required this.subtitle, this.trailing, this.onTap});
 
   final Widget leading;
   final String title;
   final String subtitle;
   final Widget? trailing;
+  final VoidCallback? onTap;
 
   @override
   Widget build(BuildContext context) {
@@ -1013,6 +1265,7 @@ class HufcListCard extends StatelessWidget {
       margin: const EdgeInsets.only(bottom: 10),
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
       child: ListTile(
+        onTap: onTap,
         contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
         leading: leading,
         title: Text(title, style: const TextStyle(fontWeight: FontWeight.w900)),
@@ -1039,35 +1292,314 @@ class _Initials extends StatelessWidget {
   }
 }
 
+class _Conversation {
+  const _Conversation({
+    required this.targetType,
+    required this.targetId,
+    required this.title,
+    required this.subtitle,
+    required this.lastText,
+    required this.lastAt,
+  });
+
+  final String targetType;
+  final int targetId;
+  final String title;
+  final String subtitle;
+  final String lastText;
+  final DateTime lastAt;
+
+  String get key => '$targetType:$targetId';
+
+  _Conversation copyWith({String? lastText, DateTime? lastAt}) => _Conversation(
+        targetType: targetType,
+        targetId: targetId,
+        title: title,
+        subtitle: subtitle,
+        lastText: lastText ?? this.lastText,
+        lastAt: lastAt ?? this.lastAt,
+      );
+
+  bool matches(Map<String, dynamic> message, int userId) {
+    final type = jsonString(message['target_type']);
+    final target = jsonInt(message['target_id']);
+    final sender = jsonInt(message['sender_id']);
+    if (targetType == 'user') {
+      return type == 'user' && ((target == userId && sender == targetId) || (target == targetId && sender == userId));
+    }
+    return type == targetType && target == targetId;
+  }
+}
+
+List<_Conversation> _buildConversations(AppState state, AppUser user) {
+  final fallbackAt = DateTime.fromMillisecondsSinceEpoch(0);
+  final conversations = <String, _Conversation>{};
+
+  void upsert(_Conversation conversation) {
+    conversations[conversation.key] = conversation;
+  }
+
+  upsert(_Conversation(targetType: 'hufiec', targetId: 0, title: 'Cały hufiec', subtitle: 'wszyscy wychowawcy i administrator', lastText: 'Brak wiadomości', lastAt: fallbackAt));
+  upsert(_Conversation(targetType: 'staff', targetId: 0, title: 'Wychowawcy', subtitle: 'rozmowa kadry', lastText: 'Brak wiadomości', lastAt: fallbackAt));
+  upsert(_Conversation(targetType: 'parents', targetId: 0, title: 'Rodzice', subtitle: 'komunikaty i pytania rodziców', lastText: 'Brak wiadomości', lastAt: fallbackAt));
+
+  for (final cohort in jsonList(state.raw['cohorts'])) {
+    final id = jsonInt(cohort['id']);
+    if (id > 0) {
+      upsert(_Conversation(
+        targetType: 'cohort',
+        targetId: id,
+        title: jsonString(cohort['name'], fallback: 'Grupa'),
+        subtitle: jsonString(cohort['caretaker_name'], fallback: 'grupa'),
+        lastText: 'Brak wiadomości',
+        lastAt: fallbackAt,
+      ));
+    }
+  }
+
+  for (final team in state.teams) {
+    upsert(_Conversation(targetType: 'team', targetId: team.id, title: team.name, subtitle: 'drużyna gry terenowej', lastText: 'Brak wiadomości', lastAt: fallbackAt));
+  }
+
+  for (final caregiver in jsonList(state.raw['caregivers'])) {
+    final id = jsonInt(caregiver['id']);
+    if (id > 0 && id != user.id) {
+      upsert(_Conversation(
+        targetType: 'user',
+        targetId: id,
+        title: jsonString(caregiver['name'], fallback: 'Użytkownik'),
+        subtitle: jsonString(caregiver['role'], fallback: 'konto'),
+        lastText: 'Brak wiadomości',
+        lastAt: fallbackAt,
+      ));
+    }
+  }
+
+  for (final message in jsonList(state.raw['messages'])) {
+    final key = _conversationKeyForMessage(message, user.id);
+    if (key == null) continue;
+    final existing = conversations[key] ?? _conversationForUnknown(message, user);
+    if (existing == null) continue;
+    final createdAt = DateTime.tryParse(jsonString(message['created_at'])) ?? fallbackAt;
+    final senderId = jsonInt(message['sender_id']);
+    final body = jsonString(message['body'], fallback: jsonString(message['attachment_name'], fallback: 'Załącznik'));
+    final author = senderId == user.id ? 'Ty' : jsonString(message['sender_name'], fallback: existing.title);
+    if (createdAt.isAfter(existing.lastAt) || existing.lastAt == fallbackAt) {
+      conversations[key] = existing.copyWith(lastText: '$author: $body', lastAt: createdAt);
+    }
+  }
+
+  final sorted = conversations.values.toList();
+  sorted.sort((a, b) => b.lastAt.compareTo(a.lastAt));
+  return sorted;
+}
+
+String? _conversationKeyForMessage(Map<String, dynamic> message, int userId) {
+  final type = jsonString(message['target_type']);
+  final target = jsonInt(message['target_id']);
+  final sender = jsonInt(message['sender_id']);
+  if (type == 'user') {
+    final other = target == userId ? sender : target;
+    if (other <= 0) return null;
+    return 'user:$other';
+  }
+  return '$type:$target';
+}
+
+_Conversation? _conversationForUnknown(Map<String, dynamic> message, AppUser user) {
+  final key = _conversationKeyForMessage(message, user.id);
+  if (key == null) return null;
+  final parts = key.split(':');
+  final type = parts.first;
+  final targetId = int.tryParse(parts.last) ?? 0;
+  final title = type == 'user' ? jsonString(message['sender_name'], fallback: 'Rozmowa') : 'Rozmowa';
+  return _Conversation(targetType: type, targetId: targetId, title: title, subtitle: type, lastText: 'Brak wiadomości', lastAt: DateTime.fromMillisecondsSinceEpoch(0));
+}
+
 class _PhotoTile extends StatelessWidget {
-  const _PhotoTile({required this.photo});
+  const _PhotoTile({required this.photo, required this.token, required this.apiBaseUrl, this.onTap});
   final Map<String, dynamic> photo;
+  final String token;
+  final String apiBaseUrl;
+  final VoidCallback? onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final title = jsonString(photo['title'], fallback: 'Zdjęcie');
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(18),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(18),
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
+            _PhotoImage(photo: photo, token: token, apiBaseUrl: apiBaseUrl),
+            const DecoratedBox(decoration: BoxDecoration(gradient: LinearGradient(begin: Alignment.topCenter, end: Alignment.bottomCenter, colors: [Colors.transparent, Colors.black54]))),
+            Positioned(left: 10, right: 10, bottom: 10, child: Text(title, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w900))),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _PhotoImage extends StatelessWidget {
+  const _PhotoImage({required this.photo, required this.token, required this.apiBaseUrl, this.fit = BoxFit.cover});
+
+  final Map<String, dynamic> photo;
+  final String token;
+  final String apiBaseUrl;
+  final BoxFit fit;
 
   @override
   Widget build(BuildContext context) {
     final imageData = jsonString(photo['image_data']);
-    final title = jsonString(photo['title'], fallback: 'Zdjęcie');
-    Widget preview;
+    final fallback = DecoratedBox(decoration: BoxDecoration(color: _colorFromString(jsonString(photo['color'], fallback: '#1F5C36'))));
     if (imageData.startsWith('data:image')) {
       final comma = imageData.indexOf(',');
       try {
-        preview = Image.memory(base64Decode(imageData.substring(comma + 1)), fit: BoxFit.cover);
+        return Image.memory(base64Decode(imageData.substring(comma + 1)), fit: fit);
       } catch (_) {
-        preview = DecoratedBox(decoration: BoxDecoration(color: _colorFromString(jsonString(photo['color'], fallback: '#1F5C36'))));
+        return fallback;
       }
-    } else {
-      preview = DecoratedBox(decoration: BoxDecoration(color: _colorFromString(jsonString(photo['color'], fallback: '#1F5C36'))));
     }
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(18),
-      child: Stack(
-        fit: StackFit.expand,
+    final id = jsonInt(photo['id']);
+    if (id > 0) {
+      final base = apiBaseUrl.replaceAll(RegExp(r'/$'), '');
+      return Image.network(
+        '$base/api/mobile/photos/$id/image',
+        headers: {'Authorization': 'Bearer $token', 'X-Hufc-Mobile': '1'},
+        fit: fit,
+        loadingBuilder: (context, child, progress) => progress == null ? child : const Center(child: HufcLoader(size: 24)),
+        errorBuilder: (context, error, stackTrace) => fallback,
+      );
+    }
+    return fallback;
+  }
+}
+
+class _PhotoPreviewDialog extends StatelessWidget {
+  const _PhotoPreviewDialog({required this.photo, required this.token, required this.apiBaseUrl});
+
+  final Map<String, dynamic> photo;
+  final String token;
+  final String apiBaseUrl;
+
+  @override
+  Widget build(BuildContext context) {
+    final title = jsonString(photo['title'], fallback: 'Zdjęcie');
+    final date = _shortDate(jsonString(photo['created_at'], fallback: jsonString(photo['session_date'])));
+    final location = jsonString(photo['session_location']);
+    return Dialog(
+      insetPadding: const EdgeInsets.all(14),
+      clipBehavior: Clip.antiAlias,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(22)),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          preview,
-          const DecoratedBox(decoration: BoxDecoration(gradient: LinearGradient(begin: Alignment.topCenter, end: Alignment.bottomCenter, colors: [Colors.transparent, Colors.black54]))),
-          Positioned(left: 10, right: 10, bottom: 10, child: Text(title, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w900))),
+          AspectRatio(aspectRatio: 1, child: InteractiveViewer(minScale: 1, maxScale: 4, child: _PhotoImage(photo: photo, token: token, apiBaseUrl: apiBaseUrl, fit: BoxFit.contain))),
+          Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text(title, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w900)),
+              if (date.isNotEmpty) Text(date),
+              if (location.isNotEmpty) Text(location),
+              const SizedBox(height: 12),
+              Align(alignment: Alignment.centerRight, child: FilledButton(onPressed: () => Navigator.of(context).pop(), child: const Text('Zamknij'))),
+            ]),
+          ),
         ],
       ),
+    );
+  }
+}
+
+class _MessageAttachment extends StatelessWidget {
+  const _MessageAttachment({required this.message, required this.token, required this.apiBaseUrl, required this.mine});
+
+  final Map<String, dynamic> message;
+  final String token;
+  final String apiBaseUrl;
+  final bool mine;
+
+  @override
+  Widget build(BuildContext context) {
+    final photoId = jsonInt(message['photo_id']);
+    final attachmentName = jsonString(message['attachment_name']);
+    final attachmentMime = jsonString(message['attachment_mime']);
+    final attachmentData = jsonString(message['attachment_data']);
+    final hasPhoto = photoId > 0;
+    final hasAttachment = attachmentName.isNotEmpty || attachmentData.isNotEmpty;
+    if (!hasPhoto && !hasAttachment) return const SizedBox.shrink();
+
+    final title = hasPhoto ? jsonString(message['photo_title'], fallback: 'Zdjęcie') : jsonString(message['attachment_name'], fallback: 'Załącznik');
+    final mime = hasPhoto ? jsonString(message['photo_mime_type'], fallback: 'image/jpeg') : attachmentMime;
+    final imageLike = hasPhoto || mime.startsWith('image/') || attachmentData.startsWith('data:image');
+    final top = jsonString(message['body']).isEmpty ? 0.0 : 8.0;
+
+    Widget preview;
+    if (hasPhoto) {
+      preview = _PhotoImage(
+        photo: {'id': photoId, 'title': title, 'color': '#1F5C36'},
+        token: token,
+        apiBaseUrl: apiBaseUrl,
+      );
+    } else if (attachmentData.startsWith('data:image')) {
+      final comma = attachmentData.indexOf(',');
+      try {
+        preview = Image.memory(base64Decode(attachmentData.substring(comma + 1)), fit: BoxFit.cover);
+      } catch (_) {
+        preview = const Icon(Icons.broken_image_outlined);
+      }
+    } else if (imageLike && jsonInt(message['id']) > 0) {
+      final base = apiBaseUrl.replaceAll(RegExp(r'/$'), '');
+      preview = Image.network(
+        '$base/api/mobile/messages/${jsonInt(message['id'])}/attachment',
+        headers: {'Authorization': 'Bearer $token', 'X-Hufc-Mobile': '1'},
+        fit: BoxFit.cover,
+        loadingBuilder: (context, child, progress) => progress == null ? child : const Center(child: HufcLoader(size: 20)),
+        errorBuilder: (context, error, stackTrace) => const Icon(Icons.broken_image_outlined),
+      );
+    } else {
+      preview = const Icon(Icons.attach_file);
+    }
+
+    final content = Container(
+      margin: EdgeInsets.only(top: top),
+      padding: const EdgeInsets.all(8),
+      decoration: BoxDecoration(
+        color: mine ? Colors.white.withValues(alpha: 0.12) : const Color(0xFFF4F1EA),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: mine ? Colors.white24 : const Color(0xFFE5DED2)),
+      ),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        if (imageLike)
+          ClipRRect(borderRadius: BorderRadius.circular(10), child: AspectRatio(aspectRatio: 1.35, child: preview))
+        else
+          SizedBox(height: 44, child: Center(child: preview)),
+        const SizedBox(height: 6),
+        Text(title, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(color: mine ? Colors.white : null, fontWeight: FontWeight.w900)),
+        if (mime.isNotEmpty) Text(mime, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 12, color: mine ? Colors.white70 : Theme.of(context).colorScheme.onSurfaceVariant)),
+      ]),
+    );
+
+    if (!imageLike) return content;
+    return InkWell(
+      onTap: () {
+        showDialog(
+          context: context,
+          builder: (_) => Dialog(
+            insetPadding: const EdgeInsets.all(14),
+            clipBehavior: Clip.antiAlias,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(22)),
+            child: AspectRatio(aspectRatio: 1, child: InteractiveViewer(minScale: 1, maxScale: 4, child: preview)),
+          ),
+        );
+      },
+      borderRadius: BorderRadius.circular(14),
+      child: content,
     );
   }
 }

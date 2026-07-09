@@ -28,18 +28,24 @@ jobs:
       - name: Create native project files
         run: flutter create --platforms=android .
 
-      - name: Ensure Android internet permission
+      - name: Ensure Android permissions
         run: |
           python - <<'PY'
           from pathlib import Path
 
           manifest = Path("android/app/src/main/AndroidManifest.xml")
           text = manifest.read_text(encoding="utf-8")
-          permission = '<uses-permission android:name="android.permission.INTERNET"/>'
-          if permission not in text:
+          permissions = [
+              '<uses-permission android:name="android.permission.INTERNET"/>',
+              '<uses-permission android:name="android.permission.CAMERA"/>',
+              '<uses-permission android:name="android.permission.READ_MEDIA_IMAGES"/>',
+              '<uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32"/>',
+          ]
+          missing = [permission for permission in permissions if permission not in text]
+          if missing:
               text = text.replace(
                   '<manifest xmlns:android="http://schemas.android.com/apk/res/android">',
-                  '<manifest xmlns:android="http://schemas.android.com/apk/res/android">\\n    ' + permission,
+                  '<manifest xmlns:android="http://schemas.android.com/apk/res/android">\\n    ' + '\\n    '.join(missing),
                   1,
               )
               manifest.write_text(text, encoding="utf-8")

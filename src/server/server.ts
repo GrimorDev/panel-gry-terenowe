@@ -1204,6 +1204,30 @@ app.delete("/api/photos/:id", async (req, res) => {
   res.json(await stateFor(req, req.query.gameId ? Number(req.query.gameId) : undefined));
 });
 
+app.get("/api/mobile/photos/:id/image", async (req, res) => {
+  const result = await pool.query("SELECT image_data, mime_type FROM session_photos WHERE id=$1", [Number(req.params.id)]);
+  const imageData = String(result.rows[0]?.image_data || "");
+  if (!imageData) return res.status(404).json({ ok: false, error: "Zdjęcie nie ma pliku obrazu" });
+
+  const match = imageData.match(/^data:([^;]+);base64,(.*)$/);
+  if (!match) return res.status(404).json({ ok: false, error: "Nieprawidłowy format zdjęcia" });
+
+  const mimeType = String(result.rows[0]?.mime_type || match[1] || "image/jpeg");
+  res.type(mimeType).send(Buffer.from(match[2], "base64"));
+});
+
+app.get("/api/mobile/messages/:id/attachment", async (req, res) => {
+  const result = await pool.query("SELECT attachment_data, attachment_mime FROM messages WHERE id=$1", [Number(req.params.id)]);
+  const attachmentData = String(result.rows[0]?.attachment_data || "");
+  if (!attachmentData) return res.status(404).json({ ok: false, error: "Wiadomość nie ma załącznika" });
+
+  const match = attachmentData.match(/^data:([^;]+);base64,(.*)$/);
+  if (!match) return res.status(404).json({ ok: false, error: "Nieprawidłowy format załącznika" });
+
+  const mimeType = String(result.rows[0]?.attachment_mime || match[1] || "application/octet-stream");
+  res.type(mimeType).send(Buffer.from(match[2], "base64"));
+});
+
 app.post("/api/photos/bulk-delete", async (req, res) => {
   const ids = Array.isArray(req.body.ids) ? req.body.ids.map((id: unknown) => Number(id)).filter(Boolean) : [];
   if (ids.length) {

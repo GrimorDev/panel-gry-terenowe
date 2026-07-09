@@ -28,6 +28,20 @@ jobs:
       - name: Create native project files
         run: flutter create --platforms=ios .
 
+      - name: Ensure iOS photo permissions
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import plistlib
+
+          plist = Path("ios/Runner/Info.plist")
+          data = plistlib.loads(plist.read_bytes())
+          data["NSCameraUsageDescription"] = "Aplikacja Mój Hufiec używa aparatu do dodawania zdjęć do galerii."
+          data["NSPhotoLibraryUsageDescription"] = "Aplikacja Mój Hufiec używa galerii do wybierania zdjęć."
+          data["NSPhotoLibraryAddUsageDescription"] = "Aplikacja Mój Hufiec zapisuje zdjęcia dodane w galerii."
+          plist.write_bytes(plistlib.dumps(data))
+          PY
+
       - name: Install dependencies
         run: flutter pub get
 
