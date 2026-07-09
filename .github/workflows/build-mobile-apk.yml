@@ -1,0 +1,44 @@
+name: Build Android APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      api_url:
+        description: Backend URL, for example https://vipile.com
+        required: true
+        default: https://vipile.com
+
+jobs:
+  android:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: mobile/hufc_mobile
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Create native project files
+        run: flutter create --platforms=android .
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Analyze
+        run: flutter analyze
+
+      - name: Build release APK
+        run: flutter build apk --release --dart-define=API_URL=${{ inputs.api_url }}
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: moj-hufiec-android-apk
+          path: mobile/hufc_mobile/build/app/outputs/flutter-apk/app-release.apk

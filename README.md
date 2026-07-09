@@ -1,58 +1,74 @@
-# Panel Wychowawcy - Gry Terenowe
+# Moj Hufiec
 
-Deployowalna aplikacja webowa dla wychowawcow i instruktorow do prowadzenia gier terenowych bez papierowych kart punktacji.
+System dla hufca: panel webowy na serwerze oraz natywna aplikacja mobilna Flutter offline-first.
 
-Stack: Node.js, TypeScript, React, PostgreSQL.
+## Co deployujesz w Portainerze
 
-## Start lokalny
+Portainer uruchamia backend, panel webowy, PostgreSQL i Redis z pliku `docker-compose.yml`.
 
-```bash
-docker compose up -d --build
-```
-
-Panel: http://localhost:8080
-
-## Portainer
-
-1. Wrzuc repozytorium na GitHub.
-2. W Portainerze wybierz **Stacks -> Add stack -> Repository**.
-3. Wskaz repozytorium i plik `docker-compose.yml`.
-4. Ustaw opcjonalnie zmienne:
-   - `APP_PORT=8080`
+1. Wejdz w Portainer.
+2. Wybierz **Stacks -> Add stack -> Repository**.
+3. Wskaz repozytorium:
+   `https://github.com/GrimorDev/panel-gry-terenowe`
+4. Compose path:
+   `docker-compose.yml`
+5. Ustaw zmienne:
    - `APP_URL=https://twoja-domena.pl`
-   - `PROXY_NETWORK=proxy` lub nazwa sieci Dockera, w ktorej jest Nginx Proxy Manager
+   - `PROXY_NETWORK=proxy`
    - `SESSION_SECRET=dlugi-losowy-sekret`
-   - `ADMIN_EMAIL=admin@twoja-domena.pl`
+   - `ADMIN_EMAIL=grimordev@gmail.com`
    - `ADMIN_PASSWORD=ustaw-silne-haslo`
-5. Deploy.
+6. Kliknij **Deploy the stack**.
 
-## Nginx Proxy Manager
-
-Po deployu ustaw proxy host na:
+W Nginx Proxy Manager ustaw:
 
 - Scheme: `http`
 - Forward Hostname/IP: `hufc-app`
 - Forward Port: `80`
 
-Jesli masz inna siec proxy niz `proxy`, ustaw w Portainerze zmienna `PROXY_NETWORK` na dokladna nazwe tej sieci. Nazwe znajdziesz w Portainerze w **Networks** albo przy dzialajacym kontenerze Nginx Proxy Manager.
+## Aplikacja na telefon
 
-## Co dziala
+Flutter nie jest uruchamiany jako stack w Portainerze. Z repo buduje sie plik APK dla Androida lub IPA dla iOS.
 
-- logowanie i sesja w ciasteczku,
-- automatyczna migracja tabel w PostgreSQL,
-- tworzenie gry z szablonu,
-- timer start/pauza/reset i zmiana czasu gry,
-- dodawanie druzyn ze zdjeciem,
-- dodawanie stacji z realnymi wspolrzednymi,
-- mapa OpenStreetMap/Leaflet,
-- QR dla kazdej stacji oraz skanowanie kamera,
-- zapisywanie oceny stacji w PostgreSQL,
-- ranking live, statusy, historia i podstawowe odznaki,
-- panel admina do dopisywania stacji i gier.
+### APK z GitHub Actions
 
-## Stack
+1. Wejdz w GitHub repo.
+2. Otworz **Actions**.
+3. Wybierz **Build Android APK**.
+4. Kliknij **Run workflow**.
+5. Wpisz `api_url`, np. `https://vipile.com`.
+6. Po zakonczeniu pobierz artifact `moj-hufiec-android-apk`.
 
-- PHP 8.3 + Apache
-- PostgreSQL 16
-- Vanilla JS
-- Leaflet + OpenStreetMap
+### Lokalnie z Flutter SDK
+
+```bash
+cd mobile/hufc_mobile
+flutter create --platforms=android,ios .
+flutter pub get
+flutter run --dart-define=API_URL=https://twoja-domena.pl
+```
+
+Build Android:
+
+```bash
+flutter build apk --release --dart-define=API_URL=https://twoja-domena.pl
+```
+
+Build iOS wymaga macOS + Xcode:
+
+```bash
+flutter build ipa --release --dart-define=API_URL=https://twoja-domena.pl
+```
+
+## Offline-first
+
+Aplikacja mobilna trzyma dane lokalnie w SQLite. Timer, punkty gier i punkty wspolzawodnictwa dzialaja od razu lokalnie. Gdy nie ma internetu, zmiany trafiaja do kolejki. Po odzyskaniu internetu aplikacja synchronizuje kolejke z backendem.
+
+## Stack serwera
+
+- Node.js
+- TypeScript
+- React
+- PostgreSQL
+- Redis
+- Docker / Portainer
