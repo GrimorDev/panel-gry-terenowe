@@ -254,7 +254,7 @@ class _LoginScreenState extends State<LoginScreen> {
                     colors: [
                       const Color(0xFFF7F3EC),
                       const Color(0xFFF7F3EC),
-                      theme.colorScheme.primary.withOpacity(0.08),
+                      theme.colorScheme.primary.withValues(alpha: 0.08),
                     ],
                   ),
                 ),
@@ -268,7 +268,7 @@ class _LoginScreenState extends State<LoginScreen> {
                   constraints: const BoxConstraints(maxWidth: 420),
                   child: Card(
                     elevation: 0,
-                    color: Colors.white.withOpacity(0.96),
+                    color: Colors.white.withValues(alpha: 0.96),
                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(28)),
                     child: Padding(
                       padding: const EdgeInsets.all(24),
@@ -287,7 +287,7 @@ class _LoginScreenState extends State<LoginScreen> {
                                   borderRadius: BorderRadius.circular(14),
                                   boxShadow: [
                                     BoxShadow(
-                                      color: theme.colorScheme.primary.withOpacity(0.25),
+                                      color: theme.colorScheme.primary.withValues(alpha: 0.25),
                                       blurRadius: 18,
                                       offset: const Offset(0, 8),
                                     ),
