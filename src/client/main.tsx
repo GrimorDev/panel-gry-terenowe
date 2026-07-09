@@ -187,6 +187,18 @@ function secondsLabel(seconds: number) {
   return `${String(Math.floor(safe / 60)).padStart(2, "0")}:${String(safe % 60).padStart(2, "0")}`;
 }
 
+function applyTimerCommandLocally(state: AppState, command: "start" | "pause" | "reset") {
+  const remaining = command === "reset" ? state.game.duration_minutes * 60 : state.game.remaining_seconds;
+  return {
+    ...state,
+    game: {
+      ...state.game,
+      timer_running: command === "start",
+      remaining_seconds: Math.max(0, remaining)
+    }
+  };
+}
+
 function initials(name: string) {
   return name.split(" ").filter(Boolean).map((part) => part[0]).join("").slice(0, 2).toUpperCase();
 }
@@ -877,27 +889,38 @@ function App() {
 
   async function timerCommand(command: "start" | "pause" | "reset") {
     if (!state) return;
-    const previousGame = state.game;
-    setState((current) => {
-      if (!current) return current;
-      const remaining = command === "reset" ? current.game.duration_minutes * 60 : current.game.remaining_seconds;
-      return {
-        ...current,
-        game: {
-          ...current.game,
-          timer_running: command === "start",
-          remaining_seconds: Math.max(0, remaining)
-        }
-      };
-    });
+    const previousState = state;
+    const nextLocalState = applyTimerCommandLocally(state, command);
+    const request = {
+      method: "POST",
+      body: JSON.stringify({ game_id: state.game.id, command })
+    };
+    setState(nextLocalState);
+    cacheState(nextLocalState);
+
+    if (!navigator.onLine) {
+      queueOfflineRequest("/api/timer", request);
+      flash("Timer zapisany offline. Zsynchronizuje sie po powrocie internetu.");
+      return;
+    }
     try {
-      const next = await api<AppState>("/api/timer", {
-        method: "POST",
-        body: JSON.stringify({ game_id: previousGame.id, command })
+      const response = await fetch("/api/timer", {
+        headers: { "Content-Type": "application/json" },
+        ...request
       });
+      const next = await response.json();
+      if (!response.ok || next.ok === false) throw new Error(next.error || "Blad serwera");
+      cacheState(next);
       setState((current) => current && current.game.id === next.game.id ? next : current);
     } catch (error) {
-      setState((current) => current ? { ...current, game: previousGame } : current);
+      if (!navigator.onLine || error instanceof TypeError) {
+        queueOfflineRequest("/api/timer", request);
+        cacheState(nextLocalState);
+        flash("Timer zapisany offline. Zsynchronizuje sie po powrocie internetu.");
+        return;
+      }
+      setState(previousState);
+      cacheState(previousState);
       flash(error instanceof Error ? error.message : "Nie udało się zaktualizować timera");
     }
   }
@@ -2287,9 +2310,25 @@ function TvDialog({ state, ranking, onClose }: { state: AppState; ranking: Team[
   return <div className="modal"><div className="tv"><Button onClick={onClose}>Zamknij</Button><div className="tv-timer">{secondsLabel(state.game.remaining_seconds)}</div><Ranking ranking={ranking} /></div></div>;
 }
 
+function collectAppAssetUrls() {
+  const urls = new Set(["/", "/index.html", "/manifest.webmanifest", "/icon-192.png", "/icon-512.png"]);
+  document.querySelectorAll<HTMLScriptElement>("script[src]").forEach((script) => urls.add(new URL(script.src, window.location.origin).pathname));
+  document.querySelectorAll<HTMLLinkElement>('link[rel="stylesheet"][href], link[rel="modulepreload"][href]').forEach((link) => urls.add(new URL(link.href, window.location.origin).pathname));
+  return [...urls];
+}
+
 if ("serviceWorker" in navigator) {
   window.addEventListener("load", () => {
-    navigator.serviceWorker.register("/sw.js").catch(() => undefined);
+    navigator.serviceWorker.register("/sw.js").then((registration) => {
+      const cacheCurrentBuild = () => {
+        const worker = registration.active || registration.waiting || registration.installing || navigator.serviceWorker.controller;
+        worker?.postMessage({ type: "CACHE_URLS", urls: collectAppAssetUrls() });
+      };
+
+      registration.waiting?.postMessage({ type: "SKIP_WAITING" });
+      cacheCurrentBuild();
+      navigator.serviceWorker.ready.then(cacheCurrentBuild).catch(() => undefined);
+    }).catch(() => undefined);
   });
 }
 
