@@ -355,6 +355,26 @@ function LoadingDots({ label = "Przetwarzanie..." }: { label?: string }) {
   </div>;
 }
 
+class AppErrorBoundary extends React.Component<{ children: React.ReactNode }, { hasError: boolean }> {
+  state = { hasError: false };
+
+  static getDerivedStateFromError() {
+    return { hasError: true };
+  }
+
+  render() {
+    if (!this.state.hasError) return this.props.children;
+    return <main className="offline-crash">
+      <div>
+        <span className="brand-mark">H</span>
+        <h1>Nie udalo sie uruchomic aplikacji</h1>
+        <p>Jesli jestes offline, otworz aplikacje raz z internetem po aktualizacji, a potem bedzie startowac z pamieci telefonu.</p>
+        <button type="button" onClick={() => window.location.reload()}>Sprobuj ponownie</button>
+      </div>
+    </main>;
+  }
+}
+
 function InstallPromptDialog({ platform, canPrompt, onInstall, onClose }: { platform: "ios" | "android" | "mobile"; canPrompt: boolean; onInstall: () => void; onClose: () => void }) {
   const isIos = platform === "ios";
   return <div className="modal install-modal" onClick={onClose}>
@@ -2332,6 +2352,6 @@ if ("serviceWorker" in navigator) {
   });
 }
 
-createRoot(document.getElementById("root")!).render(<App />);
+createRoot(document.getElementById("root")!).render(<AppErrorBoundary><App /></AppErrorBoundary>);
 
 

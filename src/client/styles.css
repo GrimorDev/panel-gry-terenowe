@@ -764,8 +764,13 @@ body:has(.app-shell.theme-night) { background: radial-gradient(circle at 16% 0%,
 .tv { width: min(980px, calc(100vw - 28px)); min-height: 70vh; padding: 28px; border-radius: var(--radius-lg); background: #0f1714; color: #fff; box-shadow: var(--shadow-lg); }
 .tv .ranking li { border-color: rgba(255,255,255,.16); }
 .tv-timer { text-align: center; color: var(--color-accent); font-size: clamp(72px,12vw,144px); font-weight: 800; }
-.toast { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); padding: 12px 16px; border-radius: 999px; background: var(--gray-800); color: #fff; box-shadow: var(--shadow-lg); z-index: 1200; }
+.toast { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); padding: 12px 16px; border-radius: 999px; background: #13231A; color: #fff; box-shadow: var(--shadow-lg); z-index: 1200; border: 1px solid rgba(255,255,255,.14); font-weight: 800; }
 .loading { min-height: 100vh; display: grid; place-items: center; }
+.offline-crash { min-height: 100vh; display: grid; place-items: center; padding: 24px; background: var(--surface-page); color: var(--text-primary); }
+.offline-crash > div { width: min(420px, 100%); display: grid; gap: 14px; padding: 28px; border: 1px solid var(--border-default); border-radius: var(--radius-lg); background: var(--surface-card); box-shadow: var(--shadow-lg); }
+.offline-crash h1 { font-size: 26px; }
+.offline-crash p { color: var(--text-muted); }
+.offline-crash button { background: var(--color-brand); color: #fff; box-shadow: var(--shadow-cta); }
 .busy-overlay { position: fixed; inset: 0; z-index: 2200; display: grid; place-items: center; background: rgba(250,247,241,.68); backdrop-filter: blur(4px); }
 .offline-status { position: fixed; left: calc(var(--sidebar-width) + 18px); bottom: 18px; z-index: 1250; display: grid; gap: 2px; max-width: min(420px, calc(100vw - var(--sidebar-width) - 36px)); padding: 12px 16px; border: 1px solid rgba(31, 77, 46, .18); border-radius: var(--radius-md); background: rgba(255, 255, 255, .94); box-shadow: var(--shadow-card); color: var(--text-primary); backdrop-filter: blur(10px); }
 .offline-status strong { font-size: 14px; }

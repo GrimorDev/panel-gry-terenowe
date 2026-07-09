@@ -1,4 +1,4 @@
-const CACHE_NAME = "hufc-app-v6";
+const CACHE_NAME = "hufc-app-v7";
 const APP_SHELL = [
   "/",
   "/index.html",
@@ -23,8 +23,32 @@ async function cacheUrls(urls) {
   );
 }
 
+async function cacheAppShell() {
+  const cache = await caches.open(CACHE_NAME);
+  await cacheUrls(APP_SHELL);
+
+  try {
+    const response = await fetch("/index.html", { cache: "reload" });
+    if (!response || !response.ok) return;
+
+    const copy = response.clone();
+    const html = await response.text();
+    await cache.put("/", copy.clone());
+    await cache.put("/index.html", copy);
+
+    const assetUrls = [...html.matchAll(/(?:src|href)="([^"]+)"/g)]
+      .map((match) => match[1])
+      .filter((value) => value && (value.startsWith("/assets/") || value.startsWith("assets/")))
+      .map((value) => value.startsWith("/") ? value : `/${value}`);
+
+    await cacheUrls(assetUrls);
+  } catch {
+    // The app still has the previous shell if the network is unavailable while updating.
+  }
+}
+
 self.addEventListener("install", (event) => {
-  event.waitUntil(cacheUrls(APP_SHELL).then(() => self.skipWaiting()));
+  event.waitUntil(cacheAppShell().then(() => self.skipWaiting()));
 });
 
 self.addEventListener("activate", (event) => {
