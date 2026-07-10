@@ -441,6 +441,35 @@ async function assertSessionManage(user: User | undefined, sessionId: number) {
   throw error;
 }
 
+function forbidden(message: string) {
+  const error = new Error(message) as Error & { status?: number };
+  error.status = 403;
+  return error;
+}
+
+async function assertCohortManage(user: User | undefined, cohortId: number | null) {
+  if (isAdmin(user)) return;
+  if (!cohortId) throw forbidden("Tylko administrator moze przypisac podopiecznego bez grupy");
+  const result = await pool.query("SELECT caretaker_user_id FROM cohorts WHERE id=$1", [cohortId]);
+  const cohort = result.rows[0];
+  if (cohort && Number(cohort.caretaker_user_id) === Number(user?.id)) return;
+  throw forbidden("Mozesz zarzadzac tylko podopiecznymi swojej grupy");
+}
+
+async function assertWardManage(user: User | undefined, wardId: number) {
+  if (isAdmin(user)) return;
+  const result = await pool.query(`
+    SELECT w.id, c.caretaker_user_id
+    FROM wards w
+    LEFT JOIN cohorts c ON c.id = w.cohort_id
+    WHERE w.id=$1
+  `, [wardId]);
+  const ward = result.rows[0];
+  if (!ward) throw new Error("Nie znaleziono podopiecznego");
+  if (Number(ward.caretaker_user_id) === Number(user?.id)) return;
+  throw forbidden("Mozesz edytowac tylko podopiecznych swojej grupy");
+}
+
 async function gamesList(user?: User) {
   const { rows } = await pool.query(`
     SELECT g.*, u.name AS owner_name,
@@ -1009,20 +1038,35 @@ app.delete("/api/teams/:id", async (req, res) => {
 });
 
 app.post("/api/wards", async (req, res) => {
-  const id = Number(req.body.id || 0);
-  const values = [String(req.body.name || ""), Number(req.body.age || 12), String(req.body.parent_name || ""), String(req.body.contact || ""), Number(req.body.cohort_id || 0) || null];
-  if (!values[0]) return res.status(400).json({ ok: false, error: "Podaj imię i nazwisko" });
-  if (id) {
-    await pool.query("UPDATE wards SET name=$1, age=$2, parent_name=$3, contact=$4, cohort_id=$5 WHERE id=$6", [...values, id]);
-  } else {
-    await pool.query("INSERT INTO wards (name, age, parent_name, contact, cohort_id) VALUES ($1,$2,$3,$4,$5)", values);
+  try {
+    const id = Number(req.body.id || 0);
+    const cohortId = Number(req.body.cohort_id || 0) || null;
+    const values = [String(req.body.name || ""), Number(req.body.age || 12), String(req.body.parent_name || ""), String(req.body.contact || ""), cohortId];
+    if (!values[0]) return res.status(400).json({ ok: false, error: "Podaj imię i nazwisko" });
+    if (id) {
+      await assertWardManage(req.user, id);
+      await assertCohortManage(req.user, cohortId);
+      await pool.query("UPDATE wards SET name=$1, age=$2, parent_name=$3, contact=$4, cohort_id=$5 WHERE id=$6", [...values, id]);
+    } else {
+      await assertCohortManage(req.user, cohortId);
+      await pool.query("INSERT INTO wards (name, age, parent_name, contact, cohort_id) VALUES ($1,$2,$3,$4,$5)", values);
+    }
+    res.json(await stateFor(req, Number(req.body.game_id || 0) || undefined));
+  } catch (error) {
+    const status = (error as Error & { status?: number })?.status || 500;
+    res.status(status).json({ ok: false, error: error instanceof Error ? error.message : "Błąd serwera" });
   }
-  res.json(await stateFor(req, Number(req.body.game_id || 0) || undefined));
 });
 
 app.delete("/api/wards/:id", async (req, res) => {
-  await pool.query("DELETE FROM wards WHERE id=$1", [Number(req.params.id)]);
-  res.json(await stateFor(req, req.query.gameId ? Number(req.query.gameId) : undefined));
+  try {
+    await assertWardManage(req.user, Number(req.params.id));
+    await pool.query("DELETE FROM wards WHERE id=$1", [Number(req.params.id)]);
+    res.json(await stateFor(req, req.query.gameId ? Number(req.query.gameId) : undefined));
+  } catch (error) {
+    const status = (error as Error & { status?: number })?.status || 500;
+    res.status(status).json({ ok: false, error: error instanceof Error ? error.message : "Błąd serwera" });
+  }
 });
 
 app.post("/api/caregivers", async (req, res) => {

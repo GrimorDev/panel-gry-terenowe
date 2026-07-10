@@ -231,7 +231,8 @@ class _HufcMobileAppState extends State<HufcMobileApp> with WidgetsBindingObserv
         setState(() => _online = true);
       }
     } catch (_) {
-      if (mounted) setState(() => _online = false);
+      final hasNetwork = await _isOnline();
+      if (mounted) setState(() => _online = hasNetwork);
     } finally {
       await _refreshQueue();
       if (mounted) setState(() => _syncing = false);
@@ -272,7 +273,8 @@ class _HufcMobileAppState extends State<HufcMobileApp> with WidgetsBindingObserv
       if (mounted && url != '/api/timer') await _saveLocal(latest);
     } catch (_) {
       await widget.store.enqueue(url, 'POST', body);
-      if (mounted) setState(() => _online = false);
+      final hasNetwork = await _isOnline();
+      if (mounted) setState(() => _online = hasNetwork);
     } finally {
       await _refreshQueue();
     }
@@ -386,7 +388,8 @@ class _HufcMobileAppState extends State<HufcMobileApp> with WidgetsBindingObserv
       if (mounted) await _saveLocal(latest);
     } catch (_) {
       await widget.store.enqueue(url, 'DELETE', {});
-      if (mounted) setState(() => _online = false);
+      final hasNetwork = await _isOnline();
+      if (mounted) setState(() => _online = hasNetwork);
     } finally {
       await _refreshQueue();
     }
@@ -761,7 +764,7 @@ class _ShellScreenState extends State<ShellScreen> {
     final state = widget.state;
     final pages = <_MobilePage>[
       _MobilePage('Pulpit', Icons.dashboard_outlined, Icons.dashboard, DashboardPage(session: widget.session, state: state, online: widget.online, queueCount: widget.queueCount)),
-      _MobilePage('Podopieczni', Icons.person_outline, Icons.person, WardsPage(state: state)),
+      _MobilePage('Podopieczni', Icons.person_outline, Icons.person, WardsPage(state: state, session: widget.session, onMutate: widget.onMutate, onDelete: widget.onDelete)),
       _MobilePage('Grupy', Icons.groups_outlined, Icons.groups, GroupsPage(state: state)),
       _MobilePage('Zbiórki', Icons.calendar_month_outlined, Icons.calendar_month, MeetingsPage(state: state, onMutate: widget.onMutate, onDelete: widget.onDelete)),
       _MobilePage('Galeria', Icons.photo_library_outlined, Icons.photo_library, MobileGalleryPage(state: state, session: widget.session, apiBaseUrl: widget.apiBaseUrl, onMutate: widget.onMutate)),
@@ -1190,8 +1193,29 @@ class _ReadonlyField extends StatelessWidget {
 
 
 class WardsPage extends StatelessWidget {
-  const WardsPage({super.key, required this.state});
+  const WardsPage({super.key, required this.state, required this.session, required this.onMutate, required this.onDelete});
   final AppState? state;
+  final AuthSession session;
+  final Future<void> Function(String url, Map<String, dynamic> body, AppState optimistic) onMutate;
+  final Future<void> Function(String url, AppState optimistic) onDelete;
+
+  Map<int, Map<String, dynamic>> _groupsById(AppState state) {
+    return {for (final item in jsonList(state.raw['cohorts'])) jsonInt(item['id']): item};
+  }
+
+  String _groupName(Map<int, Map<String, dynamic>> groups, int id) {
+    return jsonString(groups[id]?['name'], fallback: 'Bez grupy');
+  }
+
+  bool _canManageWard(Map<String, dynamic> ward, Map<int, Map<String, dynamic>> groups) {
+    if (session.user.isAdmin) return true;
+    final cohort = groups[jsonInt(ward['cohort_id'])];
+    return jsonInt(cohort?['caretaker_user_id']) == session.user.id;
+  }
+
+  int _nextLocalId(List<Map<String, dynamic>> items) {
+    return items.fold<int>(0, (max, item) => jsonInt(item['id']) > max ? jsonInt(item['id']) : max) + 1;
+  }
 
   void _showDetails(BuildContext context, Map<String, dynamic> ward, String groupName) {
     showModalBottomSheet<void>(
@@ -1224,23 +1248,146 @@ class WardsPage extends StatelessWidget {
     );
   }
 
+  void _openEditor(BuildContext context, {Map<String, dynamic>? ward}) {
+    final state = this.state;
+    if (state == null) return;
+    final groups = _groupsById(state);
+    final groupList = groups.values.toList();
+    final existing = ward != null;
+    var saving = false;
+    var selectedCohortId = existing ? jsonInt(ward['cohort_id']) : (groupList.isNotEmpty ? jsonInt(groupList.first['id']) : 0);
+    final name = TextEditingController(text: jsonString(ward?['name']));
+    final age = TextEditingController(text: existing ? '${jsonInt(ward?['age'], fallback: 12)}' : '12');
+    final parent = TextEditingController(text: jsonString(ward?['parent_name']));
+    final contact = TextEditingController(text: jsonString(ward?['parent_phone'], fallback: jsonString(ward?['contact'])));
+
+    showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      isScrollControlled: true,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setModalState) => SafeArea(
+          child: SingleChildScrollView(
+            padding: EdgeInsets.fromLTRB(20, 6, 20, MediaQuery.of(context).viewInsets.bottom + 24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Row(children: [
+                  Expanded(child: Text(existing ? 'Edytuj podopiecznego' : 'Dodaj podopiecznego', style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w900))),
+                  OutlinedButton(onPressed: saving ? null : () => Navigator.of(context).pop(), child: const Text('Zamknij')),
+                ]),
+                const SizedBox(height: 14),
+                TextField(controller: name, textInputAction: TextInputAction.next, decoration: const InputDecoration(labelText: 'Imię i nazwisko')),
+                const SizedBox(height: 10),
+                TextField(controller: age, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Wiek')),
+                const SizedBox(height: 10),
+                TextField(controller: parent, textInputAction: TextInputAction.next, decoration: const InputDecoration(labelText: 'Rodzic / opiekun')),
+                const SizedBox(height: 10),
+                TextField(controller: contact, keyboardType: TextInputType.phone, decoration: const InputDecoration(labelText: 'Kontakt')),
+                const SizedBox(height: 10),
+                DropdownButtonFormField<int>(
+                  initialValue: selectedCohortId == 0 ? null : selectedCohortId,
+                  decoration: const InputDecoration(labelText: 'Grupa'),
+                  items: [
+                    const DropdownMenuItem<int>(value: 0, child: Text('Bez grupy')),
+                    for (final group in groupList) DropdownMenuItem<int>(value: jsonInt(group['id']), child: Text(jsonString(group['name'], fallback: 'Grupa'))),
+                  ],
+                  onChanged: saving ? null : (value) => selectedCohortId = value ?? 0,
+                ),
+                const SizedBox(height: 16),
+                FilledButton(
+                  onPressed: saving
+                      ? null
+                      : () async {
+                          final cleanName = name.text.trim();
+                          if (cleanName.isEmpty) {
+                            ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Podaj imię i nazwisko podopiecznego.')));
+                            return;
+                          }
+                          setModalState(() => saving = true);
+                          final raw = _clone(state.raw);
+                          final wards = jsonList(raw['wards']);
+                          final id = existing ? jsonInt(ward['id']) : _nextLocalId(wards);
+                          final next = {
+                            ...(ward ?? <String, dynamic>{}),
+                            'id': id,
+                            'name': cleanName,
+                            'age': jsonInt(age.text, fallback: 12),
+                            'parent_name': parent.text.trim(),
+                            'contact': contact.text.trim(),
+                            'parent_phone': contact.text.trim(),
+                            'cohort_id': selectedCohortId == 0 ? null : selectedCohortId,
+                            'cohort_name': _groupName(groups, selectedCohortId),
+                          };
+                          raw['wards'] = existing ? wards.map((item) => jsonInt(item['id']) == id ? next : item).toList() : [next, ...wards];
+                          await onMutate('/api/wards', {
+                            if (existing) 'id': id,
+                            'name': cleanName,
+                            'age': jsonInt(age.text, fallback: 12),
+                            'parent_name': parent.text.trim(),
+                            'contact': contact.text.trim(),
+                            'cohort_id': selectedCohortId == 0 ? null : selectedCohortId,
+                            'game_id': state.game.id,
+                          }, state.copyWithRaw(raw));
+                          if (context.mounted) Navigator.of(context).pop();
+                        },
+                  child: saving ? const HufcLoader(size: 22, color: Colors.white) : const Text('Zapisz'),
+                ),
+                if (existing) ...[
+                  const SizedBox(height: 18),
+                  const Divider(),
+                  const SizedBox(height: 8),
+                  Text('Usunięcie podopiecznego', style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w900)),
+                  const SizedBox(height: 4),
+                  Text('Ta akcja usunie osobę z listy i historii przypisań w panelu.', style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant)),
+                  const SizedBox(height: 10),
+                  OutlinedButton(
+                    onPressed: saving
+                        ? null
+                        : () async {
+                            setModalState(() => saving = true);
+                            final raw = _clone(state.raw);
+                            raw['wards'] = jsonList(raw['wards']).where((item) => jsonInt(item['id']) != jsonInt(ward['id'])).toList();
+                            await onDelete('/api/wards/${jsonInt(ward['id'])}?gameId=${state.game.id}', state.copyWithRaw(raw));
+                            if (context.mounted) Navigator.of(context).pop();
+                          },
+                    child: const Text('Usuń podopiecznego'),
+                  ),
+                ],
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     if (state == null) return const EmptyNotice(text: 'Brak listy podopiecznych w telefonie.');
     final wards = jsonList(state!.raw['wards']);
-    final groups = {for (final item in jsonList(state!.raw['cohorts'])) jsonInt(item['id']): jsonString(item['name'], fallback: 'Bez grupy')};
+    final groups = _groupsById(state!);
     return HufcPage(
       title: 'Podopieczni',
       subtitle: 'Lista osób pod opieką, dostępna także offline.',
+      actions: [
+        if (session.user.isAdmin)
+          FilledButton.icon(
+            onPressed: () => _openEditor(context),
+            icon: const Icon(Icons.add),
+            label: const Text('Dodaj podopiecznego'),
+          ),
+      ],
       children: [
         if (wards.isEmpty) const EmptyNotice(text: 'Nie ma jeszcze podopiecznych.'),
         for (final ward in wards)
           HufcListCard(
-            onTap: () => _showDetails(context, ward, groups[jsonInt(ward['cohort_id'])] ?? 'Bez grupy'),
+            onTap: () => _canManageWard(ward, groups) ? _openEditor(context, ward: ward) : _showDetails(context, ward, _groupName(groups, jsonInt(ward['cohort_id']))),
             leading: _Initials(text: jsonString(ward['name'], fallback: 'P')),
             title: jsonString(ward['name'], fallback: 'Podopieczny'),
-            subtitle: '${jsonInt(ward['age'])} lat · ${groups[jsonInt(ward['cohort_id'])] ?? 'Bez grupy'} · ${jsonString(ward['parent_name'], fallback: 'brak opiekuna')}',
-            trailing: const Icon(Icons.chevron_right),
+            subtitle: '${jsonInt(ward['age'])} lat - ${_groupName(groups, jsonInt(ward['cohort_id']))} - ${jsonString(ward['parent_name'], fallback: 'brak opiekuna')}',
+            trailing: Icon(_canManageWard(ward, groups) ? Icons.edit_outlined : Icons.chevron_right),
           ),
       ],
     );
@@ -1332,6 +1479,8 @@ class MeetingsPage extends StatelessWidget {
                           'location': location.text.trim(),
                           'planned_count': jsonInt(planned.text),
                           'total': jsonInt(planned.text),
+                          'present_count': _sessionPresent(session),
+                          'attendance': _sessionPresent(session),
                         };
                         raw['sessions'] = sessions.map((item) => jsonInt(item['id']) == jsonInt(session['id']) ? next : item).toList();
                         await onMutate('/api/sessions', {
@@ -1340,7 +1489,7 @@ class MeetingsPage extends StatelessWidget {
                           'session_date': date.text.trim(),
                           'location': location.text.trim(),
                           'total': jsonInt(planned.text),
-                          'attendance': jsonInt(session['present_count']),
+                          'attendance': _sessionPresent(session),
                           'game_id': state.game.id,
                         }, state.copyWithRaw(raw));
                         if (context.mounted) Navigator.of(context).pop();
@@ -1388,7 +1537,7 @@ class MeetingsPage extends StatelessWidget {
               LinearProgressIndicator(value: _attendanceRatio(session)),
               const SizedBox(height: 8),
                 Row(children: [
-                  Expanded(child: Text('Obecność: ${jsonInt(session['present_count'])}/${jsonInt(session['planned_count'])} · ${jsonString(session['location'], fallback: 'brak lokalizacji')}')),
+                  Expanded(child: Text('Obecność: ${_sessionPresent(session)}/${_sessionPlanned(session)} · ${jsonString(session['location'], fallback: 'brak lokalizacji')}')),
                   const Icon(Icons.edit_outlined, size: 20),
                 ]),
               ]),
@@ -3254,10 +3403,18 @@ String _dateInput(String value) {
   return '${parsed.year}-${parsed.month.toString().padLeft(2, '0')}-${parsed.day.toString().padLeft(2, '0')}';
 }
 
+int _sessionPresent(Map<String, dynamic> session) {
+  return jsonInt(session['present_count'], fallback: jsonInt(session['attendance']));
+}
+
+int _sessionPlanned(Map<String, dynamic> session) {
+  return jsonInt(session['planned_count'], fallback: jsonInt(session['total']));
+}
+
 double _attendanceRatio(Map<String, dynamic> session) {
-  final planned = jsonInt(session['planned_count']);
+  final planned = _sessionPlanned(session);
   if (planned <= 0) return 0;
-  return (jsonInt(session['present_count']) / planned).clamp(0, 1).toDouble();
+  return (_sessionPresent(session) / planned).clamp(0, 1).toDouble();
 }
 
 Color _colorFromString(String value) {
