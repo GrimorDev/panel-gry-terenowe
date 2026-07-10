@@ -131,6 +131,17 @@ class _HufcMobileAppState extends State<HufcMobileApp> {
     unawaited(_sendMutationInBackground(url, body));
   }
 
+  Future<void> _delete(String url, AppState optimistic) async {
+    await _saveLocal(optimistic);
+    if (_session == null) return;
+    if (!_online) {
+      await widget.store.enqueue(url, 'DELETE', {});
+      await _refreshQueue();
+      return;
+    }
+    unawaited(_sendDeleteInBackground(url));
+  }
+
   Future<void> _sendMutationInBackground(String url, Map<String, dynamic> body) async {
     if (_session == null) return;
     try {
@@ -138,6 +149,19 @@ class _HufcMobileAppState extends State<HufcMobileApp> {
       if (mounted && url != '/api/timer') await _saveLocal(latest);
     } catch (_) {
       await widget.store.enqueue(url, 'POST', body);
+      if (mounted) setState(() => _online = false);
+    } finally {
+      await _refreshQueue();
+    }
+  }
+
+  Future<void> _sendDeleteInBackground(String url) async {
+    if (_session == null) return;
+    try {
+      final latest = await widget.api.deleteState(_session!.token, url);
+      if (mounted) await _saveLocal(latest);
+    } catch (_) {
+      await widget.store.enqueue(url, 'DELETE', {});
       if (mounted) setState(() => _online = false);
     } finally {
       await _refreshQueue();
@@ -172,6 +196,7 @@ class _HufcMobileAppState extends State<HufcMobileApp> {
                   onLogout: _logout,
                   onSync: _sync,
                   onMutate: _mutate,
+                  onDelete: _delete,
                 ),
     );
   }
@@ -438,6 +463,7 @@ class ShellScreen extends StatefulWidget {
     required this.onLogout,
     required this.onSync,
     required this.onMutate,
+    required this.onDelete,
   });
 
   final AuthSession session;
@@ -449,6 +475,7 @@ class ShellScreen extends StatefulWidget {
   final VoidCallback onLogout;
   final Future<void> Function() onSync;
   final Future<void> Function(String url, Map<String, dynamic> body, AppState optimistic) onMutate;
+  final Future<void> Function(String url, AppState optimistic) onDelete;
 
   @override
   State<ShellScreen> createState() => _ShellScreenState();
@@ -456,6 +483,7 @@ class ShellScreen extends StatefulWidget {
 
 class _ShellScreenState extends State<ShellScreen> {
   int _tab = 0;
+  final _scaffoldKey = GlobalKey<ScaffoldState>();
 
   @override
   Widget build(BuildContext context) {
@@ -464,15 +492,25 @@ class _ShellScreenState extends State<ShellScreen> {
       _MobilePage('Pulpit', Icons.dashboard_outlined, Icons.dashboard, DashboardPage(session: widget.session, state: state, online: widget.online, queueCount: widget.queueCount)),
       _MobilePage('Podopieczni', Icons.person_outline, Icons.person, WardsPage(state: state)),
       _MobilePage('Grupy', Icons.groups_outlined, Icons.groups, GroupsPage(state: state)),
-      _MobilePage('Zbiórki', Icons.calendar_month_outlined, Icons.calendar_month, MeetingsPage(state: state)),
+      _MobilePage('Zbiórki', Icons.calendar_month_outlined, Icons.calendar_month, MeetingsPage(state: state, onMutate: widget.onMutate, onDelete: widget.onDelete)),
       _MobilePage('Galeria', Icons.photo_library_outlined, Icons.photo_library, MobileGalleryPage(state: state, session: widget.session, apiBaseUrl: widget.apiBaseUrl, onMutate: widget.onMutate)),
       _MobilePage('Wiadomości', Icons.chat_bubble_outline, Icons.chat_bubble, MessagesPage(state: state, session: widget.session, apiBaseUrl: widget.apiBaseUrl, onMutate: widget.onMutate)),
       _MobilePage('Gry', Icons.flag_outlined, Icons.flag, GamesPage(state: state, onMutate: widget.onMutate)),
-      _MobilePage('Namioty', Icons.emoji_events_outlined, Icons.emoji_events, CompetitionPage(state: state, onMutate: widget.onMutate)),
+      _MobilePage('Współzawodnictwo', Icons.emoji_events_outlined, Icons.emoji_events, CompetitionPage(state: state, onMutate: widget.onMutate)),
       _MobilePage('Sync', Icons.cloud_sync_outlined, Icons.cloud_sync, SyncPage(online: widget.online, syncing: widget.syncing, queueCount: widget.queueCount, onSync: widget.onSync, onLogout: widget.onLogout)),
     ];
-    final visibleDestinations = [0, 3, 5, 6, 8];
+    final bottomDestinations = [0, 3, 5, 4];
+    final bottomIndex = bottomDestinations.contains(_tab) ? bottomDestinations.indexOf(_tab) : 4;
     return Scaffold(
+      key: _scaffoldKey,
+      drawer: _MobileDrawer(
+        pages: pages,
+        currentIndex: _tab,
+        session: widget.session,
+        queueCount: widget.queueCount,
+        onLogout: widget.onLogout,
+        onSelect: (index) => setState(() => _tab = index),
+      ),
       appBar: AppBar(
         title: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -483,18 +521,7 @@ class _ShellScreenState extends State<ShellScreen> {
         ),
         actions: [
           if (widget.syncing) const Padding(padding: EdgeInsets.all(14), child: HufcLoader(size: 22)),
-          PopupMenuButton<int>(
-            icon: const Icon(Icons.more_horiz),
-            onSelected: (value) => setState(() => _tab = value),
-            itemBuilder: (context) => [
-              for (var index = 0; index < pages.length; index++)
-                PopupMenuItem(
-                  value: index,
-                  child: Row(children: [Icon(pages[index].icon, size: 20), const SizedBox(width: 12), Text(pages[index].label)]),
-                ),
-            ],
-          ),
-          IconButton(onPressed: widget.onSync, icon: const Icon(Icons.sync)),
+          IconButton(onPressed: widget.syncing ? null : () => widget.onSync(), icon: const Icon(Icons.sync)),
         ],
       ),
       body: AnimatedSwitcher(
@@ -504,19 +531,120 @@ class _ShellScreenState extends State<ShellScreen> {
         child: KeyedSubtree(key: ValueKey(_tab), child: pages[_tab].child),
       ),
       bottomNavigationBar: NavigationBar(
-        selectedIndex: visibleDestinations.contains(_tab) ? visibleDestinations.indexOf(_tab) : visibleDestinations.length - 1,
-        onDestinationSelected: (value) => setState(() => _tab = visibleDestinations[value]),
+        selectedIndex: bottomIndex,
+        onDestinationSelected: (value) {
+          if (value == 4) {
+            _scaffoldKey.currentState?.openDrawer();
+            return;
+          }
+          setState(() => _tab = bottomDestinations[value]);
+        },
         destinations: [
           NavigationDestination(icon: Icon(pages[0].icon), selectedIcon: Icon(pages[0].selectedIcon), label: pages[0].label),
           NavigationDestination(icon: Icon(pages[3].icon), selectedIcon: Icon(pages[3].selectedIcon), label: pages[3].label),
           NavigationDestination(icon: Icon(pages[5].icon), selectedIcon: Icon(pages[5].selectedIcon), label: pages[5].label),
-          NavigationDestination(icon: Icon(pages[6].icon), selectedIcon: Icon(pages[6].selectedIcon), label: pages[6].label),
+          NavigationDestination(icon: Icon(pages[4].icon), selectedIcon: Icon(pages[4].selectedIcon), label: pages[4].label),
           NavigationDestination(
-            icon: Badge(isLabelVisible: widget.queueCount > 0, label: Text('${widget.queueCount}'), child: Icon(pages[8].icon)),
-            selectedIcon: Badge(isLabelVisible: widget.queueCount > 0, label: Text('${widget.queueCount}'), child: Icon(pages[8].selectedIcon)),
-            label: pages[8].label,
+            icon: Badge(isLabelVisible: widget.queueCount > 0, label: Text('${widget.queueCount}'), child: const Icon(Icons.more_horiz)),
+            selectedIcon: Badge(isLabelVisible: widget.queueCount > 0, label: Text('${widget.queueCount}'), child: const Icon(Icons.more_horiz)),
+            label: 'Więcej',
           ),
         ],
+      ),
+    );
+  }
+}
+
+class _MobileDrawer extends StatelessWidget {
+  const _MobileDrawer({
+    required this.pages,
+    required this.currentIndex,
+    required this.session,
+    required this.queueCount,
+    required this.onSelect,
+    required this.onLogout,
+  });
+
+  final List<_MobilePage> pages;
+  final int currentIndex;
+  final AuthSession session;
+  final int queueCount;
+  final ValueChanged<int> onSelect;
+  final VoidCallback onLogout;
+
+  @override
+  Widget build(BuildContext context) {
+    const drawerColor = Color(0xFF123D25);
+    return Drawer(
+      width: 292,
+      backgroundColor: drawerColor,
+      child: SafeArea(
+        child: Column(
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 14, 16, 22),
+              child: Row(
+                children: [
+                  Container(
+                    width: 42,
+                    height: 42,
+                    alignment: Alignment.center,
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFD86F45),
+                      borderRadius: BorderRadius.circular(14),
+                      boxShadow: const [BoxShadow(color: Colors.black26, blurRadius: 16, offset: Offset(0, 8))],
+                    ),
+                    child: const Text('H', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w900)),
+                  ),
+                  const SizedBox(width: 12),
+                  const Expanded(
+                    child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                      Text('Hufc', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w900, fontSize: 16)),
+                      Text('Panel wychowawcy', style: TextStyle(color: Colors.white70, fontSize: 12)),
+                    ]),
+                  ),
+                ],
+              ),
+            ),
+            Expanded(
+              child: ListView.builder(
+                padding: const EdgeInsets.symmetric(horizontal: 8),
+                itemCount: pages.length,
+                itemBuilder: (context, index) {
+                  final page = pages[index];
+                  final selected = currentIndex == index;
+                  return Padding(
+                    padding: const EdgeInsets.only(bottom: 6),
+                    child: ListTile(
+                      selected: selected,
+                      selectedTileColor: Colors.white.withValues(alpha: 0.14),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14), side: selected ? BorderSide(color: Colors.white.withValues(alpha: 0.28)) : BorderSide.none),
+                      leading: Icon(selected ? page.selectedIcon : page.icon, color: selected ? Colors.white : Colors.white70),
+                      title: Text(page.label, style: TextStyle(color: selected ? Colors.white : Colors.white70, fontWeight: FontWeight.w900)),
+                      trailing: page.label == 'Sync' && queueCount > 0 ? Badge(label: Text('$queueCount')) : null,
+                      onTap: () {
+                        Navigator.of(context).pop();
+                        onSelect(index);
+                      },
+                    ),
+                  );
+                },
+              ),
+            ),
+            const Divider(color: Colors.white24),
+            ListTile(
+              leading: _Initials(text: session.user.name),
+              title: Text(session.user.name, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w900)),
+              subtitle: Text(session.user.role, style: const TextStyle(color: Colors.white70)),
+            ),
+            ListTile(
+              leading: const Icon(Icons.logout, color: Colors.white70),
+              title: const Text('Wyloguj się', style: TextStyle(color: Colors.white70, fontWeight: FontWeight.w900)),
+              onTap: onLogout,
+            ),
+            const SizedBox(height: 10),
+          ],
+        ),
       ),
     );
   }
@@ -542,13 +670,41 @@ class DashboardPage extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final game = state?.game;
+    final wards = state == null ? <Map<String, dynamic>>[] : jsonList(state!.raw['wards']);
+    final groups = state == null ? <Map<String, dynamic>>[] : jsonList(state!.raw['cohorts']);
+    final sessions = state == null ? <Map<String, dynamic>>[] : jsonList(state!.raw['sessions']);
+    final messages = state == null ? <Map<String, dynamic>>[] : jsonList(state!.raw['messages']);
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
         HufcHero(name: session.user.name, subtitle: online ? 'Połączono z serwerem' : 'Tryb offline - zapis lokalny'),
         const SizedBox(height: 16),
+        Row(children: [
+          Expanded(child: StatCard(title: 'Podopieczni', value: '${wards.length}')),
+          const SizedBox(width: 10),
+          Expanded(child: StatCard(title: 'Grupy', value: '${groups.length}')),
+          const SizedBox(width: 10),
+          Expanded(child: StatCard(title: 'Wiadomości', value: '${messages.length}')),
+        ]),
+        const SizedBox(height: 10),
         StatCard(title: 'Aktywna gra', value: game?.name ?? 'Brak danych'),
         StatCard(title: 'Kolejka synchronizacji', value: queueCount == 0 ? 'Wszystko zapisane' : '$queueCount zmian czeka'),
+        CardPanel(
+          title: 'Nadchodzące zbiórki',
+          child: Column(
+            children: [
+              if (sessions.isEmpty) const EmptyNotice(text: 'Brak zaplanowanych zbiórek w pamięci telefonu.'),
+              for (final item in sessions.take(3))
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 10),
+                  child: Row(children: [
+                    Expanded(child: Text(jsonString(item['title'], fallback: 'Zbiórka'), style: const TextStyle(fontWeight: FontWeight.w900))),
+                    Text(_shortDate(jsonString(item['session_date']))),
+                  ]),
+                ),
+            ],
+          ),
+        ),
         if (state == null) const EmptyNotice(text: 'Brak lokalnych danych. Zaloguj się raz z internetem, żeby pobrać bazę do telefonu.'),
       ],
     );
@@ -559,6 +715,37 @@ class DashboardPage extends StatelessWidget {
 class WardsPage extends StatelessWidget {
   const WardsPage({super.key, required this.state});
   final AppState? state;
+
+  void _showDetails(BuildContext context, Map<String, dynamic> ward, String groupName) {
+    showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      isScrollControlled: true,
+      builder: (context) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(20, 6, 20, 24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(children: [
+                _Initials(text: jsonString(ward['name'], fallback: 'P')),
+                const SizedBox(width: 12),
+                Expanded(child: Text(jsonString(ward['name'], fallback: 'Podopieczny'), style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w900))),
+              ]),
+              const SizedBox(height: 18),
+              _DetailRow(label: 'Wiek', value: '${jsonInt(ward['age'])} lat'),
+              _DetailRow(label: 'Grupa', value: groupName),
+              _DetailRow(label: 'Rodzic / opiekun', value: jsonString(ward['parent_name'], fallback: 'Brak danych')),
+              _DetailRow(label: 'Kontakt', value: jsonString(ward['parent_phone'], fallback: 'Brak telefonu')),
+              const SizedBox(height: 12),
+              Align(alignment: Alignment.centerRight, child: FilledButton(onPressed: () => Navigator.of(context).pop(), child: const Text('Zamknij'))),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -572,6 +759,7 @@ class WardsPage extends StatelessWidget {
         if (wards.isEmpty) const EmptyNotice(text: 'Nie ma jeszcze podopiecznych.'),
         for (final ward in wards)
           HufcListCard(
+            onTap: () => _showDetails(context, ward, groups[jsonInt(ward['cohort_id'])] ?? 'Bez grupy'),
             leading: _Initials(text: jsonString(ward['name'], fallback: 'P')),
             title: jsonString(ward['name'], fallback: 'Podopieczny'),
             subtitle: '${jsonInt(ward['age'])} lat · ${groups[jsonInt(ward['cohort_id'])] ?? 'Bez grupy'} · ${jsonString(ward['parent_name'], fallback: 'brak opiekuna')}',
@@ -619,8 +807,87 @@ class GroupsPage extends StatelessWidget {
 }
 
 class MeetingsPage extends StatelessWidget {
-  const MeetingsPage({super.key, required this.state});
+  const MeetingsPage({super.key, required this.state, required this.onMutate, required this.onDelete});
   final AppState? state;
+  final Future<void> Function(String url, Map<String, dynamic> body, AppState optimistic) onMutate;
+  final Future<void> Function(String url, AppState optimistic) onDelete;
+
+  void _openEditor(BuildContext context, Map<String, dynamic> session) {
+    final state = this.state;
+    if (state == null) return;
+    final title = TextEditingController(text: jsonString(session['title']));
+    final date = TextEditingController(text: _dateInput(jsonString(session['session_date'])));
+    final location = TextEditingController(text: jsonString(session['location']));
+    final planned = TextEditingController(text: '${jsonInt(session['planned_count'], fallback: jsonInt(session['total']))}');
+    var saving = false;
+    showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      isScrollControlled: true,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setModalState) => Padding(
+          padding: EdgeInsets.fromLTRB(20, 6, 20, MediaQuery.of(context).viewInsets.bottom + 24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text(jsonInt(session['id']) > 0 ? 'Edytuj zbiórkę' : 'Zaplanuj zbiórkę', style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w900)),
+              const SizedBox(height: 14),
+              TextField(controller: title, decoration: const InputDecoration(labelText: 'Tytuł')),
+              const SizedBox(height: 10),
+              TextField(controller: date, keyboardType: TextInputType.datetime, decoration: const InputDecoration(labelText: 'Data')),
+              const SizedBox(height: 10),
+              TextField(controller: location, decoration: const InputDecoration(labelText: 'Lokalizacja')),
+              const SizedBox(height: 10),
+              TextField(controller: planned, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Planowana liczba osób')),
+              const SizedBox(height: 16),
+              FilledButton(
+                onPressed: saving
+                    ? null
+                    : () async {
+                        setModalState(() => saving = true);
+                        final raw = Map<String, dynamic>.from(state.raw);
+                        final sessions = jsonList(raw['sessions']);
+                        final next = {
+                          ...session,
+                          'title': title.text.trim(),
+                          'session_date': date.text.trim(),
+                          'location': location.text.trim(),
+                          'planned_count': jsonInt(planned.text),
+                          'total': jsonInt(planned.text),
+                        };
+                        raw['sessions'] = sessions.map((item) => jsonInt(item['id']) == jsonInt(session['id']) ? next : item).toList();
+                        await onMutate('/api/sessions', {
+                          'id': jsonInt(session['id']),
+                          'title': title.text.trim(),
+                          'session_date': date.text.trim(),
+                          'location': location.text.trim(),
+                          'total': jsonInt(planned.text),
+                          'attendance': jsonInt(session['present_count']),
+                          'game_id': state.game.id,
+                        }, state.copyWithRaw(raw));
+                        if (context.mounted) Navigator.of(context).pop();
+                      },
+                child: saving ? const HufcLoader(size: 22, color: Colors.white) : const Text('Zapisz'),
+              ),
+              const SizedBox(height: 10),
+              OutlinedButton(
+                onPressed: saving
+                    ? null
+                    : () async {
+                        final raw = Map<String, dynamic>.from(state.raw);
+                        raw['sessions'] = jsonList(raw['sessions']).where((item) => jsonInt(item['id']) != jsonInt(session['id'])).toList();
+                        await onDelete('/api/sessions/${jsonInt(session['id'])}?gameId=${state.game.id}', state.copyWithRaw(raw));
+                        if (context.mounted) Navigator.of(context).pop();
+                      },
+                child: const Text('Usuń zbiórkę'),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -632,7 +899,10 @@ class MeetingsPage extends StatelessWidget {
       children: [
         for (final session in sessions)
           CardPanel(
-            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            child: InkWell(
+              onTap: () => _openEditor(context, session),
+              borderRadius: BorderRadius.circular(18),
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
               Row(children: [
                 Expanded(child: Text(jsonString(session['title'], fallback: 'Zbiórka'), style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w900))),
                 Text(_shortDate(jsonString(session['session_date']))),
@@ -640,8 +910,12 @@ class MeetingsPage extends StatelessWidget {
               const SizedBox(height: 10),
               LinearProgressIndicator(value: _attendanceRatio(session)),
               const SizedBox(height: 8),
-              Text('Obecność: ${jsonInt(session['present_count'])}/${jsonInt(session['planned_count'])} · ${jsonString(session['location'], fallback: 'brak lokalizacji')}'),
-            ]),
+                Row(children: [
+                  Expanded(child: Text('Obecność: ${jsonInt(session['present_count'])}/${jsonInt(session['planned_count'])} · ${jsonString(session['location'], fallback: 'brak lokalizacji')}')),
+                  const Icon(Icons.edit_outlined, size: 20),
+                ]),
+              ]),
+            ),
           ),
       ],
     );
@@ -661,6 +935,8 @@ class MobileGalleryPage extends StatefulWidget {
 
 class _MobileGalleryPageState extends State<MobileGalleryPage> {
   bool _uploading = false;
+  bool _albums = false;
+  int? _albumSessionId;
 
   Future<void> _pick(ImageSource source) async {
     final state = widget.state;
@@ -679,7 +955,7 @@ class _MobileGalleryPageState extends State<MobileGalleryPage> {
       final mime = file.mimeType ?? 'image/jpeg';
       final title = file.name.replaceAll(RegExp(r'\.[^.]+$'), '').trim().isEmpty ? 'Zdjęcie' : file.name.replaceAll(RegExp(r'\.[^.]+$'), '');
       final imageData = 'data:$mime;base64,${base64Encode(bytes)}';
-      final session = sessions.first;
+      final session = sessions.firstWhere((item) => jsonInt(item['id']) == _albumSessionId, orElse: () => sessions.first);
       final photo = {
         'id': -DateTime.now().millisecondsSinceEpoch,
         'session_id': jsonInt(session['id']),
@@ -715,28 +991,82 @@ class _MobileGalleryPageState extends State<MobileGalleryPage> {
     final state = widget.state;
     if (state == null) return const EmptyNotice(text: 'Brak galerii w telefonie.');
     final photos = jsonList(state.raw['photos']);
+    final sessions = jsonList(state.raw['sessions']);
+    final shownPhotos = _albumSessionId == null ? photos : photos.where((photo) => jsonInt(photo['session_id']) == _albumSessionId).toList();
+    final albumTitle = _albumSessionId == null
+        ? null
+        : jsonString(sessions.firstWhere((item) => jsonInt(item['id']) == _albumSessionId, orElse: () => {'title': 'Album'})['title'], fallback: 'Album');
     return HufcPage(
-      title: 'Galeria',
+      title: _albumSessionId == null ? 'Galeria' : albumTitle!,
       subtitle: 'Zdjęcia z zajęć. Możesz robić zdjęcia, wgrywać je i otwierać podgląd.',
       actions: [
         FilledButton.icon(onPressed: _uploading ? null : () => _pick(ImageSource.camera), icon: const Icon(Icons.photo_camera), label: const Text('Zrób')),
         OutlinedButton.icon(onPressed: _uploading ? null : () => _pick(ImageSource.gallery), icon: const Icon(Icons.photo_library), label: const Text('Wgraj')),
       ],
       children: [
-        if (_uploading) const Padding(padding: EdgeInsets.only(bottom: 12), child: LinearProgressIndicator()),
-        GridView.builder(
-          shrinkWrap: true,
-          physics: const NeverScrollableScrollPhysics(),
-          itemCount: photos.length,
-          gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(crossAxisCount: 2, crossAxisSpacing: 12, mainAxisSpacing: 12),
-          itemBuilder: (context, index) => _PhotoTile(
-            photo: photos[index],
-            token: widget.session.token,
-            apiBaseUrl: widget.apiBaseUrl,
-            onTap: () => showDialog(context: context, builder: (_) => _PhotoPreviewDialog(photo: photos[index], token: widget.session.token, apiBaseUrl: widget.apiBaseUrl)),
+        if (_albumSessionId != null)
+          Align(
+            alignment: Alignment.centerLeft,
+            child: OutlinedButton.icon(onPressed: () => setState(() => _albumSessionId = null), icon: const Icon(Icons.arrow_back), label: const Text('Albumy')),
           ),
-        ),
-        if (photos.isEmpty) const EmptyNotice(text: 'Nie ma jeszcze zdjęć w lokalnym cache.'),
+        if (_albumSessionId == null)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 12),
+            child: SegmentedButton<bool>(
+              segments: const [
+                ButtonSegment(value: false, label: Text('Zdjęcia'), icon: Icon(Icons.photo_library_outlined)),
+                ButtonSegment(value: true, label: Text('Albumy'), icon: Icon(Icons.folder_copy_outlined)),
+              ],
+              selected: {_albums},
+              onSelectionChanged: (value) => setState(() => _albums = value.first),
+            ),
+          ),
+        if (_uploading) const Padding(padding: EdgeInsets.only(bottom: 12), child: LinearProgressIndicator()),
+        if (_albums && _albumSessionId == null)
+          GridView.builder(
+            shrinkWrap: true,
+            physics: const NeverScrollableScrollPhysics(),
+            itemCount: sessions.length + 1,
+            gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(crossAxisCount: 2, crossAxisSpacing: 12, mainAxisSpacing: 12, childAspectRatio: 1.15),
+            itemBuilder: (context, index) {
+              if (index == 0) {
+                return _AlbumTile(
+                  title: 'Utwórz album',
+                  subtitle: 'Nowa galeria',
+                  icon: Icons.add,
+                  onTap: () => _toast('Album tworzy się automatycznie po dodaniu zbiórki w aplikacji web.'),
+                );
+              }
+              final session = sessions[index - 1];
+              final count = photos.where((photo) => jsonInt(photo['session_id']) == jsonInt(session['id'])).length;
+              final cover = photos.firstWhere((photo) => jsonInt(photo['session_id']) == jsonInt(session['id']), orElse: () => <String, dynamic>{});
+              return _AlbumTile(
+                title: jsonString(session['title'], fallback: 'Album'),
+                subtitle: '$count zdjęć',
+                photo: cover,
+                token: widget.session.token,
+                apiBaseUrl: widget.apiBaseUrl,
+                onTap: () => setState(() {
+                  _albums = false;
+                  _albumSessionId = jsonInt(session['id']);
+                }),
+              );
+            },
+          )
+        else
+          GridView.builder(
+            shrinkWrap: true,
+            physics: const NeverScrollableScrollPhysics(),
+            itemCount: shownPhotos.length,
+            gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(crossAxisCount: 2, crossAxisSpacing: 12, mainAxisSpacing: 12),
+            itemBuilder: (context, index) => _PhotoTile(
+              photo: shownPhotos[index],
+              token: widget.session.token,
+              apiBaseUrl: widget.apiBaseUrl,
+              onTap: () => showDialog(context: context, builder: (_) => _PhotoPreviewDialog(photo: shownPhotos[index], token: widget.session.token, apiBaseUrl: widget.apiBaseUrl)),
+            ),
+          ),
+        if (!_albums && shownPhotos.isEmpty) const EmptyNotice(text: 'Nie ma jeszcze zdjęć w tym widoku.'),
       ],
     );
   }
@@ -1214,7 +1544,7 @@ class SyncPage extends StatelessWidget {
             Text(online ? 'Internet jest dostępny' : 'Brak internetu'),
             Text(queueCount == 0 ? 'Nie ma zmian do wysłania' : '$queueCount zmian czeka lokalnie'),
             const SizedBox(height: 16),
-            FilledButton(onPressed: syncing ? null : onSync, child: syncing ? const HufcLoader(size: 24, color: Colors.white) : const Text('Synchronizuj teraz')),
+            FilledButton(onPressed: syncing ? null : () => onSync(), child: syncing ? const HufcLoader(size: 24, color: Colors.white) : const Text('Synchronizuj teraz')),
           ]),
         ),
         OutlinedButton(onPressed: onLogout, child: const Text('Wyloguj z telefonu')),
@@ -1288,6 +1618,82 @@ class _Initials extends StatelessWidget {
       backgroundColor: const Color(0xFFE0F2E7),
       foregroundColor: const Color(0xFF1F5C36),
       child: Text(initials.isEmpty ? 'H' : initials, style: const TextStyle(fontWeight: FontWeight.w900)),
+    );
+  }
+}
+
+class _DetailRow extends StatelessWidget {
+  const _DetailRow({required this.label, required this.value});
+
+  final String label;
+  final String value;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(width: 118, child: Text(label, style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant))),
+          Expanded(child: Text(value.isEmpty ? 'Brak danych' : value, style: const TextStyle(fontWeight: FontWeight.w800))),
+        ],
+      ),
+    );
+  }
+}
+
+class _AlbumTile extends StatelessWidget {
+  const _AlbumTile({
+    required this.title,
+    required this.subtitle,
+    required this.onTap,
+    this.photo,
+    this.token = '',
+    this.apiBaseUrl = '',
+    this.icon,
+  });
+
+  final String title;
+  final String subtitle;
+  final VoidCallback onTap;
+  final Map<String, dynamic>? photo;
+  final String token;
+  final String apiBaseUrl;
+  final IconData? icon;
+
+  @override
+  Widget build(BuildContext context) {
+    final hasPhoto = photo != null && photo!.isNotEmpty;
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(18),
+      child: Card(
+        elevation: 0,
+        margin: EdgeInsets.zero,
+        clipBehavior: Clip.antiAlias,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Expanded(
+              child: hasPhoto
+                  ? _PhotoImage(photo: photo!, token: token, apiBaseUrl: apiBaseUrl)
+                  : DecoratedBox(
+                      decoration: const BoxDecoration(color: Color(0xFFEAF4EC)),
+                      child: Center(child: Icon(icon ?? Icons.folder_copy_outlined, size: 32, color: const Color(0xFF1F5C36))),
+                    ),
+            ),
+            Padding(
+              padding: const EdgeInsets.all(12),
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Text(title, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.w900)),
+                Text(subtitle, style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant)),
+              ]),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }
@@ -1685,6 +2091,12 @@ String _shortDate(String value) {
   final parsed = DateTime.tryParse(value);
   if (parsed == null) return value;
   return '${parsed.day.toString().padLeft(2, '0')}.${parsed.month.toString().padLeft(2, '0')}.${parsed.year}';
+}
+
+String _dateInput(String value) {
+  final parsed = DateTime.tryParse(value);
+  if (parsed == null) return value;
+  return '${parsed.year}-${parsed.month.toString().padLeft(2, '0')}-${parsed.day.toString().padLeft(2, '0')}';
 }
 
 double _attendanceRatio(Map<String, dynamic> session) {
