@@ -3,7 +3,9 @@ import 'dart:convert';
 
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:permission_handler/permission_handler.dart';
 
 import 'src/core/api_client.dart';
 import 'src/core/local_store.dart';
@@ -26,6 +28,7 @@ class HufcMobileApp extends StatefulWidget {
 }
 
 class _HufcMobileAppState extends State<HufcMobileApp> {
+  final FlutterLocalNotificationsPlugin _notifications = FlutterLocalNotificationsPlugin();
   AuthSession? _session;
   AppState? _state;
   bool _booting = true;
@@ -38,12 +41,22 @@ class _HufcMobileAppState extends State<HufcMobileApp> {
   bool _emailNotifications = true;
   bool _pushNotifications = false;
   bool _photoLocation = false;
+  bool _notificationsReady = false;
+  Timer? _realtimeTimer;
+  int _knownMessageId = 0;
+  int _knownSessionId = 0;
 
   @override
   void initState() {
     super.initState();
     _boot();
     Connectivity().onConnectivityChanged.listen((_) => _refreshOnline(sync: true));
+  }
+
+  @override
+  void dispose() {
+    _realtimeTimer?.cancel();
+    super.dispose();
   }
 
   Future<void> _boot() async {
@@ -70,7 +83,12 @@ class _HufcMobileAppState extends State<HufcMobileApp> {
       _booting = false;
     });
     await _refreshQueue();
-    if (auth != null && online) await _sync();
+    _updateRealtimeBaselines(cached);
+    if (_pushNotifications) await _configureNotifications(request: false);
+    if (auth != null && online) {
+      await _sync(showNotifications: false);
+      _startRealtimePolling();
+    }
   }
 
   Future<bool> _isOnline() async {
@@ -101,6 +119,8 @@ class _HufcMobileAppState extends State<HufcMobileApp> {
       _state = state;
       _online = true;
     });
+    _updateRealtimeBaselines(state);
+    _startRealtimePolling();
   }
 
   Future<void> _setApiBaseUrl(String value) async {
@@ -129,29 +149,46 @@ class _HufcMobileAppState extends State<HufcMobileApp> {
   }
 
   Future<void> _setPushNotifications(bool value) async {
-    await widget.store.put('notify_push', value.toString());
+    var enabled = value;
+    if (value) {
+      enabled = await _configureNotifications(request: true);
+    }
+    await widget.store.put('notify_push', enabled.toString());
     if (!mounted) return;
-    setState(() => _pushNotifications = value);
+    setState(() => _pushNotifications = enabled);
   }
 
   Future<void> _setPhotoLocation(bool value) async {
-    await widget.store.put('photo_location', value.toString());
+    var enabled = value;
+    if (value) {
+      final status = await Permission.locationWhenInUse.request();
+      enabled = status.isGranted || status.isLimited;
+      if (!enabled && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Telefon nie pozwolił użyć lokalizacji. Włącz zgodę w ustawieniach systemu.')));
+      }
+    }
+    await widget.store.put('photo_location', enabled.toString());
     if (!mounted) return;
-    setState(() => _photoLocation = value);
+    setState(() => _photoLocation = enabled);
   }
 
   Future<void> _logout() async {
+    _realtimeTimer?.cancel();
     await widget.store.clearAuth();
     if (!mounted) return;
     setState(() => _session = null);
   }
 
-  Future<void> _sync() async {
+  Future<void> _sync({bool showNotifications = false}) async {
     if (_session == null || _syncing) return;
     setState(() => _syncing = true);
     try {
       final latest = await SyncService(store: widget.store, api: widget.api).sync(_session!, gameId: _state?.game.id);
-      if (mounted && latest != null) setState(() => _state = latest);
+      if (latest != null) {
+        if (showNotifications) await _notifyRealtimeChanges(latest);
+        _updateRealtimeBaselines(latest);
+        if (mounted) setState(() => _state = latest);
+      }
     } catch (_) {
       if (mounted) setState(() => _online = false);
     } finally {
@@ -197,6 +234,83 @@ class _HufcMobileAppState extends State<HufcMobileApp> {
       if (mounted) setState(() => _online = false);
     } finally {
       await _refreshQueue();
+    }
+  }
+
+  Future<bool> _configureNotifications({required bool request}) async {
+    const android = AndroidInitializationSettings('@mipmap/ic_launcher');
+    const ios = DarwinInitializationSettings();
+    if (!_notificationsReady) {
+      await _notifications.initialize(const InitializationSettings(android: android, iOS: ios));
+      _notificationsReady = true;
+    }
+    if (!request) return true;
+    final permission = await Permission.notification.request();
+    final granted = permission.isGranted || permission.isLimited;
+    if (!granted && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Telefon zablokował powiadomienia. Włącz zgodę w ustawieniach systemu.')));
+    }
+    return granted;
+  }
+
+  Future<void> _showLocalNotification(String title, String body) async {
+    if (!_pushNotifications) return;
+    await _configureNotifications(request: false);
+    const android = AndroidNotificationDetails(
+      'moj_hufiec_realtime',
+      'Mój Hufiec',
+      channelDescription: 'Nowe wiadomości i zbiórki z systemu Mój Hufiec.',
+      importance: Importance.high,
+      priority: Priority.high,
+    );
+    const ios = DarwinNotificationDetails();
+    final id = DateTime.now().millisecondsSinceEpoch.remainder(2147483647);
+    await _notifications.show(id, title, body, const NotificationDetails(android: android, iOS: ios));
+  }
+
+  void _startRealtimePolling() {
+    _realtimeTimer?.cancel();
+    _realtimeTimer = Timer.periodic(const Duration(seconds: 12), (_) {
+      if (_online && _session != null && !_syncing) unawaited(_sync(showNotifications: true));
+    });
+  }
+
+  void _updateRealtimeBaselines(AppState? state) {
+    if (state == null) return;
+    _knownMessageId = _maxPositiveId(jsonList(state.raw['messages']), _knownMessageId);
+    _knownSessionId = _maxPositiveId(jsonList(state.raw['sessions']), _knownSessionId);
+  }
+
+  int _maxPositiveId(List<Map<String, dynamic>> items, int fallback) {
+    var maxId = fallback;
+    for (final item in items) {
+      final id = jsonInt(item['id']);
+      if (id > maxId) maxId = id;
+    }
+    return maxId;
+  }
+
+  Future<void> _notifyRealtimeChanges(AppState latest) async {
+    if (!_pushNotifications || _session == null) return;
+    final userId = _session!.user.id;
+    final newMessages = jsonList(latest.raw['messages'])
+        .where((item) => jsonInt(item['id']) > _knownMessageId && jsonInt(item['sender_id']) != userId)
+        .toList()
+      ..sort((a, b) => jsonInt(a['id']).compareTo(jsonInt(b['id'])));
+    for (final message in newMessages.take(3)) {
+      final sender = jsonString(message['sender_name'], fallback: 'Mój Hufiec');
+      final body = jsonString(message['body'], fallback: jsonString(message['attachment_name'], fallback: 'Wysłano załącznik.'));
+      await _showLocalNotification('Nowa wiadomość od $sender', body);
+    }
+
+    final newSessions = jsonList(latest.raw['sessions'])
+        .where((item) => jsonInt(item['id']) > _knownSessionId)
+        .toList()
+      ..sort((a, b) => jsonInt(a['id']).compareTo(jsonInt(b['id'])));
+    for (final session in newSessions.take(2)) {
+      final title = jsonString(session['title'], fallback: 'Zbiórka');
+      final date = _shortDate(jsonString(session['session_date']));
+      await _showLocalNotification('Nowa zbiórka: $title', date.isEmpty ? 'Dodano wydarzenie do harmonogramu.' : date);
     }
   }
 
@@ -367,23 +481,7 @@ class _LoginScreenState extends State<LoginScreen> {
                         children: [
                           Row(
                             children: [
-                              Container(
-                                width: 42,
-                                height: 42,
-                                alignment: Alignment.center,
-                                decoration: BoxDecoration(
-                                  color: theme.colorScheme.primary,
-                                  borderRadius: BorderRadius.circular(14),
-                                  boxShadow: [
-                                    BoxShadow(
-                                      color: theme.colorScheme.primary.withValues(alpha: 0.25),
-                                      blurRadius: 18,
-                                      offset: const Offset(0, 8),
-                                    ),
-                                  ],
-                                ),
-                                child: const Text('H', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w900)),
-                              ),
+                              const _BrandLogoMark(size: 42),
                               const SizedBox(width: 12),
                               const Expanded(
                                 child: Column(
@@ -660,21 +758,11 @@ class _MobileDrawer extends StatelessWidget {
               padding: const EdgeInsets.fromLTRB(16, 14, 16, 22),
               child: Row(
                 children: [
-                  Container(
-                    width: 42,
-                    height: 42,
-                    alignment: Alignment.center,
-                    decoration: BoxDecoration(
-                      color: const Color(0xFFD86F45),
-                      borderRadius: BorderRadius.circular(14),
-                      boxShadow: const [BoxShadow(color: Colors.black26, blurRadius: 16, offset: Offset(0, 8))],
-                    ),
-                    child: const Text('H', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w900)),
-                  ),
+                  const _BrandLogoMark(size: 42),
                   const SizedBox(width: 12),
                   const Expanded(
                     child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                      Text('Hufc', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w900, fontSize: 16)),
+                      Text('Mój Hufiec', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w900, fontSize: 16)),
                       Text('Panel wychowawcy', style: TextStyle(color: Colors.white70, fontSize: 12)),
                     ]),
                   ),
@@ -2400,6 +2488,27 @@ class _Initials extends StatelessWidget {
       backgroundColor: const Color(0xFFE0F2E7),
       foregroundColor: const Color(0xFF1F5C36),
       child: Text(initials.isEmpty ? 'H' : initials, style: const TextStyle(fontWeight: FontWeight.w900)),
+    );
+  }
+}
+
+class _BrandLogoMark extends StatelessWidget {
+  const _BrandLogoMark({this.size = 40});
+
+  final double size;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: size,
+      height: size,
+      padding: EdgeInsets.all(size * 0.13),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF7F3EC),
+        borderRadius: BorderRadius.circular(size * 0.32),
+        boxShadow: const [BoxShadow(color: Colors.black26, blurRadius: 16, offset: Offset(0, 8))],
+      ),
+      child: Image.asset('assets/brand/moj-hufiec-logo.png', fit: BoxFit.contain),
     );
   }
 }

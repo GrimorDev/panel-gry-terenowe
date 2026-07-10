@@ -28,7 +28,10 @@ jobs:
       - name: Create native project files
         run: flutter create --platforms=ios .
 
-      - name: Ensure iOS photo permissions
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Ensure iOS branding and permissions
         run: |
           python3 - <<'PY'
           from pathlib import Path
@@ -36,14 +39,17 @@ jobs:
 
           plist = Path("ios/Runner/Info.plist")
           data = plistlib.loads(plist.read_bytes())
+          data["CFBundleDisplayName"] = "Mój Hufiec"
+          data["CFBundleName"] = "Mój Hufiec"
           data["NSCameraUsageDescription"] = "Aplikacja Mój Hufiec używa aparatu do dodawania zdjęć do galerii."
           data["NSPhotoLibraryUsageDescription"] = "Aplikacja Mój Hufiec używa galerii do wybierania zdjęć."
           data["NSPhotoLibraryAddUsageDescription"] = "Aplikacja Mój Hufiec zapisuje zdjęcia dodane w galerii."
+          data["NSLocationWhenInUseUsageDescription"] = "Aplikacja Mój Hufiec używa lokalizacji do dopisywania miejsca wykonania zdjęcia."
           plist.write_bytes(plistlib.dumps(data))
           PY
 
-      - name: Install dependencies
-        run: flutter pub get
+      - name: Generate launcher icons
+        run: dart run flutter_launcher_icons
 
       - name: Analyze
         run: flutter analyze

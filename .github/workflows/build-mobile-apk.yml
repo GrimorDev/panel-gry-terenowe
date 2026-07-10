@@ -28,7 +28,10 @@ jobs:
       - name: Create native project files
         run: flutter create --platforms=android .
 
-      - name: Ensure Android permissions
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Ensure Android branding and permissions
         run: |
           python - <<'PY'
           from pathlib import Path
@@ -38,6 +41,9 @@ jobs:
           permissions = [
               '<uses-permission android:name="android.permission.INTERNET"/>',
               '<uses-permission android:name="android.permission.CAMERA"/>',
+              '<uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>',
+              '<uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"/>',
+              '<uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"/>',
               '<uses-permission android:name="android.permission.READ_MEDIA_IMAGES"/>',
               '<uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32"/>',
           ]
@@ -48,11 +54,13 @@ jobs:
                   '<manifest xmlns:android="http://schemas.android.com/apk/res/android">\\n    ' + '\\n    '.join(missing),
                   1,
               )
-              manifest.write_text(text, encoding="utf-8")
+          text = text.replace('android:label="hufc_mobile"', 'android:label="Mój Hufiec"')
+          text = text.replace('android:label="hufc mobile"', 'android:label="Mój Hufiec"')
+          manifest.write_text(text, encoding="utf-8")
           PY
 
-      - name: Install dependencies
-        run: flutter pub get
+      - name: Generate launcher icons
+        run: dart run flutter_launcher_icons
 
       - name: Analyze
         run: flutter analyze
