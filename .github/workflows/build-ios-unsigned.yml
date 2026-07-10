@@ -48,9 +48,6 @@ jobs:
           plist.write_bytes(plistlib.dumps(data))
           PY
 
-      - name: Generate launcher icons
-        run: dart run flutter_launcher_icons
-
       - name: Analyze
         run: flutter analyze
 
