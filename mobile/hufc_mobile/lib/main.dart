@@ -27,7 +27,7 @@ class HufcMobileApp extends StatefulWidget {
   State<HufcMobileApp> createState() => _HufcMobileAppState();
 }
 
-class _HufcMobileAppState extends State<HufcMobileApp> {
+class _HufcMobileAppState extends State<HufcMobileApp> with WidgetsBindingObserver {
   final FlutterLocalNotificationsPlugin _notifications = FlutterLocalNotificationsPlugin();
   AuthSession? _session;
   AppState? _state;
@@ -42,21 +42,34 @@ class _HufcMobileAppState extends State<HufcMobileApp> {
   bool _pushNotifications = false;
   bool _photoLocation = false;
   bool _notificationsReady = false;
+  StreamSubscription<List<ConnectivityResult>>? _connectivitySubscription;
   Timer? _realtimeTimer;
   int _knownMessageId = 0;
   int _knownSessionId = 0;
+  String? _pendingConversationKey;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _boot();
-    Connectivity().onConnectivityChanged.listen((_) => _refreshOnline(sync: true));
+    _connectivitySubscription = Connectivity().onConnectivityChanged.listen((_) => _refreshOnline(sync: true, showNotifications: true));
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _connectivitySubscription?.cancel();
     _realtimeTimer?.cancel();
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      unawaited(_recoverConnection(showNotifications: true));
+      _startRealtimePolling();
+    }
   }
 
   Future<void> _boot() async {
@@ -96,11 +109,32 @@ class _HufcMobileAppState extends State<HufcMobileApp> {
     return !result.contains(ConnectivityResult.none);
   }
 
-  Future<void> _refreshOnline({bool sync = false}) async {
+  Future<void> _refreshOnline({bool sync = false, bool showNotifications = false}) async {
     final online = await _isOnline();
     if (!mounted) return;
-    setState(() => _online = online);
-    if (online && sync && _session != null) await _sync();
+    if (!online) {
+      setState(() => _online = false);
+      return;
+    }
+    if (online && sync && _session != null) {
+      await _sync(showNotifications: showNotifications);
+    } else {
+      setState(() => _online = true);
+    }
+  }
+
+  Future<void> _recoverConnection({bool showNotifications = false}) async {
+    if (_session == null) {
+      await _refreshOnline();
+      return;
+    }
+    final online = await _isOnline();
+    if (!mounted) return;
+    if (!online) {
+      setState(() => _online = false);
+      return;
+    }
+    await _sync(showNotifications: showNotifications);
   }
 
   Future<void> _refreshQueue() async {
@@ -187,7 +221,14 @@ class _HufcMobileAppState extends State<HufcMobileApp> {
       if (latest != null) {
         if (showNotifications) await _notifyRealtimeChanges(latest);
         _updateRealtimeBaselines(latest);
-        if (mounted) setState(() => _state = latest);
+        if (mounted) {
+          setState(() {
+            _state = latest;
+            _online = true;
+          });
+        }
+      } else if (mounted) {
+        setState(() => _online = true);
       }
     } catch (_) {
       if (mounted) setState(() => _online = false);
@@ -241,8 +282,16 @@ class _HufcMobileAppState extends State<HufcMobileApp> {
     const android = AndroidInitializationSettings('@mipmap/ic_launcher');
     const ios = DarwinInitializationSettings();
     if (!_notificationsReady) {
-      await _notifications.initialize(const InitializationSettings(android: android, iOS: ios));
+      await _notifications.initialize(
+        const InitializationSettings(android: android, iOS: ios),
+        onDidReceiveNotificationResponse: _handleNotificationResponse,
+      );
       _notificationsReady = true;
+      final launchDetails = await _notifications.getNotificationAppLaunchDetails();
+      final launchResponse = launchDetails?.notificationResponse;
+      if ((launchDetails?.didNotificationLaunchApp ?? false) && launchResponse != null) {
+        _handleNotificationResponse(launchResponse);
+      }
     }
     if (!request) return true;
     final permission = await Permission.notification.request();
@@ -253,7 +302,21 @@ class _HufcMobileAppState extends State<HufcMobileApp> {
     return granted;
   }
 
-  Future<void> _showLocalNotification(String title, String body) async {
+  void _handleNotificationResponse(NotificationResponse response) {
+    const prefix = 'conversation:';
+    final payload = response.payload ?? '';
+    if (!payload.startsWith(prefix)) return;
+    final key = payload.substring(prefix.length);
+    if (key.isEmpty || !mounted) return;
+    setState(() => _pendingConversationKey = key);
+    unawaited(_recoverConnection());
+  }
+
+  void _consumePendingConversation() {
+    if (mounted) setState(() => _pendingConversationKey = null);
+  }
+
+  Future<void> _showLocalNotification(String title, String body, {String? payload}) async {
     if (!_pushNotifications) return;
     await _configureNotifications(request: false);
     const android = AndroidNotificationDetails(
@@ -265,13 +328,14 @@ class _HufcMobileAppState extends State<HufcMobileApp> {
     );
     const ios = DarwinNotificationDetails();
     final id = DateTime.now().millisecondsSinceEpoch.remainder(2147483647);
-    await _notifications.show(id, title, body, const NotificationDetails(android: android, iOS: ios));
+    await _notifications.show(id, title, body, const NotificationDetails(android: android, iOS: ios), payload: payload);
   }
 
   void _startRealtimePolling() {
     _realtimeTimer?.cancel();
+    if (_session != null && !_syncing) unawaited(_recoverConnection(showNotifications: true));
     _realtimeTimer = Timer.periodic(const Duration(seconds: 12), (_) {
-      if (_online && _session != null && !_syncing) unawaited(_sync(showNotifications: true));
+      if (_session != null && !_syncing) unawaited(_recoverConnection(showNotifications: true));
     });
   }
 
@@ -300,7 +364,8 @@ class _HufcMobileAppState extends State<HufcMobileApp> {
     for (final message in newMessages.take(3)) {
       final sender = jsonString(message['sender_name'], fallback: 'Mój Hufiec');
       final body = jsonString(message['body'], fallback: jsonString(message['attachment_name'], fallback: 'Wysłano załącznik.'));
-      await _showLocalNotification('Nowa wiadomość od $sender', body);
+      final key = _conversationKeyForMessage(message, userId);
+      await _showLocalNotification('Nowa wiadomość od $sender', body, payload: key == null ? null : 'conversation:$key');
     }
 
     final newSessions = jsonList(latest.raw['sessions'])
@@ -365,6 +430,8 @@ class _HufcMobileAppState extends State<HufcMobileApp> {
                   onEmailNotificationsChanged: _setEmailNotifications,
                   onPushNotificationsChanged: _setPushNotifications,
                   onPhotoLocationChanged: _setPhotoLocation,
+                  openConversationKey: _pendingConversationKey,
+                  onOpenConversationConsumed: _consumePendingConversation,
                 ),
     );
   }
@@ -626,6 +693,8 @@ class ShellScreen extends StatefulWidget {
     required this.onEmailNotificationsChanged,
     required this.onPushNotificationsChanged,
     required this.onPhotoLocationChanged,
+    this.openConversationKey,
+    required this.onOpenConversationConsumed,
   });
 
   final AuthSession session;
@@ -648,6 +717,8 @@ class ShellScreen extends StatefulWidget {
   final ValueChanged<bool> onEmailNotificationsChanged;
   final ValueChanged<bool> onPushNotificationsChanged;
   final ValueChanged<bool> onPhotoLocationChanged;
+  final String? openConversationKey;
+  final VoidCallback onOpenConversationConsumed;
 
   @override
   State<ShellScreen> createState() => _ShellScreenState();
@@ -657,6 +728,26 @@ class _ShellScreenState extends State<ShellScreen> {
   int _tab = 0;
   bool _chatFocused = false;
   final _scaffoldKey = GlobalKey<ScaffoldState>();
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.openConversationKey != null) {
+      _tab = 5;
+      _chatFocused = true;
+    }
+  }
+
+  @override
+  void didUpdateWidget(covariant ShellScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.openConversationKey != null && widget.openConversationKey != oldWidget.openConversationKey) {
+      setState(() {
+        _tab = 5;
+        _chatFocused = true;
+      });
+    }
+  }
 
   void _selectTab(int index) {
     setState(() {
@@ -674,7 +765,7 @@ class _ShellScreenState extends State<ShellScreen> {
       _MobilePage('Grupy', Icons.groups_outlined, Icons.groups, GroupsPage(state: state)),
       _MobilePage('Zbiórki', Icons.calendar_month_outlined, Icons.calendar_month, MeetingsPage(state: state, onMutate: widget.onMutate, onDelete: widget.onDelete)),
       _MobilePage('Galeria', Icons.photo_library_outlined, Icons.photo_library, MobileGalleryPage(state: state, session: widget.session, apiBaseUrl: widget.apiBaseUrl, onMutate: widget.onMutate)),
-      _MobilePage('Wiadomości', Icons.chat_bubble_outline, Icons.chat_bubble, MessagesPage(state: state, session: widget.session, apiBaseUrl: widget.apiBaseUrl, onMutate: widget.onMutate, onConversationModeChanged: (value) => setState(() => _chatFocused = value))),
+      _MobilePage('Wiadomości', Icons.chat_bubble_outline, Icons.chat_bubble, MessagesPage(state: state, session: widget.session, apiBaseUrl: widget.apiBaseUrl, onMutate: widget.onMutate, onConversationModeChanged: (value) => setState(() => _chatFocused = value), openConversationKey: widget.openConversationKey, onOpenConversationConsumed: widget.onOpenConversationConsumed)),
       _MobilePage('Gry', Icons.flag_outlined, Icons.flag, GamesPage(state: state, onMutate: widget.onMutate)),
       _MobilePage('Współzawodnictwo', Icons.emoji_events_outlined, Icons.emoji_events, CompetitionPage(state: state, onMutate: widget.onMutate, onDelete: widget.onDelete)),
       _MobilePage('Sync', Icons.cloud_sync_outlined, Icons.cloud_sync, SyncPage(online: widget.online, syncing: widget.syncing, queueCount: widget.queueCount, onSync: widget.onSync, onLogout: widget.onLogout)),
@@ -1459,12 +1550,23 @@ class _MobileGalleryPageState extends State<MobileGalleryPage> {
 }
 
 class MessagesPage extends StatefulWidget {
-  const MessagesPage({super.key, required this.state, required this.session, required this.apiBaseUrl, required this.onMutate, this.onConversationModeChanged});
+  const MessagesPage({
+    super.key,
+    required this.state,
+    required this.session,
+    required this.apiBaseUrl,
+    required this.onMutate,
+    this.onConversationModeChanged,
+    this.openConversationKey,
+    this.onOpenConversationConsumed,
+  });
   final AppState? state;
   final AuthSession session;
   final String apiBaseUrl;
   final Future<void> Function(String url, Map<String, dynamic> body, AppState optimistic) onMutate;
   final ValueChanged<bool>? onConversationModeChanged;
+  final String? openConversationKey;
+  final VoidCallback? onOpenConversationConsumed;
 
   @override
   State<MessagesPage> createState() => _MessagesPageState();
@@ -1477,10 +1579,44 @@ class _MessagesPageState extends State<MessagesPage> {
   bool _attaching = false;
 
   @override
+  void initState() {
+    super.initState();
+    _scheduleOpenRequestedConversation();
+  }
+
+  @override
+  void didUpdateWidget(covariant MessagesPage oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.openConversationKey != null && (widget.openConversationKey != oldWidget.openConversationKey || widget.state != oldWidget.state)) {
+      _scheduleOpenRequestedConversation();
+    }
+  }
+
+  @override
   void dispose() {
     widget.onConversationModeChanged?.call(false);
     _controller.dispose();
     super.dispose();
+  }
+
+  void _scheduleOpenRequestedConversation() {
+    WidgetsBinding.instance.addPostFrameCallback((_) => _openRequestedConversation());
+  }
+
+  void _openRequestedConversation() {
+    final key = widget.openConversationKey;
+    final state = widget.state;
+    if (!mounted || key == null || state == null) return;
+    final conversations = _buildConversations(state, widget.session.user);
+    for (final conversation in conversations) {
+      if (conversation.key == key) {
+        setState(() => _selected = conversation);
+        widget.onConversationModeChanged?.call(true);
+        widget.onOpenConversationConsumed?.call();
+        return;
+      }
+    }
+    widget.onOpenConversationConsumed?.call();
   }
 
   void _openConversation(_Conversation conversation) {
