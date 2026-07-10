@@ -33,6 +33,11 @@ class _HufcMobileAppState extends State<HufcMobileApp> {
   bool _syncing = false;
   int _queueCount = 0;
   String _apiBaseUrl = ApiClient.defaultBaseUrl;
+  ThemeMode _themeMode = ThemeMode.system;
+  String _accentHex = '#1F5C36';
+  bool _emailNotifications = true;
+  bool _pushNotifications = false;
+  bool _photoLocation = false;
 
   @override
   void initState() {
@@ -43,6 +48,11 @@ class _HufcMobileAppState extends State<HufcMobileApp> {
 
   Future<void> _boot() async {
     final savedApiBaseUrl = await widget.store.get('api_base_url');
+    final savedThemeMode = await widget.store.get('theme_mode');
+    final savedAccent = await widget.store.get('accent_color');
+    final savedEmailNotifications = await widget.store.get('notify_email');
+    final savedPushNotifications = await widget.store.get('notify_push');
+    final savedPhotoLocation = await widget.store.get('photo_location');
     if (savedApiBaseUrl != null) widget.api.setBaseUrl(savedApiBaseUrl);
     final auth = await widget.store.readAuth();
     final cached = await widget.store.readState();
@@ -52,6 +62,11 @@ class _HufcMobileAppState extends State<HufcMobileApp> {
       _state = cached;
       _apiBaseUrl = widget.api.baseUrl;
       _online = online;
+      _themeMode = _themeModeFromString(savedThemeMode);
+      _accentHex = savedAccent ?? _accentHex;
+      _emailNotifications = savedEmailNotifications != 'false';
+      _pushNotifications = savedPushNotifications == 'true';
+      _photoLocation = savedPhotoLocation == 'true';
       _booting = false;
     });
     await _refreshQueue();
@@ -93,6 +108,36 @@ class _HufcMobileAppState extends State<HufcMobileApp> {
     await widget.store.put('api_base_url', widget.api.baseUrl);
     if (!mounted) return;
     setState(() => _apiBaseUrl = widget.api.baseUrl);
+  }
+
+  Future<void> _setThemeMode(ThemeMode mode) async {
+    await widget.store.put('theme_mode', mode.name);
+    if (!mounted) return;
+    setState(() => _themeMode = mode);
+  }
+
+  Future<void> _setAccentHex(String value) async {
+    await widget.store.put('accent_color', value);
+    if (!mounted) return;
+    setState(() => _accentHex = value);
+  }
+
+  Future<void> _setEmailNotifications(bool value) async {
+    await widget.store.put('notify_email', value.toString());
+    if (!mounted) return;
+    setState(() => _emailNotifications = value);
+  }
+
+  Future<void> _setPushNotifications(bool value) async {
+    await widget.store.put('notify_push', value.toString());
+    if (!mounted) return;
+    setState(() => _pushNotifications = value);
+  }
+
+  Future<void> _setPhotoLocation(bool value) async {
+    await widget.store.put('photo_location', value.toString());
+    if (!mounted) return;
+    setState(() => _photoLocation = value);
   }
 
   Future<void> _logout() async {
@@ -170,14 +215,13 @@ class _HufcMobileAppState extends State<HufcMobileApp> {
 
   @override
   Widget build(BuildContext context) {
+    final accent = _colorFromHex(_accentHex);
     return MaterialApp(
       title: 'Mój Hufiec',
       debugShowCheckedModeBanner: false,
-      theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF1F5C36)),
-        useMaterial3: true,
-        scaffoldBackgroundColor: const Color(0xFFF7F3EC),
-      ),
+      theme: _appTheme(brightness: Brightness.light, accent: accent),
+      darkTheme: _appTheme(brightness: Brightness.dark, accent: accent),
+      themeMode: _themeMode,
       home: _booting
           ? const BootScreen()
           : _session == null
@@ -197,6 +241,16 @@ class _HufcMobileAppState extends State<HufcMobileApp> {
                   onSync: _sync,
                   onMutate: _mutate,
                   onDelete: _delete,
+                  themeMode: _themeMode,
+                  accentHex: _accentHex,
+                  emailNotifications: _emailNotifications,
+                  pushNotifications: _pushNotifications,
+                  photoLocation: _photoLocation,
+                  onThemeModeChanged: _setThemeMode,
+                  onAccentChanged: _setAccentHex,
+                  onEmailNotificationsChanged: _setEmailNotifications,
+                  onPushNotificationsChanged: _setPushNotifications,
+                  onPhotoLocationChanged: _setPhotoLocation,
                 ),
     );
   }
@@ -464,6 +518,16 @@ class ShellScreen extends StatefulWidget {
     required this.onSync,
     required this.onMutate,
     required this.onDelete,
+    required this.themeMode,
+    required this.accentHex,
+    required this.emailNotifications,
+    required this.pushNotifications,
+    required this.photoLocation,
+    required this.onThemeModeChanged,
+    required this.onAccentChanged,
+    required this.onEmailNotificationsChanged,
+    required this.onPushNotificationsChanged,
+    required this.onPhotoLocationChanged,
   });
 
   final AuthSession session;
@@ -476,6 +540,16 @@ class ShellScreen extends StatefulWidget {
   final Future<void> Function() onSync;
   final Future<void> Function(String url, Map<String, dynamic> body, AppState optimistic) onMutate;
   final Future<void> Function(String url, AppState optimistic) onDelete;
+  final ThemeMode themeMode;
+  final String accentHex;
+  final bool emailNotifications;
+  final bool pushNotifications;
+  final bool photoLocation;
+  final ValueChanged<ThemeMode> onThemeModeChanged;
+  final ValueChanged<String> onAccentChanged;
+  final ValueChanged<bool> onEmailNotificationsChanged;
+  final ValueChanged<bool> onPushNotificationsChanged;
+  final ValueChanged<bool> onPhotoLocationChanged;
 
   @override
   State<ShellScreen> createState() => _ShellScreenState();
@@ -483,7 +557,15 @@ class ShellScreen extends StatefulWidget {
 
 class _ShellScreenState extends State<ShellScreen> {
   int _tab = 0;
+  bool _chatFocused = false;
   final _scaffoldKey = GlobalKey<ScaffoldState>();
+
+  void _selectTab(int index) {
+    setState(() {
+      _tab = index;
+      _chatFocused = false;
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -494,12 +576,13 @@ class _ShellScreenState extends State<ShellScreen> {
       _MobilePage('Grupy', Icons.groups_outlined, Icons.groups, GroupsPage(state: state)),
       _MobilePage('Zbiórki', Icons.calendar_month_outlined, Icons.calendar_month, MeetingsPage(state: state, onMutate: widget.onMutate, onDelete: widget.onDelete)),
       _MobilePage('Galeria', Icons.photo_library_outlined, Icons.photo_library, MobileGalleryPage(state: state, session: widget.session, apiBaseUrl: widget.apiBaseUrl, onMutate: widget.onMutate)),
-      _MobilePage('Wiadomości', Icons.chat_bubble_outline, Icons.chat_bubble, MessagesPage(state: state, session: widget.session, apiBaseUrl: widget.apiBaseUrl, onMutate: widget.onMutate)),
+      _MobilePage('Wiadomości', Icons.chat_bubble_outline, Icons.chat_bubble, MessagesPage(state: state, session: widget.session, apiBaseUrl: widget.apiBaseUrl, onMutate: widget.onMutate, onConversationModeChanged: (value) => setState(() => _chatFocused = value))),
       _MobilePage('Gry', Icons.flag_outlined, Icons.flag, GamesPage(state: state, onMutate: widget.onMutate)),
       _MobilePage('Współzawodnictwo', Icons.emoji_events_outlined, Icons.emoji_events, CompetitionPage(state: state, onMutate: widget.onMutate)),
       _MobilePage('Sync', Icons.cloud_sync_outlined, Icons.cloud_sync, SyncPage(online: widget.online, syncing: widget.syncing, queueCount: widget.queueCount, onSync: widget.onSync, onLogout: widget.onLogout)),
+      _MobilePage('Ustawienia', Icons.settings_outlined, Icons.settings, SettingsPage(session: widget.session, apiBaseUrl: widget.apiBaseUrl, queueCount: widget.queueCount, themeMode: widget.themeMode, accentHex: widget.accentHex, emailNotifications: widget.emailNotifications, pushNotifications: widget.pushNotifications, photoLocation: widget.photoLocation, onThemeModeChanged: widget.onThemeModeChanged, onAccentChanged: widget.onAccentChanged, onEmailNotificationsChanged: widget.onEmailNotificationsChanged, onPushNotificationsChanged: widget.onPushNotificationsChanged, onPhotoLocationChanged: widget.onPhotoLocationChanged, onLogout: widget.onLogout, onSync: widget.onSync)),
     ];
-    final bottomDestinations = [0, 3, 5, 4];
+    final bottomDestinations = [0, 3, 5, 4, 9];
     final bottomIndex = bottomDestinations.contains(_tab) ? bottomDestinations.indexOf(_tab) : 4;
     return Scaffold(
       key: _scaffoldKey,
@@ -509,9 +592,9 @@ class _ShellScreenState extends State<ShellScreen> {
         session: widget.session,
         queueCount: widget.queueCount,
         onLogout: widget.onLogout,
-        onSelect: (index) => setState(() => _tab = index),
+        onSelect: _selectTab,
       ),
-      appBar: AppBar(
+      appBar: _chatFocused ? null : AppBar(
         title: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
@@ -530,25 +613,17 @@ class _ShellScreenState extends State<ShellScreen> {
         switchOutCurve: Curves.easeInCubic,
         child: KeyedSubtree(key: ValueKey(_tab), child: pages[_tab].child),
       ),
-      bottomNavigationBar: NavigationBar(
+      bottomNavigationBar: _chatFocused ? null : NavigationBar(
         selectedIndex: bottomIndex,
         onDestinationSelected: (value) {
-          if (value == 4) {
-            _scaffoldKey.currentState?.openDrawer();
-            return;
-          }
-          setState(() => _tab = bottomDestinations[value]);
+          _selectTab(bottomDestinations[value]);
         },
         destinations: [
           NavigationDestination(icon: Icon(pages[0].icon), selectedIcon: Icon(pages[0].selectedIcon), label: pages[0].label),
           NavigationDestination(icon: Icon(pages[3].icon), selectedIcon: Icon(pages[3].selectedIcon), label: pages[3].label),
           NavigationDestination(icon: Icon(pages[5].icon), selectedIcon: Icon(pages[5].selectedIcon), label: pages[5].label),
           NavigationDestination(icon: Icon(pages[4].icon), selectedIcon: Icon(pages[4].selectedIcon), label: pages[4].label),
-          NavigationDestination(
-            icon: Badge(isLabelVisible: widget.queueCount > 0, label: Text('${widget.queueCount}'), child: const Icon(Icons.more_horiz)),
-            selectedIcon: Badge(isLabelVisible: widget.queueCount > 0, label: Text('${widget.queueCount}'), child: const Icon(Icons.more_horiz)),
-            label: 'Więcej',
-          ),
+          NavigationDestination(icon: Icon(pages[9].icon), selectedIcon: Icon(pages[9].selectedIcon), label: pages[9].label),
         ],
       ),
     );
@@ -680,15 +755,16 @@ class DashboardPage extends StatelessWidget {
         HufcHero(name: session.user.name, subtitle: online ? 'Połączono z serwerem' : 'Tryb offline - zapis lokalny'),
         const SizedBox(height: 16),
         Row(children: [
-          Expanded(child: StatCard(title: 'Podopieczni', value: '${wards.length}')),
+          Expanded(child: _MetricTile(label: 'Dzieci', value: '${wards.length}', icon: Icons.person_outline)),
           const SizedBox(width: 10),
-          Expanded(child: StatCard(title: 'Grupy', value: '${groups.length}')),
+          Expanded(child: _MetricTile(label: 'Grupy', value: '${groups.length}', icon: Icons.groups_outlined)),
           const SizedBox(width: 10),
-          Expanded(child: StatCard(title: 'Wiadomości', value: '${messages.length}')),
+          Expanded(child: _MetricTile(label: 'Wiadomości', value: '${messages.length}', icon: Icons.chat_bubble_outline)),
         ]),
-        const SizedBox(height: 10),
-        StatCard(title: 'Aktywna gra', value: game?.name ?? 'Brak danych'),
-        StatCard(title: 'Kolejka synchronizacji', value: queueCount == 0 ? 'Wszystko zapisane' : '$queueCount zmian czeka'),
+        const SizedBox(height: 12),
+        _InfoBlock(title: 'Aktywna gra', value: game?.name ?? 'Brak danych', icon: Icons.flag_outlined),
+        const SizedBox(height: 12),
+        _InfoBlock(title: 'Kolejka synchronizacji', value: queueCount == 0 ? 'Wszystko zapisane' : '$queueCount zmian czeka', icon: Icons.sync_outlined),
         CardPanel(
           title: 'Nadchodzące zbiórki',
           child: Column(
@@ -707,6 +783,228 @@ class DashboardPage extends StatelessWidget {
         ),
         if (state == null) const EmptyNotice(text: 'Brak lokalnych danych. Zaloguj się raz z internetem, żeby pobrać bazę do telefonu.'),
       ],
+    );
+  }
+}
+
+class SettingsPage extends StatefulWidget {
+  const SettingsPage({
+    super.key,
+    required this.session,
+    required this.apiBaseUrl,
+    required this.queueCount,
+    required this.themeMode,
+    required this.accentHex,
+    required this.emailNotifications,
+    required this.pushNotifications,
+    required this.photoLocation,
+    required this.onThemeModeChanged,
+    required this.onAccentChanged,
+    required this.onEmailNotificationsChanged,
+    required this.onPushNotificationsChanged,
+    required this.onPhotoLocationChanged,
+    required this.onLogout,
+    required this.onSync,
+  });
+
+  final AuthSession session;
+  final String apiBaseUrl;
+  final int queueCount;
+  final ThemeMode themeMode;
+  final String accentHex;
+  final bool emailNotifications;
+  final bool pushNotifications;
+  final bool photoLocation;
+  final ValueChanged<ThemeMode> onThemeModeChanged;
+  final ValueChanged<String> onAccentChanged;
+  final ValueChanged<bool> onEmailNotificationsChanged;
+  final ValueChanged<bool> onPushNotificationsChanged;
+  final ValueChanged<bool> onPhotoLocationChanged;
+  final VoidCallback onLogout;
+  final Future<void> Function() onSync;
+
+  @override
+  State<SettingsPage> createState() => _SettingsPageState();
+}
+
+class _SettingsPageState extends State<SettingsPage> {
+  final _currentPassword = TextEditingController();
+  final _newPassword = TextEditingController();
+  int _tab = 0;
+
+  @override
+  void dispose() {
+    _currentPassword.dispose();
+    _newPassword.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final tabs = ['Profil', 'Wygląd', 'Powiadomienia', 'Konto'];
+    return HufcPage(
+      title: 'Ustawienia',
+      subtitle: 'Konto, wygląd aplikacji, powiadomienia i praca offline.',
+      children: [
+        CardPanel(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                child: Row(
+                  children: [
+                    for (var index = 0; index < tabs.length; index++)
+                      Padding(
+                        padding: const EdgeInsets.only(right: 8),
+                        child: ChoiceChip(
+                          label: Text(tabs[index]),
+                          selected: _tab == index,
+                          onSelected: (_) => setState(() => _tab = index),
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 18),
+              AnimatedSwitcher(
+                duration: const Duration(milliseconds: 180),
+                child: KeyedSubtree(
+                  key: ValueKey(_tab),
+                  child: switch (_tab) {
+                    0 => _profileTab(context),
+                    1 => _appearanceTab(context),
+                    2 => _notificationsTab(context),
+                    _ => _accountTab(context),
+                  },
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _profileTab(BuildContext context) {
+    final user = widget.session.user;
+    return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+      Row(children: [
+        _Initials(text: user.name),
+        const SizedBox(width: 12),
+        Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text(user.name, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w900)),
+          Text(user.role, style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant)),
+        ])),
+      ]),
+      const SizedBox(height: 18),
+      _ReadonlyField(label: 'Imię i nazwisko', value: user.name),
+      const SizedBox(height: 10),
+      _ReadonlyField(label: 'E-mail', value: user.email),
+      const SizedBox(height: 10),
+      _ReadonlyField(label: 'Serwer', value: widget.apiBaseUrl),
+      const SizedBox(height: 12),
+      Text('Zmiany profilu są zapisywane w panelu webowym i pobierane przy synchronizacji.', style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant)),
+    ]);
+  }
+
+  Widget _appearanceTab(BuildContext context) {
+    final accents = ['#1F5C36', '#D86F45', '#F7F3EC', '#0B1E14'];
+    return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+      Text('Tryb aplikacji', style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w900)),
+      const SizedBox(height: 10),
+      SegmentedButton<ThemeMode>(
+        segments: const [
+          ButtonSegment(value: ThemeMode.system, label: Text('Auto')),
+          ButtonSegment(value: ThemeMode.light, label: Text('Jasny')),
+          ButtonSegment(value: ThemeMode.dark, label: Text('Ciemny')),
+        ],
+        selected: {widget.themeMode},
+        onSelectionChanged: (value) => widget.onThemeModeChanged(value.first),
+      ),
+      const SizedBox(height: 18),
+      Text('Kolor akcentu', style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w900)),
+      const SizedBox(height: 10),
+      Wrap(
+        spacing: 10,
+        children: [
+          for (final accent in accents)
+            InkWell(
+              onTap: () => widget.onAccentChanged(accent),
+              borderRadius: BorderRadius.circular(14),
+              child: Container(
+                width: 46,
+                height: 46,
+                decoration: BoxDecoration(
+                  color: _colorFromHex(accent),
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(color: widget.accentHex == accent ? Theme.of(context).colorScheme.onSurface : Colors.white54, width: widget.accentHex == accent ? 3 : 1),
+                ),
+              ),
+            ),
+        ],
+      ),
+    ]);
+  }
+
+  Widget _notificationsTab(BuildContext context) {
+    return Column(children: [
+      SwitchListTile(
+        contentPadding: EdgeInsets.zero,
+        title: const Text('E-mail', style: TextStyle(fontWeight: FontWeight.w900)),
+        subtitle: const Text('Podsumowania i przypomnienia po podpięciu SMTP.'),
+        value: widget.emailNotifications,
+        onChanged: widget.onEmailNotificationsChanged,
+      ),
+      SwitchListTile(
+        contentPadding: EdgeInsets.zero,
+        title: const Text('Powiadomienia push', style: TextStyle(fontWeight: FontWeight.w900)),
+        subtitle: const Text('Aplikacja zapamięta zgodę i użyje jej przy obsłudze push.'),
+        value: widget.pushNotifications,
+        onChanged: widget.onPushNotificationsChanged,
+      ),
+      SwitchListTile(
+        contentPadding: EdgeInsets.zero,
+        title: const Text('Lokalizacja do zdjęć', style: TextStyle(fontWeight: FontWeight.w900)),
+        subtitle: const Text('Pozwala dopisywać miejsce wykonania zdjęcia.'),
+        value: widget.photoLocation,
+        onChanged: widget.onPhotoLocationChanged,
+      ),
+    ]);
+  }
+
+  Widget _accountTab(BuildContext context) {
+    return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+      TextField(controller: _currentPassword, obscureText: true, decoration: const InputDecoration(labelText: 'Aktualne hasło')),
+      const SizedBox(height: 10),
+      TextField(controller: _newPassword, obscureText: true, decoration: const InputDecoration(labelText: 'Nowe hasło')),
+      const SizedBox(height: 12),
+      FilledButton(
+        onPressed: () {
+          _currentPassword.clear();
+          _newPassword.clear();
+          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Zmiana hasła wymaga potwierdzenia przez serwer.')));
+        },
+        child: const Text('Zmień hasło'),
+      ),
+      const SizedBox(height: 12),
+      OutlinedButton(onPressed: widget.onLogout, child: const Text('Wyloguj się')),
+      const SizedBox(height: 12),
+      Text('Kolejka synchronizacji: ${widget.queueCount == 0 ? 'wszystko zapisane' : '${widget.queueCount} zmian czeka'}'),
+    ]);
+  }
+}
+
+class _ReadonlyField extends StatelessWidget {
+  const _ReadonlyField({required this.label, required this.value});
+  final String label;
+  final String value;
+  @override
+  Widget build(BuildContext context) {
+    return TextFormField(
+      initialValue: value,
+      readOnly: true,
+      decoration: InputDecoration(labelText: label),
     );
   }
 }
@@ -1073,11 +1371,12 @@ class _MobileGalleryPageState extends State<MobileGalleryPage> {
 }
 
 class MessagesPage extends StatefulWidget {
-  const MessagesPage({super.key, required this.state, required this.session, required this.apiBaseUrl, required this.onMutate});
+  const MessagesPage({super.key, required this.state, required this.session, required this.apiBaseUrl, required this.onMutate, this.onConversationModeChanged});
   final AppState? state;
   final AuthSession session;
   final String apiBaseUrl;
   final Future<void> Function(String url, Map<String, dynamic> body, AppState optimistic) onMutate;
+  final ValueChanged<bool>? onConversationModeChanged;
 
   @override
   State<MessagesPage> createState() => _MessagesPageState();
@@ -1091,8 +1390,19 @@ class _MessagesPageState extends State<MessagesPage> {
 
   @override
   void dispose() {
+    widget.onConversationModeChanged?.call(false);
     _controller.dispose();
     super.dispose();
+  }
+
+  void _openConversation(_Conversation conversation) {
+    setState(() => _selected = conversation);
+    widget.onConversationModeChanged?.call(true);
+  }
+
+  void _closeConversation() {
+    setState(() => _selected = null);
+    widget.onConversationModeChanged?.call(false);
   }
 
   Future<void> _send() async {
@@ -1166,6 +1476,55 @@ class _MessagesPageState extends State<MessagesPage> {
     }
   }
 
+  void _showConversationDetails(_Conversation conversation, List<Map<String, dynamic>> messages) {
+    final members = _conversationMembers(conversation, widget.state!, widget.session.user);
+    final firstDate = messages.isEmpty ? 'Brak wiadomości' : _shortDate(jsonString(messages.first['created_at']));
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (context) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(20, 6, 20, 24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Row(children: [
+                Expanded(child: Text('Szczegóły rozmowy', style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w900))),
+                IconButton(onPressed: () => Navigator.of(context).pop(), icon: const Icon(Icons.close)),
+              ]),
+              const SizedBox(height: 8),
+              _DetailRow(label: 'Rozmowa', value: conversation.title),
+              _DetailRow(label: 'Pierwsza wiadomość', value: firstDate),
+              const SizedBox(height: 12),
+              Text('Członkowie', style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w900)),
+              const SizedBox(height: 8),
+              for (final member in members)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 8),
+                  child: HufcListCard(
+                    leading: _Initials(text: member.name),
+                    title: member.name,
+                    subtitle: member.subtitle,
+                  ),
+                ),
+              const SizedBox(height: 8),
+              OutlinedButton.icon(onPressed: () => _detailsToast(context, 'Tworzenie grupy rozmowy będzie zsynchronizowane z panelem web.'), icon: const Icon(Icons.group_add), label: const Text('Utwórz grupę z rozmowy')),
+              const SizedBox(height: 8),
+              OutlinedButton.icon(onPressed: () => _detailsToast(context, 'Rozmowa zostanie ukryta lokalnie po dodaniu archiwizacji na serwerze.'), icon: const Icon(Icons.delete_outline), label: const Text('Usuń rozmowę')),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  void _detailsToast(BuildContext context, String text) {
+    Navigator.of(context).pop();
+    ScaffoldMessenger.of(this.context).showSnackBar(SnackBar(content: Text(text)));
+  }
+
   @override
   Widget build(BuildContext context) {
     final state = widget.state;
@@ -1186,7 +1545,7 @@ class _MessagesPageState extends State<MessagesPage> {
         children: [
           for (final conversation in conversations)
             HufcListCard(
-              onTap: () => setState(() => _selected = conversation),
+              onTap: () => _openConversation(conversation),
               leading: _Initials(text: conversation.title),
               title: conversation.title,
               subtitle: conversation.lastText,
@@ -1204,9 +1563,10 @@ class _MessagesPageState extends State<MessagesPage> {
           child: SafeArea(
             bottom: false,
             child: ListTile(
-              leading: IconButton(icon: const Icon(Icons.arrow_back), onPressed: () => setState(() => _selected = null)),
+              leading: IconButton(icon: const Icon(Icons.arrow_back), onPressed: _closeConversation),
               title: Text(selected.title, style: const TextStyle(fontWeight: FontWeight.w900)),
               subtitle: Text(selected.subtitle),
+              trailing: IconButton(icon: const Icon(Icons.more_horiz), onPressed: () => _showConversationDetails(selected, messages)),
             ),
           ),
         ),
@@ -1226,7 +1586,7 @@ class _MessagesPageState extends State<MessagesPage> {
                         margin: const EdgeInsets.only(bottom: 8),
                         padding: const EdgeInsets.all(12),
                         decoration: BoxDecoration(
-                          color: mine ? const Color(0xFF1F5C36) : Colors.white,
+                          color: mine ? Theme.of(context).colorScheme.primary : Theme.of(context).colorScheme.surfaceContainerHighest,
                           borderRadius: BorderRadius.circular(18),
                         ),
                         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
@@ -1256,7 +1616,7 @@ class _MessagesPageState extends State<MessagesPage> {
                   controller: _controller,
                   minLines: 1,
                   maxLines: 4,
-                  decoration: InputDecoration(hintText: 'Napisz do: ${selected.title}', filled: true, fillColor: Colors.white, border: OutlineInputBorder(borderRadius: BorderRadius.circular(22))),
+                  decoration: InputDecoration(hintText: 'Napisz do: ${selected.title}', filled: true, fillColor: Theme.of(context).colorScheme.surfaceContainerHighest, border: OutlineInputBorder(borderRadius: BorderRadius.circular(22))),
                 ),
               ),
               const SizedBox(width: 8),
@@ -1822,6 +2182,58 @@ _Conversation? _conversationForUnknown(Map<String, dynamic> message, AppUser use
   return _Conversation(targetType: type, targetId: targetId, title: title, subtitle: type, lastText: 'Brak wiadomości', lastAt: DateTime.fromMillisecondsSinceEpoch(0));
 }
 
+class _ConversationMember {
+  const _ConversationMember(this.name, this.subtitle);
+
+  final String name;
+  final String subtitle;
+}
+
+List<_ConversationMember> _conversationMembers(_Conversation conversation, AppState state, AppUser user) {
+  final members = <_ConversationMember>[];
+
+  void add(String name, String subtitle) {
+    final clean = name.trim();
+    if (clean.isEmpty || members.any((member) => member.name == clean)) return;
+    members.add(_ConversationMember(clean, subtitle.trim().isEmpty ? 'konto' : subtitle.trim()));
+  }
+
+  add(user.name, user.role);
+  final caregivers = jsonList(state.raw['caregivers']);
+  Map<String, dynamic>? findById(List<Map<String, dynamic>> items, int id) {
+    for (final item in items) {
+      if (jsonInt(item['id']) == id) return item;
+    }
+    return null;
+  }
+
+  if (conversation.targetType == 'user') {
+    final other = findById(caregivers, conversation.targetId);
+    add(jsonString(other?['name'], fallback: conversation.title), jsonString(other?['role'], fallback: conversation.subtitle));
+  } else if (conversation.targetType == 'staff') {
+    for (final caregiver in caregivers) {
+      add(jsonString(caregiver['name']), jsonString(caregiver['role'], fallback: 'konto'));
+    }
+  } else if (conversation.targetType == 'hufiec' || conversation.targetType == 'parents') {
+    for (final caregiver in caregivers) {
+      add(jsonString(caregiver['name']), jsonString(caregiver['role'], fallback: 'konto'));
+    }
+  } else if (conversation.targetType == 'cohort') {
+    final cohorts = jsonList(state.raw['cohorts']);
+    final cohort = findById(cohorts, conversation.targetId);
+    final caretakerId = jsonInt(cohort?['caretaker_user_id']);
+    final caretaker = findById(caregivers, caretakerId);
+    add(jsonString(caretaker?['name'], fallback: jsonString(cohort?['caretaker_name'], fallback: 'Opiekun grupy')), 'wychowawca');
+    for (final ward in jsonList(state.raw['wards']).where((item) => jsonInt(item['cohort_id']) == conversation.targetId)) {
+      add(jsonString(ward['name'], fallback: 'Podopieczny'), 'podopieczny');
+    }
+  } else if (conversation.targetType == 'team') {
+    add(conversation.title, 'drużyna gry terenowej');
+  }
+
+  return members;
+}
+
 class _PhotoTile extends StatelessWidget {
   const _PhotoTile({required this.photo, required this.token, required this.apiBaseUrl, this.onTap});
   final Map<String, dynamic> photo;
@@ -2059,6 +2471,77 @@ class StatCard extends StatelessWidget {
   Widget build(BuildContext context) => CardPanel(title: title, child: Text(value, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w700)));
 }
 
+class _MetricTile extends StatelessWidget {
+  const _MetricTile({required this.label, required this.value, required this.icon});
+
+  final String label;
+  final String value;
+  final IconData icon;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Container(
+      height: 104,
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: scheme.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(22),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Icon(icon, color: scheme.primary, size: 22),
+          Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text(label, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(color: scheme.onSurfaceVariant, fontWeight: FontWeight.w800, fontSize: 12)),
+            const SizedBox(height: 3),
+            Text(value, style: TextStyle(color: scheme.onSurface, fontWeight: FontWeight.w900, fontSize: 22)),
+          ]),
+        ],
+      ),
+    );
+  }
+}
+
+class _InfoBlock extends StatelessWidget {
+  const _InfoBlock({required this.title, required this.value, required this.icon});
+
+  final String title;
+  final String value;
+  final IconData icon;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Container(
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        color: scheme.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(24),
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 42,
+            height: 42,
+            decoration: BoxDecoration(color: scheme.primaryContainer, borderRadius: BorderRadius.circular(15)),
+            child: Icon(icon, color: scheme.onPrimaryContainer),
+          ),
+          const SizedBox(width: 14),
+          Expanded(
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text(title, style: TextStyle(color: scheme.onSurfaceVariant, fontWeight: FontWeight.w800)),
+              const SizedBox(height: 4),
+              Text(value, maxLines: 2, overflow: TextOverflow.ellipsis, style: TextStyle(color: scheme.onSurface, fontWeight: FontWeight.w900, fontSize: 18)),
+            ]),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class EmptyNotice extends StatelessWidget {
   const EmptyNotice({super.key, required this.text});
   final String text;
@@ -2109,4 +2592,81 @@ Color _colorFromString(String value) {
   final normalized = value.replaceAll('#', '').trim();
   final parsed = int.tryParse(normalized.length == 6 ? 'FF$normalized' : normalized, radix: 16);
   return Color(parsed ?? 0xFF1F5C36);
+}
+
+Color _colorFromHex(String value) => _colorFromString(value);
+
+ThemeMode _themeModeFromString(String? value) {
+  return switch (value) {
+    'light' => ThemeMode.light,
+    'dark' => ThemeMode.dark,
+    _ => ThemeMode.system,
+  };
+}
+
+ThemeData _appTheme({required Brightness brightness, required Color accent}) {
+  final dark = brightness == Brightness.dark;
+  final scheme = ColorScheme.fromSeed(seedColor: accent, brightness: brightness);
+  final background = dark ? const Color(0xFF06150D) : const Color(0xFFF7F3EC);
+  final surface = dark ? const Color(0xFF0B1E14) : Colors.white;
+  final surfaceHigh = dark ? const Color(0xFF10281A) : const Color(0xFFEFF6EE);
+
+  return ThemeData(
+    useMaterial3: true,
+    brightness: brightness,
+    colorScheme: scheme,
+    scaffoldBackgroundColor: background,
+    cardTheme: CardThemeData(
+      color: surface,
+      surfaceTintColor: Colors.transparent,
+      shadowColor: dark ? Colors.black : const Color(0x22000000),
+    ),
+    appBarTheme: AppBarTheme(
+      backgroundColor: dark ? const Color(0xFF07180F) : const Color(0xFFF8FBF6),
+      foregroundColor: dark ? Colors.white : const Color(0xFF1D241F),
+      surfaceTintColor: Colors.transparent,
+      elevation: 0,
+    ),
+    navigationBarTheme: NavigationBarThemeData(
+      backgroundColor: dark ? const Color(0xFF0B1E14) : const Color(0xFFEFF6EE),
+      indicatorColor: scheme.primaryContainer,
+      labelTextStyle: WidgetStateProperty.resolveWith((states) {
+        final selected = states.contains(WidgetState.selected);
+        return TextStyle(
+          color: dark ? Colors.white : const Color(0xFF1D241F),
+          fontWeight: selected ? FontWeight.w900 : FontWeight.w700,
+          fontSize: 12,
+        );
+      }),
+      iconTheme: WidgetStateProperty.resolveWith((states) {
+        final selected = states.contains(WidgetState.selected);
+        return IconThemeData(color: selected ? scheme.primary : (dark ? Colors.white70 : const Color(0xFF3E4A42)));
+      }),
+    ),
+    inputDecorationTheme: InputDecorationTheme(
+      filled: true,
+      fillColor: surfaceHigh,
+      border: OutlineInputBorder(borderRadius: BorderRadius.circular(14), borderSide: BorderSide(color: dark ? const Color(0xFF274733) : const Color(0xFFD8DED6))),
+      enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(14), borderSide: BorderSide(color: dark ? const Color(0xFF274733) : const Color(0xFFD8DED6))),
+      focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(14), borderSide: BorderSide(color: scheme.primary, width: 2)),
+    ),
+    snackBarTheme: SnackBarThemeData(
+      backgroundColor: scheme.primary,
+      contentTextStyle: TextStyle(color: scheme.onPrimary, fontWeight: FontWeight.w800),
+      behavior: SnackBarBehavior.floating,
+    ),
+    filledButtonTheme: FilledButtonThemeData(
+      style: FilledButton.styleFrom(
+        backgroundColor: scheme.primary,
+        foregroundColor: scheme.onPrimary,
+        textStyle: const TextStyle(fontWeight: FontWeight.w900),
+      ),
+    ),
+    segmentedButtonTheme: SegmentedButtonThemeData(
+      style: ButtonStyle(
+        foregroundColor: WidgetStateProperty.resolveWith((states) => states.contains(WidgetState.selected) ? scheme.onPrimaryContainer : scheme.onSurface),
+        backgroundColor: WidgetStateProperty.resolveWith((states) => states.contains(WidgetState.selected) ? scheme.primaryContainer : surfaceHigh),
+      ),
+    ),
+  );
 }
