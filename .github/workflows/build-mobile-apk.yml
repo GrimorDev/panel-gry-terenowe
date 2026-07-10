@@ -57,6 +57,40 @@ jobs:
           text = text.replace('android:label="hufc_mobile"', 'android:label="Mój Hufiec"')
           text = text.replace('android:label="hufc mobile"', 'android:label="Mój Hufiec"')
           manifest.write_text(text, encoding="utf-8")
+
+          app_gradle_kts = Path("android/app/build.gradle.kts")
+          if app_gradle_kts.exists():
+              gradle = app_gradle_kts.read_text(encoding="utf-8")
+              if "isCoreLibraryDesugaringEnabled" not in gradle:
+                  gradle = gradle.replace(
+                      "compileOptions {\n",
+                      "compileOptions {\n        isCoreLibraryDesugaringEnabled = true\n",
+                      1,
+                  )
+              desugar_dep = 'coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.5")'
+              if desugar_dep not in gradle:
+                  if "dependencies {" in gradle:
+                      gradle = gradle.replace("dependencies {\n", f"dependencies {{\n    {desugar_dep}\n", 1)
+                  else:
+                      gradle = gradle.rstrip() + f"\n\ndependencies {{\n    {desugar_dep}\n}}\n"
+              app_gradle_kts.write_text(gradle, encoding="utf-8")
+
+          app_gradle = Path("android/app/build.gradle")
+          if app_gradle.exists():
+              gradle = app_gradle.read_text(encoding="utf-8")
+              if "coreLibraryDesugaringEnabled" not in gradle:
+                  gradle = gradle.replace(
+                      "compileOptions {\n",
+                      "compileOptions {\n        coreLibraryDesugaringEnabled true\n",
+                      1,
+                  )
+              desugar_dep = "coreLibraryDesugaring 'com.android.tools:desugar_jdk_libs:2.1.5'"
+              if desugar_dep not in gradle:
+                  if "dependencies {" in gradle:
+                      gradle = gradle.replace("dependencies {\n", f"dependencies {{\n    {desugar_dep}\n", 1)
+                  else:
+                      gradle = gradle.rstrip() + f"\n\ndependencies {{\n    {desugar_dep}\n}}\n"
+              app_gradle.write_text(gradle, encoding="utf-8")
           PY
 
       - name: Generate launcher icons
