@@ -479,11 +479,11 @@ class _LoginScreenState extends State<LoginScreen> {
                         crossAxisAlignment: CrossAxisAlignment.stretch,
                         mainAxisSize: MainAxisSize.min,
                         children: [
-                          Row(
+                          const Row(
                             children: [
-                              const _BrandLogoMark(size: 42),
-                              const SizedBox(width: 12),
-                              const Expanded(
+                              _BrandLogoMark(size: 42),
+                              SizedBox(width: 12),
+                              Expanded(
                                 child: Column(
                                   crossAxisAlignment: CrossAxisAlignment.start,
                                   children: [
@@ -754,13 +754,13 @@ class _MobileDrawer extends StatelessWidget {
       child: SafeArea(
         child: Column(
           children: [
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 14, 16, 22),
+            const Padding(
+              padding: EdgeInsets.fromLTRB(16, 14, 16, 22),
               child: Row(
                 children: [
-                  const _BrandLogoMark(size: 42),
-                  const SizedBox(width: 12),
-                  const Expanded(
+                  _BrandLogoMark(size: 42),
+                  SizedBox(width: 12),
+                  Expanded(
                     child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                       Text('Mój Hufiec', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w900, fontSize: 16)),
                       Text('Panel wychowawcy', style: TextStyle(color: Colors.white70, fontSize: 12)),
