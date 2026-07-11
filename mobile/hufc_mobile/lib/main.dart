@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:ui';
 
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/material.dart';
@@ -40,6 +41,7 @@ Future<void> _initBackgroundService() async {
     androidConfiguration: AndroidConfiguration(
       onStart: _onBackgroundServiceStart,
       autoStart: false,
+      autoStartOnBoot: false,
       isForegroundMode: true,
       notificationChannelId: _bgNotificationChannelId,
       initialNotificationTitle: 'Mój Hufiec',
@@ -47,6 +49,9 @@ Future<void> _initBackgroundService() async {
       foregroundServiceNotificationId: _bgForegroundNotificationId,
       foregroundServiceTypes: [AndroidForegroundType.dataSync],
     ),
+    // Prawdziwe wykonywanie w tle na iOS nie jest tu wspierane (Apple bardzo mocno to ogranicza) —
+    // ten obiekt jest wymagany przez configure(), ale nic nie uruchamiamy na iOS.
+    iosConfiguration: IosConfiguration(autoStart: false),
   );
 }
 
