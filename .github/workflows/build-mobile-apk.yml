@@ -58,7 +58,7 @@ jobs:
               )
           text = text.replace('android:label="hufc_mobile"', 'android:label="Mój Hufiec"')
           text = text.replace('android:label="hufc mobile"', 'android:label="Mój Hufiec"')
-          bg_service_tag = '<service android:name="id.flutter.flutter_background_service.BackgroundService" android:foregroundServiceType="dataSync" android:exported="false"/>'
+          bg_service_tag = '<service android:name="id.flutter.flutter_background_service.BackgroundService" android:foregroundServiceType="dataSync"/>'
           if bg_service_tag not in text:
               text = text.replace('</application>', '    ' + bg_service_tag + '\\n    </application>', 1)
           manifest.write_text(text, encoding="utf-8")
