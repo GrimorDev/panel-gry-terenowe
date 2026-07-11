@@ -1436,13 +1436,16 @@ class MeetingsPage extends StatelessWidget {
   final Future<void> Function(String url, Map<String, dynamic> body, AppState optimistic) onMutate;
   final Future<void> Function(String url, AppState optimistic) onDelete;
 
-  void _openEditor(BuildContext context, Map<String, dynamic> session) {
+  void _openEditor(BuildContext context, {Map<String, dynamic>? session}) {
     final state = this.state;
     if (state == null) return;
-    final title = TextEditingController(text: jsonString(session['title']));
-    final date = TextEditingController(text: _dateInput(jsonString(session['session_date'])));
-    final location = TextEditingController(text: jsonString(session['location']));
-    final planned = TextEditingController(text: '${jsonInt(session['planned_count'], fallback: jsonInt(session['total']))}');
+    final existing = session != null;
+    final title = TextEditingController(text: jsonString(session?['title']));
+    final date = TextEditingController(
+      text: session != null ? _dateInput(jsonString(session['session_date'])) : _dateInput(DateTime.now().toIso8601String()),
+    );
+    final location = TextEditingController(text: jsonString(session?['location']));
+    final planned = TextEditingController(text: session != null ? '${_sessionPlanned(session)}' : '0');
     var saving = false;
     showModalBottomSheet<void>(
       context: context,
@@ -1455,7 +1458,7 @@ class MeetingsPage extends StatelessWidget {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              Text(jsonInt(session['id']) > 0 ? 'Edytuj zbiórkę' : 'Zaplanuj zbiórkę', style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w900)),
+              Text(existing ? 'Edytuj zbiórkę' : 'Zaplanuj zbiórkę', style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w900)),
               const SizedBox(height: 14),
               TextField(controller: title, decoration: const InputDecoration(labelText: 'Tytuł')),
               const SizedBox(height: 10),
@@ -1469,45 +1472,54 @@ class MeetingsPage extends StatelessWidget {
                 onPressed: saving
                     ? null
                     : () async {
+                        final cleanTitle = title.text.trim();
+                        if (cleanTitle.isEmpty) {
+                          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Podaj tytuł zbiórki.')));
+                          return;
+                        }
                         setModalState(() => saving = true);
                         final raw = Map<String, dynamic>.from(state.raw);
                         final sessions = jsonList(raw['sessions']);
+                        final id = session != null ? jsonInt(session['id']) : 0;
+                        final presentCount = session != null ? _sessionPresent(session) : 0;
                         final next = {
-                          ...session,
-                          'title': title.text.trim(),
+                          ...(session ?? <String, dynamic>{}),
+                          'title': cleanTitle,
                           'session_date': date.text.trim(),
                           'location': location.text.trim(),
                           'planned_count': jsonInt(planned.text),
                           'total': jsonInt(planned.text),
-                          'present_count': _sessionPresent(session),
-                          'attendance': _sessionPresent(session),
+                          'present_count': presentCount,
+                          'attendance': presentCount,
                         };
-                        raw['sessions'] = sessions.map((item) => jsonInt(item['id']) == jsonInt(session['id']) ? next : item).toList();
+                        raw['sessions'] = session != null ? sessions.map((item) => jsonInt(item['id']) == id ? next : item).toList() : [next, ...sessions];
                         await onMutate('/api/sessions', {
-                          'id': jsonInt(session['id']),
-                          'title': title.text.trim(),
+                          if (session != null) 'id': id,
+                          'title': cleanTitle,
                           'session_date': date.text.trim(),
                           'location': location.text.trim(),
                           'total': jsonInt(planned.text),
-                          'attendance': _sessionPresent(session),
+                          'attendance': presentCount,
                           'game_id': state.game.id,
                         }, state.copyWithRaw(raw));
                         if (context.mounted) Navigator.of(context).pop();
                       },
                 child: saving ? const HufcLoader(size: 22, color: Colors.white) : const Text('Zapisz'),
               ),
-              const SizedBox(height: 10),
-              OutlinedButton(
-                onPressed: saving
-                    ? null
-                    : () async {
-                        final raw = Map<String, dynamic>.from(state.raw);
-                        raw['sessions'] = jsonList(raw['sessions']).where((item) => jsonInt(item['id']) != jsonInt(session['id'])).toList();
-                        await onDelete('/api/sessions/${jsonInt(session['id'])}?gameId=${state.game.id}', state.copyWithRaw(raw));
-                        if (context.mounted) Navigator.of(context).pop();
-                      },
-                child: const Text('Usuń zbiórkę'),
-              ),
+              if (session != null) ...[
+                const SizedBox(height: 10),
+                OutlinedButton(
+                  onPressed: saving
+                      ? null
+                      : () async {
+                          final raw = Map<String, dynamic>.from(state.raw);
+                          raw['sessions'] = jsonList(raw['sessions']).where((item) => jsonInt(item['id']) != jsonInt(session['id'])).toList();
+                          await onDelete('/api/sessions/${jsonInt(session['id'])}?gameId=${state.game.id}', state.copyWithRaw(raw));
+                          if (context.mounted) Navigator.of(context).pop();
+                        },
+                  child: const Text('Usuń zbiórkę'),
+                ),
+              ],
             ],
           ),
         ),
@@ -1522,11 +1534,15 @@ class MeetingsPage extends StatelessWidget {
     return HufcPage(
       title: 'Zbiórki',
       subtitle: 'Harmonogram i frekwencja w jednym miejscu.',
+      actions: [
+        FilledButton.icon(onPressed: () => _openEditor(context), icon: const Icon(Icons.add), label: const Text('Zaplanuj zbiórkę')),
+      ],
       children: [
+        if (sessions.isEmpty) const EmptyNotice(text: 'Nie ma jeszcze zbiórek. Dodaj pierwszą przyciskiem powyżej.'),
         for (final session in sessions)
           CardPanel(
             child: InkWell(
-              onTap: () => _openEditor(context, session),
+              onTap: () => _openEditor(context, session: session),
               borderRadius: BorderRadius.circular(18),
               child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
               Row(children: [
