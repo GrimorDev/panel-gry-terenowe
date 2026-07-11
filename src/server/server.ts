@@ -1311,12 +1311,6 @@ app.post("/api/internal-shares", async (req, res) => {
     "INSERT INTO internal_shares (photo_id, target_type, target_id, note, created_by) VALUES ($1,$2,$3,$4,$5)",
     [photoId, targetType, targetId, note, req.user?.id || null]
   );
-  await pool.query(
-    "INSERT INTO messages (sender_id, target_type, target_id, body, photo_id) VALUES ($1,$2,$3,$4,$5)",
-    [req.user?.id || null, targetType, targetId, note.trim() || "Udostępniono zdjęcie", photoId]
-  );
-  if (req.user?.id) await markConversationRead(Number(req.user.id), targetType, targetId || 0);
-  await invalidateMessageCache();
   res.json(await stateFor(req, Number(req.body.game_id || 0) || undefined));
 });
 
@@ -1328,10 +1322,11 @@ app.post("/api/messages", async (req, res) => {
   const replyToId = Number(req.body.reply_to_id || 0) || null;
   const targetType = String(req.body.target_type || "hufiec");
   const targetId = Number(req.body.target_id || 0) || null;
-  if (!body && !attachmentData) return res.status(400).json({ ok: false, error: "Wpisz wiadomość albo dodaj załącznik" });
+  const photoId = Number(req.body.photo_id || 0) || null;
+  if (!body && !attachmentData && !photoId) return res.status(400).json({ ok: false, error: "Wpisz wiadomość albo dodaj załącznik" });
   await pool.query(
     "INSERT INTO messages (sender_id, target_type, target_id, body, photo_id, reply_to_id, attachment_name, attachment_mime, attachment_data) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)",
-    [req.user?.id || null, targetType, targetId, body, Number(req.body.photo_id || 0) || null, replyToId, attachmentName || null, attachmentMime || null, attachmentData || null]
+    [req.user?.id || null, targetType, targetId, body, photoId, replyToId, attachmentName || null, attachmentMime || null, attachmentData || null]
   );
   if (req.user?.id) await markConversationRead(Number(req.user.id), targetType, targetId || 0);
   await invalidateMessageCache();

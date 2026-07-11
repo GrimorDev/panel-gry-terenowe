@@ -2210,6 +2210,8 @@ class _MobileGalleryPageState extends State<MobileGalleryPage> {
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               Text('Udostępnij ${ids.length} ${ids.length == 1 ? 'zdjęcie' : 'zdjęć'}', style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w900)),
+              const SizedBox(height: 4),
+              Text('Wybrane osoby zobaczą to zdjęcie w swojej galerii. Nie wyśle to wiadomości na czacie.', style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant, fontSize: 12)),
               const SizedBox(height: 14),
               DropdownButtonFormField<String>(
                 initialValue: targetType,
@@ -2235,7 +2237,7 @@ class _MobileGalleryPageState extends State<MobileGalleryPage> {
                 ),
               ],
               const SizedBox(height: 10),
-              TextField(controller: note, minLines: 2, maxLines: 3, decoration: const InputDecoration(labelText: 'Wiadomość', hintText: 'np. Zdjęcia z dzisiejszej zbiórki są już dostępne.')),
+              TextField(controller: note, minLines: 2, maxLines: 3, decoration: const InputDecoration(labelText: 'Notatka (opcjonalnie)', hintText: 'np. Zdjęcia z dzisiejszej zbiórki')),
               const SizedBox(height: 16),
               FilledButton(
                 onPressed: sharing
@@ -2325,6 +2327,67 @@ class _MobileGalleryPageState extends State<MobileGalleryPage> {
     _exitSelection();
   }
 
+  Future<void> _openSendAsMessageSheet() async {
+    final state = widget.state;
+    if (state == null || _selectedIds.isEmpty) return;
+    final ids = _selectedIds.toList();
+    final conversations = _buildConversations(state, widget.session.user);
+    final caption = TextEditingController();
+    await showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      isScrollControlled: true,
+      useSafeArea: true,
+      builder: (context) => Padding(
+        padding: EdgeInsets.fromLTRB(20, 6, 20, MediaQuery.of(context).viewInsets.bottom + 24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Text('Wyślij ${ids.length} ${ids.length == 1 ? 'zdjęcie' : 'zdjęć'} jako wiadomość', style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w900)),
+            const SizedBox(height: 4),
+            Text('Zdjęcia trafią do wybranej rozmowy na czacie.', style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant, fontSize: 12)),
+            const SizedBox(height: 10),
+            TextField(controller: caption, decoration: const InputDecoration(labelText: 'Podpis (opcjonalnie)')),
+            const SizedBox(height: 14),
+            Text('Wybierz rozmowę', style: Theme.of(context).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w800)),
+            const SizedBox(height: 6),
+            ConstrainedBox(
+              constraints: const BoxConstraints(maxHeight: 340),
+              child: ListView.builder(
+                shrinkWrap: true,
+                itemCount: conversations.length,
+                itemBuilder: (context, index) {
+                  final conversation = conversations[index];
+                  return HufcListCard(
+                    leading: _Initials(text: conversation.title),
+                    title: conversation.title,
+                    subtitle: conversation.subtitle,
+                    trailing: const Icon(Icons.send_outlined),
+                    onTap: () {
+                      Navigator.of(context).pop();
+                      final text = caption.text.trim();
+                      for (final id in ids) {
+                        unawaited(widget.onMutate('/api/messages', {
+                          'target_type': conversation.targetType,
+                          'target_id': conversation.targetId,
+                          'body': text,
+                          'photo_id': id,
+                          'game_id': state.game.id,
+                        }, widget.state ?? state));
+                      }
+                    },
+                  );
+                },
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+    _exitSelection();
+  }
+
   Future<void> _pick(ImageSource source) async {
     final state = widget.state;
     if (state == null || _uploading) return;
@@ -2392,6 +2455,7 @@ class _MobileGalleryPageState extends State<MobileGalleryPage> {
               FilledButton.icon(onPressed: _bulkDelete, icon: const Icon(Icons.delete_outline), label: const Text('Usuń')),
               OutlinedButton.icon(onPressed: _openShareSheet, icon: const Icon(Icons.share_outlined), label: const Text('Udostępnij')),
               OutlinedButton.icon(onPressed: _openAlbumSheet, icon: const Icon(Icons.folder_copy_outlined), label: const Text('Przenieś do albumu')),
+              OutlinedButton.icon(onPressed: _openSendAsMessageSheet, icon: const Icon(Icons.forum_outlined), label: const Text('Wyślij jako wiadomość')),
               TextButton(onPressed: _exitSelection, child: const Text('Anuluj')),
             ]
           : [
@@ -2746,10 +2810,13 @@ class _MessagesPageState extends State<MessagesPage> {
                           borderRadius: BorderRadius.circular(18),
                         ),
                         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                          Text(jsonString(message['sender_name'], fallback: mine ? 'Ty' : selected.title), style: TextStyle(fontSize: 12, color: mine ? Colors.white70 : Theme.of(context).colorScheme.onSurfaceVariant)),
+                          Text(
+                            jsonString(message['sender_name'], fallback: mine ? 'Ty' : selected.title),
+                            style: TextStyle(fontSize: 12, color: mine ? Theme.of(context).colorScheme.onPrimary.withValues(alpha: 0.7) : Theme.of(context).colorScheme.onSurfaceVariant),
+                          ),
                           const SizedBox(height: 4),
                           if (jsonString(message['body']).isNotEmpty)
-                            Text(jsonString(message['body']), style: TextStyle(color: mine ? Colors.white : null, fontWeight: FontWeight.w700)),
+                            Text(jsonString(message['body']), style: TextStyle(color: mine ? Theme.of(context).colorScheme.onPrimary : null, fontWeight: FontWeight.w700)),
                           _MessageAttachment(message: message, token: widget.session.token, apiBaseUrl: widget.apiBaseUrl, mine: mine),
                         ]),
                       ),
@@ -4319,13 +4386,14 @@ class _MessageAttachment extends StatelessWidget {
       preview = const Icon(Icons.attach_file);
     }
 
+    final scheme = Theme.of(context).colorScheme;
     final content = Container(
       margin: EdgeInsets.only(top: top),
       padding: const EdgeInsets.all(8),
       decoration: BoxDecoration(
-        color: mine ? Colors.white.withValues(alpha: 0.12) : const Color(0xFFF4F1EA),
+        color: mine ? scheme.onPrimary.withValues(alpha: 0.12) : scheme.surface,
         borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: mine ? Colors.white24 : const Color(0xFFE5DED2)),
+        border: Border.all(color: mine ? scheme.onPrimary.withValues(alpha: 0.24) : scheme.outlineVariant),
       ),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         if (imageLike)
@@ -4333,8 +4401,8 @@ class _MessageAttachment extends StatelessWidget {
         else
           SizedBox(height: 44, child: Center(child: preview)),
         const SizedBox(height: 6),
-        Text(title, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(color: mine ? Colors.white : null, fontWeight: FontWeight.w900)),
-        if (mime.isNotEmpty) Text(mime, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 12, color: mine ? Colors.white70 : Theme.of(context).colorScheme.onSurfaceVariant)),
+        Text(title, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(color: mine ? scheme.onPrimary : null, fontWeight: FontWeight.w900)),
+        if (mime.isNotEmpty) Text(mime, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 12, color: mine ? scheme.onPrimary.withValues(alpha: 0.7) : scheme.onSurfaceVariant)),
       ]),
     );
 
