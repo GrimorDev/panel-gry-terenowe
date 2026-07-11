@@ -3,6 +3,7 @@ import 'dart:convert';
 
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_background_service/flutter_background_service.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:permission_handler/permission_handler.dart';
@@ -12,9 +13,118 @@ import 'src/core/local_store.dart';
 import 'src/core/models.dart';
 import 'src/core/sync_service.dart';
 
+const String _bgNotificationChannelId = 'moj_hufiec_bg';
+const String _bgAlertChannelId = 'moj_hufiec_realtime';
+const int _bgForegroundNotificationId = 8123;
+
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  await _initBackgroundService();
   runApp(HufcMobileApp(store: LocalStore(), api: ApiClient()));
+}
+
+/// Rejestruje usługę pierwszoplanową na Androidzie, żeby sprawdzanie nowych
+/// wiadomości/zbiórek działało też po zminimalizowaniu lub zamknięciu apki.
+/// Wymaga stałej ikony powiadomienia (wymóg systemu Android dla foreground service).
+Future<void> _initBackgroundService() async {
+  final service = FlutterBackgroundService();
+  const channel = AndroidNotificationChannel(
+    _bgNotificationChannelId,
+    'Mój Hufiec — synchronizacja w tle',
+    description: 'Utrzymuje połączenie, żeby powiadomienia docierały po zamknięciu aplikacji.',
+    importance: Importance.low,
+  );
+  final notifications = FlutterLocalNotificationsPlugin();
+  await notifications.resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>()?.createNotificationChannel(channel);
+  await service.configure(
+    androidConfiguration: AndroidConfiguration(
+      onStart: _onBackgroundServiceStart,
+      autoStart: false,
+      isForegroundMode: true,
+      notificationChannelId: _bgNotificationChannelId,
+      initialNotificationTitle: 'Mój Hufiec',
+      initialNotificationContent: 'Sprawdzanie nowych wiadomości i zbiórek…',
+      foregroundServiceNotificationId: _bgForegroundNotificationId,
+      foregroundServiceTypes: [AndroidForegroundType.dataSync],
+    ),
+  );
+}
+
+@pragma('vm:entry-point')
+void _onBackgroundServiceStart(ServiceInstance service) async {
+  DartPluginRegistrant.ensureInitialized();
+  if (service is AndroidServiceInstance) {
+    service.setAsForegroundService();
+  }
+  service.on('stopService').listen((event) => service.stopSelf());
+
+  final store = LocalStore();
+  final api = ApiClient();
+  final notifications = FlutterLocalNotificationsPlugin();
+  await notifications.initialize(const InitializationSettings(android: AndroidInitializationSettings('@mipmap/ic_launcher')));
+
+  Timer.periodic(const Duration(seconds: 20), (timer) async {
+    try {
+      final pushEnabled = await store.get('notify_push');
+      if (pushEnabled != 'true') return;
+      final auth = await store.readAuth();
+      if (auth == null) return;
+      final savedApiBaseUrl = await store.get('api_base_url');
+      if (savedApiBaseUrl != null) api.setBaseUrl(savedApiBaseUrl);
+
+      final state = await api.state(auth.token);
+      final messages = jsonList(state.raw['messages']);
+      final sessions = jsonList(state.raw['sessions']);
+
+      final knownMessageRaw = await store.get('bg_known_message_id');
+      final knownSessionRaw = await store.get('bg_known_session_id');
+      final hasBaseline = knownMessageRaw != null;
+      var knownMessageId = int.tryParse(knownMessageRaw ?? '') ?? 0;
+      var knownSessionId = int.tryParse(knownSessionRaw ?? '') ?? 0;
+
+      if (hasBaseline) {
+        final newMessages = messages.where((item) => jsonInt(item['id']) > knownMessageId && jsonInt(item['sender_id']) != auth.user.id).toList()
+          ..sort((a, b) => jsonInt(a['id']).compareTo(jsonInt(b['id'])));
+        for (final message in newMessages.take(3)) {
+          final sender = jsonString(message['sender_name'], fallback: 'Mój Hufiec');
+          final body = jsonString(message['body'], fallback: jsonString(message['attachment_name'], fallback: 'Wysłano załącznik.'));
+          await notifications.show(
+            DateTime.now().millisecondsSinceEpoch.remainder(2147483647),
+            'Nowa wiadomość od $sender',
+            body,
+            const NotificationDetails(
+              android: AndroidNotificationDetails(_bgAlertChannelId, 'Mój Hufiec', channelDescription: 'Nowe wiadomości i zbiórki z systemu Mój Hufiec.', importance: Importance.high, priority: Priority.high),
+            ),
+          );
+        }
+        final newSessions = sessions.where((item) => jsonInt(item['id']) > knownSessionId).toList()..sort((a, b) => jsonInt(a['id']).compareTo(jsonInt(b['id'])));
+        for (final session in newSessions.take(2)) {
+          final title = jsonString(session['title'], fallback: 'Zbiórka');
+          await notifications.show(
+            DateTime.now().millisecondsSinceEpoch.remainder(2147483647),
+            'Nowa zbiórka: $title',
+            jsonString(session['location'], fallback: 'Dodano wydarzenie do harmonogramu.'),
+            const NotificationDetails(
+              android: AndroidNotificationDetails(_bgAlertChannelId, 'Mój Hufiec', channelDescription: 'Nowe wiadomości i zbiórki z systemu Mój Hufiec.', importance: Importance.high, priority: Priority.high),
+            ),
+          );
+        }
+      }
+
+      for (final item in messages) {
+        final id = jsonInt(item['id']);
+        if (id > knownMessageId) knownMessageId = id;
+      }
+      for (final item in sessions) {
+        final id = jsonInt(item['id']);
+        if (id > knownSessionId) knownSessionId = id;
+      }
+      await store.put('bg_known_message_id', '$knownMessageId');
+      await store.put('bg_known_session_id', '$knownSessionId');
+    } catch (_) {
+      // Brak internetu albo błąd serwera — spróbuj ponownie przy następnym tyknięciu.
+    }
+  });
 }
 
 class HufcMobileApp extends StatefulWidget {
@@ -97,7 +207,10 @@ class _HufcMobileAppState extends State<HufcMobileApp> with WidgetsBindingObserv
     });
     await _refreshQueue();
     _updateRealtimeBaselines(cached);
-    if (_pushNotifications) await _configureNotifications(request: false);
+    if (_pushNotifications) {
+      await _configureNotifications(request: false);
+      unawaited(FlutterBackgroundService().startService());
+    }
     if (auth != null && online) {
       await _sync(showNotifications: false);
       _startRealtimePolling();
@@ -188,6 +301,11 @@ class _HufcMobileAppState extends State<HufcMobileApp> with WidgetsBindingObserv
       enabled = await _configureNotifications(request: true);
     }
     await widget.store.put('notify_push', enabled.toString());
+    if (enabled) {
+      unawaited(FlutterBackgroundService().startService());
+    } else {
+      FlutterBackgroundService().invoke('stopService');
+    }
     if (!mounted) return;
     setState(() => _pushNotifications = enabled);
   }
