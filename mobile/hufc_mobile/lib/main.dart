@@ -2573,6 +2573,8 @@ class _MessagesPageState extends State<MessagesPage> {
   _Conversation? _selected;
   bool _sending = false;
   bool _attaching = false;
+  Map<String, dynamic>? _replyTo;
+  Map<String, dynamic>? _editingMessage;
 
   @override
   void initState() {
@@ -2616,12 +2618,22 @@ class _MessagesPageState extends State<MessagesPage> {
   }
 
   void _openConversation(_Conversation conversation) {
-    setState(() => _selected = conversation);
+    _controller.clear();
+    setState(() {
+      _selected = conversation;
+      _replyTo = null;
+      _editingMessage = null;
+    });
     widget.onConversationModeChanged?.call(true);
   }
 
   void _closeConversation() {
-    setState(() => _selected = null);
+    _controller.clear();
+    setState(() {
+      _selected = null;
+      _replyTo = null;
+      _editingMessage = null;
+    });
     widget.onConversationModeChanged?.call(false);
   }
 
@@ -2630,29 +2642,111 @@ class _MessagesPageState extends State<MessagesPage> {
     final selected = _selected;
     final text = _controller.text.trim();
     if (state == null || selected == null || text.isEmpty || _sending) return;
+    final editing = _editingMessage;
+    final replyTo = _replyTo;
     _controller.clear();
     setState(() => _sending = true);
     try {
-      final message = {
-        'id': -DateTime.now().millisecondsSinceEpoch,
-        'sender_id': widget.session.user.id,
-        'sender_name': widget.session.user.name,
-        'target_type': selected.targetType,
-        'target_id': selected.targetId == 0 ? null : selected.targetId,
-        'body': text,
-        'created_at': DateTime.now().toIso8601String(),
-      };
-      final raw = Map<String, dynamic>.from(state.raw);
-      raw['messages'] = [message, ...jsonList(raw['messages'])];
-      await widget.onMutate('/api/messages', {
-        'target_type': selected.targetType,
-        'target_id': selected.targetId,
-        'body': text,
-        'game_id': state.game.id,
-      }, state.copyWithRaw(raw));
+      if (editing != null) {
+        final id = jsonInt(editing['id']);
+        final raw = Map<String, dynamic>.from(state.raw);
+        raw['messages'] = jsonList(raw['messages'])
+            .map((item) => jsonInt(item['id']) == id ? {...item, 'body': text, 'edited_at': DateTime.now().toIso8601String()} : item)
+            .toList();
+        await widget.onMutate('/api/messages/$id', {'body': text}, state.copyWithRaw(raw));
+      } else {
+        final message = {
+          'id': -DateTime.now().millisecondsSinceEpoch,
+          'sender_id': widget.session.user.id,
+          'sender_name': widget.session.user.name,
+          'target_type': selected.targetType,
+          'target_id': selected.targetId == 0 ? null : selected.targetId,
+          'body': text,
+          'reply_to_id': replyTo == null ? null : jsonInt(replyTo['id']),
+          'reply_sender_name': replyTo == null ? null : jsonString(replyTo['sender_name']),
+          'reply_body': replyTo == null ? null : jsonString(replyTo['body']),
+          'reply_photo_title': replyTo == null ? null : jsonString(replyTo['photo_title']),
+          'reply_attachment_name': replyTo == null ? null : jsonString(replyTo['attachment_name']),
+          'created_at': DateTime.now().toIso8601String(),
+        };
+        final raw = Map<String, dynamic>.from(state.raw);
+        raw['messages'] = [message, ...jsonList(raw['messages'])];
+        await widget.onMutate('/api/messages', {
+          'target_type': selected.targetType,
+          'target_id': selected.targetId,
+          'body': text,
+          if (replyTo != null) 'reply_to_id': jsonInt(replyTo['id']),
+          'game_id': state.game.id,
+        }, state.copyWithRaw(raw));
+      }
+      if (mounted) {
+        setState(() {
+          _editingMessage = null;
+          _replyTo = null;
+        });
+      }
     } finally {
       if (mounted) setState(() => _sending = false);
     }
+  }
+
+  void _startReply(Map<String, dynamic> message) {
+    setState(() {
+      _replyTo = message;
+      _editingMessage = null;
+    });
+  }
+
+  void _startEdit(Map<String, dynamic> message) {
+    setState(() {
+      _controller.text = jsonString(message['body']);
+      _editingMessage = message;
+      _replyTo = null;
+    });
+  }
+
+  void _cancelCompose() {
+    setState(() {
+      if (_editingMessage != null) _controller.clear();
+      _editingMessage = null;
+      _replyTo = null;
+    });
+  }
+
+  void _showMessageActions(Map<String, dynamic> message, bool mine) {
+    showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      builder: (sheetContext) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.reply_outlined),
+              title: const Text('Odpowiedz'),
+              onTap: () {
+                Navigator.of(sheetContext).pop();
+                _startReply(message);
+              },
+            ),
+            if (mine && jsonString(message['body']).isNotEmpty)
+              ListTile(
+                leading: const Icon(Icons.edit_outlined),
+                title: const Text('Edytuj'),
+                onTap: () {
+                  Navigator.of(sheetContext).pop();
+                  _startEdit(message);
+                },
+              ),
+            ListTile(
+              leading: const Icon(Icons.close),
+              title: const Text('Anuluj'),
+              onTap: () => Navigator.of(sheetContext).pop(),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   Future<void> _attachImage() async {
@@ -2799,26 +2893,40 @@ class _MessagesPageState extends State<MessagesPage> {
                   itemBuilder: (context, index) {
                     final message = messages[index];
                     final mine = jsonInt(message['sender_id']) == widget.session.user.id;
+                    final scheme = Theme.of(context).colorScheme;
                     return Align(
                       alignment: mine ? Alignment.centerRight : Alignment.centerLeft,
-                      child: Container(
-                        constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.78),
-                        margin: const EdgeInsets.only(bottom: 8),
-                        padding: const EdgeInsets.all(12),
-                        decoration: BoxDecoration(
-                          color: mine ? Theme.of(context).colorScheme.primary : Theme.of(context).colorScheme.surfaceContainerHighest,
-                          borderRadius: BorderRadius.circular(18),
-                        ),
-                        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                          Text(
-                            jsonString(message['sender_name'], fallback: mine ? 'Ty' : selected.title),
-                            style: TextStyle(fontSize: 12, color: mine ? Theme.of(context).colorScheme.onPrimary.withValues(alpha: 0.7) : Theme.of(context).colorScheme.onSurfaceVariant),
+                      child: GestureDetector(
+                        onLongPress: () => _showMessageActions(message, mine),
+                        child: Container(
+                          constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.78),
+                          margin: const EdgeInsets.only(bottom: 8),
+                          padding: const EdgeInsets.all(12),
+                          decoration: BoxDecoration(
+                            color: mine ? scheme.primary : scheme.surfaceContainerHighest,
+                            borderRadius: BorderRadius.circular(18),
                           ),
-                          const SizedBox(height: 4),
-                          if (jsonString(message['body']).isNotEmpty)
-                            Text(jsonString(message['body']), style: TextStyle(color: mine ? Theme.of(context).colorScheme.onPrimary : null, fontWeight: FontWeight.w700)),
-                          _MessageAttachment(message: message, token: widget.session.token, apiBaseUrl: widget.apiBaseUrl, mine: mine),
-                        ]),
+                          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                            Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                              Expanded(
+                                child: Text(
+                                  jsonString(message['sender_name'], fallback: mine ? 'Ty' : selected.title),
+                                  style: TextStyle(fontSize: 12, color: mine ? scheme.onPrimary.withValues(alpha: 0.7) : scheme.onSurfaceVariant),
+                                ),
+                              ),
+                              if (jsonString(message['edited_at']).isNotEmpty)
+                                Text('edytowane', style: TextStyle(fontSize: 11, fontStyle: FontStyle.italic, color: mine ? scheme.onPrimary.withValues(alpha: 0.6) : scheme.onSurfaceVariant)),
+                            ]),
+                            if (jsonInt(message['reply_to_id']) > 0) ...[
+                              const SizedBox(height: 4),
+                              _MessageQuote(message: message, mine: mine),
+                            ],
+                            const SizedBox(height: 4),
+                            if (jsonString(message['body']).isNotEmpty)
+                              Text(jsonString(message['body']), style: TextStyle(color: mine ? scheme.onPrimary : null, fontWeight: FontWeight.w700)),
+                            _MessageAttachment(message: message, token: widget.session.token, apiBaseUrl: widget.apiBaseUrl, mine: mine),
+                          ]),
+                        ),
                       ),
                     );
                   },
@@ -2828,9 +2936,39 @@ class _MessagesPageState extends State<MessagesPage> {
           top: false,
           child: Padding(
             padding: const EdgeInsets.fromLTRB(12, 8, 12, 10),
-            child: Row(children: [
+            child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+              if (_replyTo != null || _editingMessage != null)
+                Container(
+                  margin: const EdgeInsets.only(bottom: 8),
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  decoration: BoxDecoration(
+                    color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border(left: BorderSide(color: Theme.of(context).colorScheme.secondary, width: 3)),
+                  ),
+                  child: Row(children: [
+                    Expanded(
+                      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                        Text(
+                          _editingMessage != null ? 'Edytujesz wiadomość' : 'Odpowiedź do: ${jsonString(_replyTo?['sender_name'], fallback: 'Wiadomość')}',
+                          style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: Theme.of(context).colorScheme.onSurfaceVariant),
+                        ),
+                        Text(
+                          _editingMessage != null
+                              ? jsonString(_editingMessage?['body'])
+                              : jsonString(_replyTo?['body'], fallback: jsonString(_replyTo?['photo_title'], fallback: jsonString(_replyTo?['attachment_name'], fallback: 'Załącznik'))),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(fontWeight: FontWeight.w800),
+                        ),
+                      ]),
+                    ),
+                    IconButton(onPressed: _cancelCompose, icon: const Icon(Icons.close), iconSize: 18, visualDensity: VisualDensity.compact),
+                  ]),
+                ),
+              Row(children: [
               IconButton.filledTonal(
-                onPressed: _attaching ? null : _attachImage,
+                onPressed: (_attaching || _editingMessage != null) ? null : _attachImage,
                 icon: _attaching ? const HufcLoader(size: 18) : const Icon(Icons.attach_file),
               ),
               const SizedBox(width: 6),
@@ -2839,7 +2977,12 @@ class _MessagesPageState extends State<MessagesPage> {
                   controller: _controller,
                   minLines: 1,
                   maxLines: 4,
-                  decoration: InputDecoration(hintText: 'Napisz do: ${selected.title}', filled: true, fillColor: Theme.of(context).colorScheme.surfaceContainerHighest, border: OutlineInputBorder(borderRadius: BorderRadius.circular(22))),
+                  decoration: InputDecoration(
+                    hintText: _editingMessage != null ? 'Edytuj wiadomość' : 'Napisz do: ${selected.title}',
+                    filled: true,
+                    fillColor: Theme.of(context).colorScheme.surfaceContainerHighest,
+                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(22)),
+                  ),
                 ),
               ),
               const SizedBox(width: 8),
@@ -2848,6 +2991,7 @@ class _MessagesPageState extends State<MessagesPage> {
                 style: FilledButton.styleFrom(shape: const CircleBorder(), padding: const EdgeInsets.all(14)),
                 child: _sending ? const HufcLoader(size: 20, color: Colors.white) : const Icon(Icons.arrow_forward),
               ),
+            ]),
             ]),
           ),
         ),
@@ -4332,6 +4476,35 @@ class _PhotoPreviewDialog extends StatelessWidget {
           ),
         ],
       ),
+    );
+  }
+}
+
+class _MessageQuote extends StatelessWidget {
+  const _MessageQuote({required this.message, required this.mine});
+
+  final Map<String, dynamic> message;
+  final bool mine;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final quoteText = jsonString(
+      message['reply_body'],
+      fallback: jsonString(message['reply_photo_title'], fallback: jsonString(message['reply_attachment_name'], fallback: 'Załącznik')),
+    );
+    final senderName = jsonString(message['reply_sender_name'], fallback: 'Wiadomość');
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: mine ? scheme.onPrimary.withValues(alpha: 0.12) : scheme.surface,
+        borderRadius: BorderRadius.circular(10),
+        border: Border(left: BorderSide(color: scheme.secondary, width: 3)),
+      ),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisSize: MainAxisSize.min, children: [
+        Text(senderName, style: TextStyle(fontSize: 11, fontWeight: FontWeight.w800, color: mine ? scheme.onPrimary : scheme.secondary)),
+        Text(quoteText, maxLines: 2, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 12, color: mine ? scheme.onPrimary.withValues(alpha: 0.85) : scheme.onSurfaceVariant)),
+      ]),
     );
   }
 }
