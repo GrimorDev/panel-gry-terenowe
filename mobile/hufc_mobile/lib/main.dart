@@ -1257,7 +1257,7 @@ class WardsPage extends StatelessWidget {
     var saving = false;
     var selectedCohortId = existing ? jsonInt(ward['cohort_id']) : (groupList.isNotEmpty ? jsonInt(groupList.first['id']) : 0);
     final name = TextEditingController(text: jsonString(ward?['name']));
-    final age = TextEditingController(text: existing ? '${jsonInt(ward?['age'], fallback: 12)}' : '12');
+    final age = TextEditingController(text: existing ? '${jsonInt(ward['age'], fallback: 12)}' : '12');
     final parent = TextEditingController(text: jsonString(ward?['parent_name']));
     final contact = TextEditingController(text: jsonString(ward?['parent_phone'], fallback: jsonString(ward?['contact'])));
 
