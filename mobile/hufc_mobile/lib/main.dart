@@ -782,7 +782,7 @@ class _ShellScreenState extends State<ShellScreen> {
       _MobilePage('Pulpit', Icons.dashboard_outlined, Icons.dashboard, DashboardPage(session: widget.session, state: state, online: widget.online, queueCount: widget.queueCount, onNavigate: _selectTab)),
       _MobilePage('Podopieczni', Icons.person_outline, Icons.person, WardsPage(state: state, session: widget.session, onMutate: widget.onMutate, onDelete: widget.onDelete)),
       _MobilePage('Grupy', Icons.groups_outlined, Icons.groups, GroupsPage(state: state)),
-      _MobilePage('Zbiórki', Icons.calendar_month_outlined, Icons.calendar_month, MeetingsPage(state: state, onMutate: widget.onMutate, onDelete: widget.onDelete)),
+      _MobilePage('Zbiórki', Icons.calendar_month_outlined, Icons.calendar_month, MeetingsPage(state: state, session: widget.session, onMutate: widget.onMutate, onDelete: widget.onDelete)),
       _MobilePage('Galeria', Icons.photo_library_outlined, Icons.photo_library, MobileGalleryPage(state: state, session: widget.session, apiBaseUrl: widget.apiBaseUrl, onMutate: widget.onMutate)),
       _MobilePage('Wiadomości', Icons.chat_bubble_outline, Icons.chat_bubble, MessagesPage(state: state, session: widget.session, apiBaseUrl: widget.apiBaseUrl, onMutate: widget.onMutate, onConversationModeChanged: (value) => setState(() => _chatFocused = value), openConversationKey: widget.openConversationKey, onOpenConversationConsumed: widget.onOpenConversationConsumed)),
       _MobilePage('Gry', Icons.flag_outlined, Icons.flag, GamesPage(state: state, session: widget.session, onMutate: widget.onMutate, onDelete: widget.onDelete, onLoadGame: widget.onLoadGame)),
@@ -794,10 +794,13 @@ class _ShellScreenState extends State<ShellScreen> {
     ];
     final bottomDestinations = [0, 3, 5, 4, 9];
     final bottomIndex = bottomDestinations.contains(_tab) ? bottomDestinations.indexOf(_tab) : 4;
+    final staffIndex = widget.session.user.isAdmin ? pages.length - 1 : null;
+    final drawerOrder = [0, 1, 2, 3, 4, 5, 6, 7, if (staffIndex != null) staffIndex, 8];
     return Scaffold(
       key: _scaffoldKey,
       drawer: _MobileDrawer(
         pages: pages,
+        order: drawerOrder,
         currentIndex: _tab,
         session: widget.session,
         queueCount: widget.queueCount,
@@ -843,6 +846,7 @@ class _ShellScreenState extends State<ShellScreen> {
 class _MobileDrawer extends StatelessWidget {
   const _MobileDrawer({
     required this.pages,
+    required this.order,
     required this.currentIndex,
     required this.session,
     required this.queueCount,
@@ -851,6 +855,7 @@ class _MobileDrawer extends StatelessWidget {
   });
 
   final List<_MobilePage> pages;
+  final List<int> order;
   final int currentIndex;
   final AuthSession session;
   final int queueCount;
@@ -884,10 +889,11 @@ class _MobileDrawer extends StatelessWidget {
             Expanded(
               child: ListView.builder(
                 padding: const EdgeInsets.symmetric(horizontal: 8),
-                itemCount: pages.length,
-                itemBuilder: (context, index) {
-                  final page = pages[index];
-                  final selected = currentIndex == index;
+                itemCount: order.length,
+                itemBuilder: (context, listIndex) {
+                  final pageIndex = order[listIndex];
+                  final page = pages[pageIndex];
+                  final selected = currentIndex == pageIndex;
                   return Padding(
                     padding: const EdgeInsets.only(bottom: 6),
                     child: ListTile(
@@ -899,7 +905,7 @@ class _MobileDrawer extends StatelessWidget {
                       trailing: page.label == 'Sync' && queueCount > 0 ? Badge(label: Text('$queueCount')) : null,
                       onTap: () {
                         Navigator.of(context).pop();
-                        onSelect(index);
+                        onSelect(pageIndex);
                       },
                     ),
                   );
@@ -1893,22 +1899,62 @@ class _GroupCardState extends State<_GroupCard> {
   }
 }
 
+Set<int> _idSet(Object? value) {
+  if (value is List) return value.map((item) => jsonInt(item)).toSet();
+  return <int>{};
+}
+
 class MeetingsPage extends StatelessWidget {
-  const MeetingsPage({super.key, required this.state, required this.onMutate, required this.onDelete});
+  const MeetingsPage({super.key, required this.state, required this.session, required this.onMutate, required this.onDelete});
   final AppState? state;
+  final AuthSession session;
   final Future<void> Function(String url, Map<String, dynamic> body, AppState optimistic) onMutate;
   final Future<void> Function(String url, AppState optimistic) onDelete;
 
-  void _openEditor(BuildContext context, {Map<String, dynamic>? session}) {
+  bool _canManage(Map<String, dynamic> meeting) {
+    return session.user.isAdmin || jsonInt(meeting['owner_user_id']) == session.user.id;
+  }
+
+  void _showReadOnly(BuildContext context, Map<String, dynamic> meeting) {
+    showDialog<void>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(jsonString(meeting['title'], fallback: 'Zbiórka')),
+        content: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text('Data: ${_shortDate(jsonString(meeting['session_date']))}'),
+          const SizedBox(height: 4),
+          Text('Miejsce: ${jsonString(meeting['location'], fallback: 'brak lokalizacji')}'),
+          const SizedBox(height: 4),
+          Text('Grupa: ${jsonString(meeting['cohort_name'], fallback: 'Cały hufiec')}'),
+          const SizedBox(height: 4),
+          Text('Obecność: ${_sessionPresent(meeting)}/${_sessionPlanned(meeting)}'),
+          const SizedBox(height: 4),
+          Text('Utworzył: ${jsonString(meeting['owner_name'], fallback: 'administrator')}'),
+          const SizedBox(height: 10),
+          Text('Ta zbiórka jest udostępniona przez innego wychowawcę — edycja niedostępna.', style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant, fontSize: 12)),
+        ]),
+        actions: [TextButton(onPressed: () => Navigator.of(context).pop(), child: const Text('Zamknij'))],
+      ),
+    );
+  }
+
+  void _openEditor(BuildContext context, {Map<String, dynamic>? meeting}) {
     final state = this.state;
     if (state == null) return;
-    final existing = session != null;
-    final title = TextEditingController(text: jsonString(session?['title']));
+    final existing = meeting != null;
+    final cohorts = jsonList(state.raw['cohorts']);
+    final caregivers = jsonList(state.raw['caregivers']);
+    final title = TextEditingController(text: jsonString(meeting?['title']));
     final date = TextEditingController(
-      text: session != null ? _dateInput(jsonString(session['session_date'])) : _dateInput(DateTime.now().toIso8601String()),
+      text: meeting != null ? _dateInput(jsonString(meeting['session_date'])) : _dateInput(DateTime.now().toIso8601String()),
     );
-    final location = TextEditingController(text: jsonString(session?['location']));
-    final planned = TextEditingController(text: session != null ? '${_sessionPlanned(session)}' : '0');
+    final location = TextEditingController(text: jsonString(meeting?['location']));
+    final present = TextEditingController(text: meeting != null ? '${_sessionPresent(meeting)}' : '0');
+    final planned = TextEditingController(text: meeting != null ? '${_sessionPlanned(meeting)}' : '0');
+    final cohortIdRaw = jsonInt(meeting?['cohort_id']);
+    var cohortId = cohortIdRaw > 0 ? cohortIdRaw : null;
+    var scope = jsonString(meeting?['scope'], fallback: 'grupa');
+    var participantIds = _idSet(meeting?['participant_user_ids']);
     var saving = false;
     showModalBottomSheet<void>(
       context: context,
@@ -1917,73 +1963,134 @@ class MeetingsPage extends StatelessWidget {
       builder: (context) => StatefulBuilder(
         builder: (context, setModalState) => Padding(
           padding: EdgeInsets.fromLTRB(20, 6, 20, MediaQuery.of(context).viewInsets.bottom + 24),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              Text(existing ? 'Edytuj zbiórkę' : 'Zaplanuj zbiórkę', style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w900)),
-              const SizedBox(height: 14),
-              TextField(controller: title, decoration: const InputDecoration(labelText: 'Tytuł')),
-              const SizedBox(height: 10),
-              TextField(controller: date, keyboardType: TextInputType.datetime, decoration: const InputDecoration(labelText: 'Data')),
-              const SizedBox(height: 10),
-              TextField(controller: location, decoration: const InputDecoration(labelText: 'Lokalizacja')),
-              const SizedBox(height: 10),
-              TextField(controller: planned, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Planowana liczba osób')),
-              const SizedBox(height: 16),
-              FilledButton(
-                onPressed: saving
-                    ? null
-                    : () async {
-                        final cleanTitle = title.text.trim();
-                        if (cleanTitle.isEmpty) {
-                          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Podaj tytuł zbiórki.')));
-                          return;
-                        }
-                        setModalState(() => saving = true);
-                        final raw = Map<String, dynamic>.from(state.raw);
-                        final sessions = jsonList(raw['sessions']);
-                        final id = session != null ? jsonInt(session['id']) : 0;
-                        final presentCount = session != null ? _sessionPresent(session) : 0;
-                        final next = {
-                          ...(session ?? <String, dynamic>{}),
-                          'title': cleanTitle,
-                          'session_date': date.text.trim(),
-                          'location': location.text.trim(),
-                          'planned_count': jsonInt(planned.text),
-                          'total': jsonInt(planned.text),
-                          'present_count': presentCount,
-                          'attendance': presentCount,
-                        };
-                        raw['sessions'] = session != null ? sessions.map((item) => jsonInt(item['id']) == id ? next : item).toList() : [next, ...sessions];
-                        await onMutate('/api/sessions', {
-                          if (session != null) 'id': id,
-                          'title': cleanTitle,
-                          'session_date': date.text.trim(),
-                          'location': location.text.trim(),
-                          'total': jsonInt(planned.text),
-                          'attendance': presentCount,
-                          'game_id': state.game.id,
-                        }, state.copyWithRaw(raw));
-                        if (context.mounted) Navigator.of(context).pop();
-                      },
-                child: saving ? const HufcLoader(size: 22, color: Colors.white) : const Text('Zapisz'),
-              ),
-              if (session != null) ...[
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Text(existing ? 'Edytuj zbiórkę' : 'Zaplanuj zbiórkę', style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w900)),
+                const SizedBox(height: 14),
+                TextField(controller: title, decoration: const InputDecoration(labelText: 'Tytuł')),
                 const SizedBox(height: 10),
-                OutlinedButton(
+                TextField(controller: date, keyboardType: TextInputType.datetime, decoration: const InputDecoration(labelText: 'Data')),
+                const SizedBox(height: 10),
+                TextField(controller: location, decoration: const InputDecoration(labelText: 'Lokalizacja')),
+                const SizedBox(height: 10),
+                DropdownButtonFormField<int?>(
+                  initialValue: cohortId,
+                  decoration: const InputDecoration(labelText: 'Grupa'),
+                  items: [
+                    const DropdownMenuItem<int?>(value: null, child: Text('Cała grupa')),
+                    ...cohorts.map((item) => DropdownMenuItem<int?>(value: jsonInt(item['id']), child: Text(jsonString(item['name'], fallback: 'Grupa')))),
+                  ],
+                  onChanged: (value) => cohortId = value,
+                ),
+                const SizedBox(height: 10),
+                DropdownButtonFormField<String>(
+                  initialValue: scope,
+                  decoration: const InputDecoration(labelText: 'Widoczność'),
+                  items: const [
+                    DropdownMenuItem(value: 'grupa', child: Text('Cała grupa hufcowa')),
+                    DropdownMenuItem(value: 'moja', child: Text('Mój osobisty kalendarz')),
+                  ],
+                  onChanged: (value) => scope = value ?? 'grupa',
+                ),
+                if (caregivers.isNotEmpty) ...[
+                  const SizedBox(height: 16),
+                  const Text('Dodaj wychowawców do harmonogramu', style: TextStyle(fontWeight: FontWeight.w800)),
+                  const SizedBox(height: 4),
+                  Text('Wybrane osoby zobaczą tę zbiórkę w swoim panelu.', style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant, fontSize: 12)),
+                  const SizedBox(height: 8),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: caregivers.map((item) {
+                      final id = jsonInt(item['id']);
+                      final selected = participantIds.contains(id);
+                      return FilterChip(
+                        label: Text(jsonString(item['name'], fallback: 'Osoba')),
+                        selected: selected,
+                        onSelected: (value) => setModalState(() => value ? participantIds.add(id) : participantIds.remove(id)),
+                      );
+                    }).toList(),
+                  ),
+                ],
+                const SizedBox(height: 16),
+                Row(children: [
+                  Expanded(child: TextField(controller: present, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Obecność'))),
+                  const SizedBox(width: 10),
+                  Expanded(child: TextField(controller: planned, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Planowana liczba osób'))),
+                ]),
+                const SizedBox(height: 16),
+                FilledButton(
                   onPressed: saving
                       ? null
                       : () async {
+                          final cleanTitle = title.text.trim();
+                          if (cleanTitle.isEmpty) {
+                            ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Podaj tytuł zbiórki.')));
+                            return;
+                          }
+                          setModalState(() => saving = true);
+                          final cohort = cohorts.firstWhere((item) => jsonInt(item['id']) == cohortId, orElse: () => <String, dynamic>{});
                           final raw = Map<String, dynamic>.from(state.raw);
-                          raw['sessions'] = jsonList(raw['sessions']).where((item) => jsonInt(item['id']) != jsonInt(session['id'])).toList();
-                          await onDelete('/api/sessions/${jsonInt(session['id'])}?gameId=${state.game.id}', state.copyWithRaw(raw));
+                          final sessions = jsonList(raw['sessions']);
+                          final id = meeting != null ? jsonInt(meeting['id']) : 0;
+                          final ownerId = meeting != null ? jsonInt(meeting['owner_user_id'], fallback: session.user.id) : session.user.id;
+                          final ownerName = meeting != null ? jsonString(meeting['owner_name'], fallback: session.user.name) : session.user.name;
+                          final participantNames = caregivers.where((item) => participantIds.contains(jsonInt(item['id']))).map((item) => jsonString(item['name'])).join(', ');
+                          final presentCount = jsonInt(present.text);
+                          final plannedCount = jsonInt(planned.text);
+                          final next = {
+                            ...(meeting ?? <String, dynamic>{}),
+                            'title': cleanTitle,
+                            'session_date': date.text.trim(),
+                            'location': location.text.trim(),
+                            'cohort_id': cohortId,
+                            'cohort_name': cohortId == null ? null : jsonString(cohort['name']),
+                            'scope': scope,
+                            'owner_user_id': ownerId,
+                            'owner_name': ownerName,
+                            'participant_user_ids': participantIds.toList(),
+                            'participant_names': participantNames,
+                            'planned_count': plannedCount,
+                            'total': plannedCount,
+                            'present_count': presentCount,
+                            'attendance': presentCount,
+                          };
+                          raw['sessions'] = meeting != null ? sessions.map((item) => jsonInt(item['id']) == id ? next : item).toList() : [next, ...sessions];
+                          await onMutate('/api/sessions', {
+                            if (meeting != null) 'id': id,
+                            'title': cleanTitle,
+                            'session_date': date.text.trim(),
+                            'location': location.text.trim(),
+                            'cohort_id': cohortId ?? 0,
+                            'scope': scope,
+                            'participant_user_ids': participantIds.toList(),
+                            'total': plannedCount,
+                            'attendance': presentCount,
+                            'game_id': state.game.id,
+                          }, state.copyWithRaw(raw));
                           if (context.mounted) Navigator.of(context).pop();
                         },
-                  child: const Text('Usuń zbiórkę'),
+                  child: saving ? const HufcLoader(size: 22, color: Colors.white) : const Text('Zapisz'),
                 ),
+                if (meeting != null) ...[
+                  const SizedBox(height: 10),
+                  OutlinedButton(
+                    onPressed: saving
+                        ? null
+                        : () async {
+                            final raw = Map<String, dynamic>.from(state.raw);
+                            raw['sessions'] = jsonList(raw['sessions']).where((item) => jsonInt(item['id']) != jsonInt(meeting['id'])).toList();
+                            await onDelete('/api/sessions/${jsonInt(meeting['id'])}?gameId=${state.game.id}', state.copyWithRaw(raw));
+                            if (context.mounted) Navigator.of(context).pop();
+                          },
+                    child: const Text('Usuń zbiórkę'),
+                  ),
+                ],
               ],
-            ],
+            ),
           ),
         ),
       ),
@@ -2002,22 +2109,24 @@ class MeetingsPage extends StatelessWidget {
       ],
       children: [
         if (sessions.isEmpty) const EmptyNotice(text: 'Nie ma jeszcze zbiórek. Dodaj pierwszą przyciskiem powyżej.'),
-        for (final session in sessions)
+        for (final meeting in sessions)
           CardPanel(
             child: InkWell(
-              onTap: () => _openEditor(context, session: session),
+              onTap: () => _canManage(meeting) ? _openEditor(context, meeting: meeting) : _showReadOnly(context, meeting),
               borderRadius: BorderRadius.circular(18),
               child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
               Row(children: [
-                Expanded(child: Text(jsonString(session['title'], fallback: 'Zbiórka'), style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w900))),
-                Text(_shortDate(jsonString(session['session_date']))),
+                Expanded(child: Text(jsonString(meeting['title'], fallback: 'Zbiórka'), style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w900))),
+                Text(_shortDate(jsonString(meeting['session_date']))),
               ]),
-              const SizedBox(height: 10),
-              LinearProgressIndicator(value: _attendanceRatio(session)),
+              const SizedBox(height: 4),
+              Text(jsonString(meeting['cohort_name'], fallback: 'Cały hufiec'), style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant, fontSize: 13)),
+              const SizedBox(height: 8),
+              LinearProgressIndicator(value: _attendanceRatio(meeting)),
               const SizedBox(height: 8),
                 Row(children: [
-                  Expanded(child: Text('Obecność: ${_sessionPresent(session)}/${_sessionPlanned(session)} · ${jsonString(session['location'], fallback: 'brak lokalizacji')}')),
-                  const Icon(Icons.edit_outlined, size: 20),
+                  Expanded(child: Text('Obecność: ${_sessionPresent(meeting)}/${_sessionPlanned(meeting)} · ${jsonString(meeting['location'], fallback: 'brak lokalizacji')}')),
+                  Icon(_canManage(meeting) ? Icons.edit_outlined : Icons.visibility_outlined, size: 20),
                 ]),
               ]),
             ),
@@ -2042,6 +2151,179 @@ class _MobileGalleryPageState extends State<MobileGalleryPage> {
   bool _uploading = false;
   bool _albums = false;
   int? _albumSessionId;
+  bool _selectionMode = false;
+  Set<int> _selectedIds = {};
+
+  void _toggleSelection(int id) {
+    setState(() {
+      if (_selectedIds.contains(id)) {
+        _selectedIds.remove(id);
+        if (_selectedIds.isEmpty) _selectionMode = false;
+      } else {
+        _selectedIds.add(id);
+      }
+    });
+  }
+
+  void _startSelection(int id) {
+    setState(() {
+      _selectionMode = true;
+      _selectedIds = {id};
+    });
+  }
+
+  void _exitSelection() {
+    setState(() {
+      _selectionMode = false;
+      _selectedIds = {};
+    });
+  }
+
+  Future<void> _bulkDelete() async {
+    final state = widget.state;
+    if (state == null || _selectedIds.isEmpty) return;
+    final ids = _selectedIds.toList();
+    final raw = _clone(state.raw);
+    raw['photos'] = jsonList(raw['photos']).where((photo) => !ids.contains(jsonInt(photo['id']))).toList();
+    await widget.onMutate('/api/photos/bulk-delete', {'ids': ids, 'game_id': state.game.id}, state.copyWithRaw(raw));
+    _exitSelection();
+  }
+
+  Future<void> _openShareSheet() async {
+    final state = widget.state;
+    if (state == null || _selectedIds.isEmpty) return;
+    final cohorts = jsonList(state.raw['cohorts']);
+    final ids = _selectedIds.toList();
+    var targetType = 'hufiec';
+    int? cohortId;
+    final note = TextEditingController();
+    var sharing = false;
+    await showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      isScrollControlled: true,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setModalState) => Padding(
+          padding: EdgeInsets.fromLTRB(20, 6, 20, MediaQuery.of(context).viewInsets.bottom + 24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text('Udostępnij ${ids.length} ${ids.length == 1 ? 'zdjęcie' : 'zdjęć'}', style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w900)),
+              const SizedBox(height: 14),
+              DropdownButtonFormField<String>(
+                initialValue: targetType,
+                decoration: const InputDecoration(labelText: 'Odbiorcy'),
+                items: const [
+                  DropdownMenuItem(value: 'hufiec', child: Text('Cały hufiec')),
+                  DropdownMenuItem(value: 'cohort', child: Text('Wybrana grupa')),
+                  DropdownMenuItem(value: 'parents', child: Text('Rodzice')),
+                  DropdownMenuItem(value: 'staff', child: Text('Wychowawcy')),
+                ],
+                onChanged: (value) => setModalState(() => targetType = value ?? 'hufiec'),
+              ),
+              if (targetType == 'cohort') ...[
+                const SizedBox(height: 10),
+                DropdownButtonFormField<int?>(
+                  initialValue: cohortId,
+                  decoration: const InputDecoration(labelText: 'Grupa'),
+                  items: [
+                    const DropdownMenuItem<int?>(value: null, child: Text('Bez grupy')),
+                    ...cohorts.map((item) => DropdownMenuItem<int?>(value: jsonInt(item['id']), child: Text(jsonString(item['name'], fallback: 'Grupa')))),
+                  ],
+                  onChanged: (value) => setModalState(() => cohortId = value),
+                ),
+              ],
+              const SizedBox(height: 10),
+              TextField(controller: note, minLines: 2, maxLines: 3, decoration: const InputDecoration(labelText: 'Wiadomość', hintText: 'np. Zdjęcia z dzisiejszej zbiórki są już dostępne.')),
+              const SizedBox(height: 16),
+              FilledButton(
+                onPressed: sharing
+                    ? null
+                    : () async {
+                        setModalState(() => sharing = true);
+                        for (final id in ids) {
+                          await widget.onMutate('/api/internal-shares', {
+                            'photo_id': id,
+                            'target_type': targetType,
+                            if (targetType == 'cohort' && cohortId != null) 'target_id': cohortId,
+                            'note': note.text.trim(),
+                            'game_id': state.game.id,
+                          }, widget.state ?? state);
+                        }
+                        if (context.mounted) Navigator.of(context).pop();
+                      },
+                child: sharing ? const HufcLoader(size: 22, color: Colors.white) : const Text('Udostępnij'),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+    _exitSelection();
+  }
+
+  Future<void> _openAlbumSheet() async {
+    final state = widget.state;
+    if (state == null || _selectedIds.isEmpty) return;
+    final albums = jsonList(state.raw['photo_albums']);
+    final ids = _selectedIds.toList();
+    int? albumId;
+    final newName = TextEditingController();
+    var saving = false;
+    await showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      isScrollControlled: true,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setModalState) => Padding(
+          padding: EdgeInsets.fromLTRB(20, 6, 20, MediaQuery.of(context).viewInsets.bottom + 24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text('Przenieś ${ids.length} ${ids.length == 1 ? 'zdjęcie' : 'zdjęć'} do albumu', style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w900)),
+              const SizedBox(height: 14),
+              if (albums.isNotEmpty) ...[
+                DropdownButtonFormField<int?>(
+                  initialValue: albumId,
+                  decoration: const InputDecoration(labelText: 'Album'),
+                  items: [
+                    const DropdownMenuItem<int?>(value: null, child: Text('— Nowy album —')),
+                    ...albums.map((item) => DropdownMenuItem<int?>(value: jsonInt(item['id']), child: Text(jsonString(item['name'], fallback: 'Album')))),
+                  ],
+                  onChanged: (value) => setModalState(() => albumId = value),
+                ),
+                const SizedBox(height: 10),
+              ],
+              if (albumId == null) TextField(controller: newName, decoration: const InputDecoration(labelText: 'Nazwa nowego albumu')),
+              const SizedBox(height: 16),
+              FilledButton(
+                onPressed: saving
+                    ? null
+                    : () async {
+                        if (albumId == null && newName.text.trim().isEmpty) {
+                          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Podaj nazwę albumu.')));
+                          return;
+                        }
+                        setModalState(() => saving = true);
+                        await widget.onMutate('/api/photo-albums', {
+                          if (albumId != null) 'album_id': albumId,
+                          if (albumId == null) 'name': newName.text.trim(),
+                          'photo_ids': ids,
+                          'game_id': state.game.id,
+                        }, state);
+                        if (context.mounted) Navigator.of(context).pop();
+                      },
+                child: saving ? const HufcLoader(size: 22, color: Colors.white) : const Text('Przenieś'),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+    _exitSelection();
+  }
 
   Future<void> _pick(ImageSource source) async {
     final state = widget.state;
@@ -2101,13 +2383,22 @@ class _MobileGalleryPageState extends State<MobileGalleryPage> {
     final albumTitle = _albumSessionId == null
         ? null
         : jsonString(sessions.firstWhere((item) => jsonInt(item['id']) == _albumSessionId, orElse: () => {'title': 'Album'})['title'], fallback: 'Album');
+    final shares = jsonList(state.raw['shares']);
     return HufcPage(
       title: _albumSessionId == null ? 'Galeria' : albumTitle!,
-      subtitle: 'Zdjęcia z zajęć. Możesz robić zdjęcia, wgrywać je i otwierać podgląd.',
-      actions: [
-        FilledButton.icon(onPressed: _uploading ? null : () => _pick(ImageSource.camera), icon: const Icon(Icons.photo_camera), label: const Text('Zrób')),
-        OutlinedButton.icon(onPressed: _uploading ? null : () => _pick(ImageSource.gallery), icon: const Icon(Icons.photo_library), label: const Text('Wgraj')),
-      ],
+      subtitle: _selectionMode ? 'Zaznaczono ${_selectedIds.length} ${_selectedIds.length == 1 ? 'zdjęcie' : 'zdjęć'}.' : 'Zdjęcia z zajęć. Możesz robić zdjęcia, wgrywać je i otwierać podgląd.',
+      actions: _selectionMode
+          ? [
+              FilledButton.icon(onPressed: _bulkDelete, icon: const Icon(Icons.delete_outline), label: const Text('Usuń')),
+              OutlinedButton.icon(onPressed: _openShareSheet, icon: const Icon(Icons.share_outlined), label: const Text('Udostępnij')),
+              OutlinedButton.icon(onPressed: _openAlbumSheet, icon: const Icon(Icons.folder_copy_outlined), label: const Text('Przenieś do albumu')),
+              TextButton(onPressed: _exitSelection, child: const Text('Anuluj')),
+            ]
+          : [
+              FilledButton.icon(onPressed: _uploading ? null : () => _pick(ImageSource.camera), icon: const Icon(Icons.photo_camera), label: const Text('Zrób')),
+              OutlinedButton.icon(onPressed: _uploading ? null : () => _pick(ImageSource.gallery), icon: const Icon(Icons.photo_library), label: const Text('Wgraj')),
+              OutlinedButton.icon(onPressed: shownPhotos.isEmpty ? null : () => setState(() => _selectionMode = true), icon: const Icon(Icons.checklist), label: const Text('Wybierz')),
+            ],
       children: [
         if (_albumSessionId != null)
           Align(
@@ -2164,12 +2455,25 @@ class _MobileGalleryPageState extends State<MobileGalleryPage> {
             physics: const NeverScrollableScrollPhysics(),
             itemCount: shownPhotos.length,
             gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(crossAxisCount: 2, crossAxisSpacing: 12, mainAxisSpacing: 12),
-            itemBuilder: (context, index) => _PhotoTile(
-              photo: shownPhotos[index],
-              token: widget.session.token,
-              apiBaseUrl: widget.apiBaseUrl,
-              onTap: () => showDialog(context: context, builder: (_) => _PhotoPreviewDialog(photo: shownPhotos[index], token: widget.session.token, apiBaseUrl: widget.apiBaseUrl)),
-            ),
+            itemBuilder: (context, index) {
+              final photo = shownPhotos[index];
+              final id = jsonInt(photo['id']);
+              final ownerId = jsonInt(photo['owner_user_id']);
+              final isShared = shares.any((share) => jsonInt(share['photo_id']) == id);
+              final isPrivate = ownerId > 0 && !isShared;
+              return _PhotoTile(
+                photo: photo,
+                token: widget.session.token,
+                apiBaseUrl: widget.apiBaseUrl,
+                selectionMode: _selectionMode,
+                selected: _selectedIds.contains(id),
+                isPrivate: isPrivate,
+                onTap: () => _selectionMode
+                    ? _toggleSelection(id)
+                    : showDialog(context: context, builder: (_) => _PhotoPreviewDialog(photo: photo, token: widget.session.token, apiBaseUrl: widget.apiBaseUrl)),
+                onLongPress: _selectionMode ? null : () => _startSelection(id),
+              );
+            },
           ),
         if (!_albums && shownPhotos.isEmpty) const EmptyNotice(text: 'Nie ma jeszcze zdjęć w tym widoku.'),
       ],
@@ -3825,17 +4129,31 @@ List<_ConversationMember> _conversationMembers(_Conversation conversation, AppSt
 }
 
 class _PhotoTile extends StatelessWidget {
-  const _PhotoTile({required this.photo, required this.token, required this.apiBaseUrl, this.onTap});
+  const _PhotoTile({
+    required this.photo,
+    required this.token,
+    required this.apiBaseUrl,
+    this.onTap,
+    this.onLongPress,
+    this.selectionMode = false,
+    this.selected = false,
+    this.isPrivate = false,
+  });
   final Map<String, dynamic> photo;
   final String token;
   final String apiBaseUrl;
   final VoidCallback? onTap;
+  final VoidCallback? onLongPress;
+  final bool selectionMode;
+  final bool selected;
+  final bool isPrivate;
 
   @override
   Widget build(BuildContext context) {
     final title = jsonString(photo['title'], fallback: 'Zdjęcie');
     return InkWell(
       onTap: onTap,
+      onLongPress: onLongPress,
       borderRadius: BorderRadius.circular(18),
       child: ClipRRect(
         borderRadius: BorderRadius.circular(18),
@@ -3845,6 +4163,33 @@ class _PhotoTile extends StatelessWidget {
             _PhotoImage(photo: photo, token: token, apiBaseUrl: apiBaseUrl),
             const DecoratedBox(decoration: BoxDecoration(gradient: LinearGradient(begin: Alignment.topCenter, end: Alignment.bottomCenter, colors: [Colors.transparent, Colors.black54]))),
             Positioned(left: 10, right: 10, bottom: 10, child: Text(title, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w900))),
+            Positioned(
+              left: 8,
+              top: 8,
+              child: Icon(
+                isPrivate ? Icons.lock_outline : Icons.groups_2_outlined,
+                size: 16,
+                color: Colors.white,
+                shadows: const [Shadow(blurRadius: 4, color: Colors.black87)],
+              ),
+            ),
+            if (selectionMode)
+              Positioned(
+                right: 8,
+                top: 8,
+                child: Icon(
+                  selected ? Icons.check_circle : Icons.radio_button_unchecked,
+                  color: selected ? Colors.greenAccent : Colors.white,
+                  size: 24,
+                  shadows: const [Shadow(blurRadius: 4, color: Colors.black87)],
+                ),
+              ),
+            if (selectionMode && selected)
+              IgnorePointer(
+                child: Container(
+                  decoration: BoxDecoration(border: Border.all(color: Colors.greenAccent, width: 3), borderRadius: BorderRadius.circular(18)),
+                ),
+              ),
           ],
         ),
       ),

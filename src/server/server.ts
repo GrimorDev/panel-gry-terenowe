@@ -324,6 +324,7 @@ async function ensureSchema() {
   await pool.query("ALTER TABLE session_photos ADD COLUMN IF NOT EXISTS image_data TEXT");
   await pool.query("ALTER TABLE session_photos ADD COLUMN IF NOT EXISTS mime_type VARCHAR(80)");
   await pool.query("ALTER TABLE session_photos ADD COLUMN IF NOT EXISTS share_token VARCHAR(80) UNIQUE");
+  await pool.query("ALTER TABLE session_photos ADD COLUMN IF NOT EXISTS owner_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL");
   await pool.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ");
   await pool.query("UPDATE users SET created_at = NOW() WHERE created_at IS NULL");
   await pool.query("ALTER TABLE users ALTER COLUMN created_at SET DEFAULT NOW()");
@@ -566,8 +567,9 @@ async function state(gameId?: number, user?: User) {
       SELECT p.*, s.title AS session_title, s.session_date, s.location AS session_location
       FROM session_photos p
       JOIN sessions s ON s.id = p.session_id
+      WHERE ($1::boolean OR p.owner_user_id IS NULL OR p.owner_user_id=$2 OR EXISTS (SELECT 1 FROM internal_shares ish WHERE ish.photo_id = p.id))
       ORDER BY COALESCE(p.created_at, s.session_date::timestamptz) DESC, p.id DESC
-    `),
+    `, [isAdmin(user), user?.id || 0]),
     pool.query(`
       SELECT a.*, COALESCE(COUNT(i.photo_id), 0)::int AS photo_count
       FROM photo_albums a
@@ -1236,8 +1238,8 @@ app.post("/api/photos", async (req, res) => {
     await pool.query("UPDATE session_photos SET title=$1 WHERE id=$2", [title, id]);
   } else {
     await pool.query(
-      "INSERT INTO session_photos (session_id, title, color, image_data, mime_type, share_token) VALUES ($1,$2,$3,$4,$5,$6)",
-      [sessionId, title, String(req.body.color || "green"), imageData || null, mimeType || null, crypto.randomBytes(18).toString("hex")]
+      "INSERT INTO session_photos (session_id, title, color, image_data, mime_type, share_token, owner_user_id) VALUES ($1,$2,$3,$4,$5,$6,$7)",
+      [sessionId, title, String(req.body.color || "green"), imageData || null, mimeType || null, crypto.randomBytes(18).toString("hex"), req.user?.id || null]
     );
   }
   res.json(await stateFor(req, Number(req.body.game_id || 0) || undefined));
