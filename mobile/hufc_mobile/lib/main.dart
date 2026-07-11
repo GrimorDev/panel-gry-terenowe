@@ -395,6 +395,19 @@ class _HufcMobileAppState extends State<HufcMobileApp> with WidgetsBindingObserv
     }
   }
 
+  Future<bool> _loadGame(int gameId) async {
+    final session = _session;
+    if (session == null || !_online) return false;
+    try {
+      final latest = await widget.api.state(session.token, gameId: gameId);
+      await _saveLocal(latest);
+      _updateRealtimeBaselines(latest);
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final accent = _colorFromHex(_accentHex);
@@ -423,6 +436,7 @@ class _HufcMobileAppState extends State<HufcMobileApp> with WidgetsBindingObserv
                   onSync: _sync,
                   onMutate: _mutate,
                   onDelete: _delete,
+                  onLoadGame: _loadGame,
                   themeMode: _themeMode,
                   accentHex: _accentHex,
                   emailNotifications: _emailNotifications,
@@ -686,6 +700,7 @@ class ShellScreen extends StatefulWidget {
     required this.onSync,
     required this.onMutate,
     required this.onDelete,
+    required this.onLoadGame,
     required this.themeMode,
     required this.accentHex,
     required this.emailNotifications,
@@ -710,6 +725,7 @@ class ShellScreen extends StatefulWidget {
   final Future<void> Function() onSync;
   final Future<void> Function(String url, Map<String, dynamic> body, AppState optimistic) onMutate;
   final Future<void> Function(String url, AppState optimistic) onDelete;
+  final Future<bool> Function(int gameId) onLoadGame;
   final ThemeMode themeMode;
   final String accentHex;
   final bool emailNotifications;
@@ -763,16 +779,18 @@ class _ShellScreenState extends State<ShellScreen> {
   Widget build(BuildContext context) {
     final state = widget.state;
     final pages = <_MobilePage>[
-      _MobilePage('Pulpit', Icons.dashboard_outlined, Icons.dashboard, DashboardPage(session: widget.session, state: state, online: widget.online, queueCount: widget.queueCount)),
+      _MobilePage('Pulpit', Icons.dashboard_outlined, Icons.dashboard, DashboardPage(session: widget.session, state: state, online: widget.online, queueCount: widget.queueCount, onNavigate: _selectTab)),
       _MobilePage('Podopieczni', Icons.person_outline, Icons.person, WardsPage(state: state, session: widget.session, onMutate: widget.onMutate, onDelete: widget.onDelete)),
       _MobilePage('Grupy', Icons.groups_outlined, Icons.groups, GroupsPage(state: state)),
       _MobilePage('Zbiórki', Icons.calendar_month_outlined, Icons.calendar_month, MeetingsPage(state: state, onMutate: widget.onMutate, onDelete: widget.onDelete)),
       _MobilePage('Galeria', Icons.photo_library_outlined, Icons.photo_library, MobileGalleryPage(state: state, session: widget.session, apiBaseUrl: widget.apiBaseUrl, onMutate: widget.onMutate)),
       _MobilePage('Wiadomości', Icons.chat_bubble_outline, Icons.chat_bubble, MessagesPage(state: state, session: widget.session, apiBaseUrl: widget.apiBaseUrl, onMutate: widget.onMutate, onConversationModeChanged: (value) => setState(() => _chatFocused = value), openConversationKey: widget.openConversationKey, onOpenConversationConsumed: widget.onOpenConversationConsumed)),
-      _MobilePage('Gry', Icons.flag_outlined, Icons.flag, GamesPage(state: state, onMutate: widget.onMutate)),
+      _MobilePage('Gry', Icons.flag_outlined, Icons.flag, GamesPage(state: state, session: widget.session, onMutate: widget.onMutate, onDelete: widget.onDelete, onLoadGame: widget.onLoadGame)),
       _MobilePage('Współzawodnictwo', Icons.emoji_events_outlined, Icons.emoji_events, CompetitionPage(state: state, onMutate: widget.onMutate, onDelete: widget.onDelete)),
       _MobilePage('Sync', Icons.cloud_sync_outlined, Icons.cloud_sync, SyncPage(online: widget.online, syncing: widget.syncing, queueCount: widget.queueCount, onSync: widget.onSync, onLogout: widget.onLogout)),
       _MobilePage('Ustawienia', Icons.settings_outlined, Icons.settings, SettingsPage(session: widget.session, apiBaseUrl: widget.apiBaseUrl, queueCount: widget.queueCount, themeMode: widget.themeMode, accentHex: widget.accentHex, emailNotifications: widget.emailNotifications, pushNotifications: widget.pushNotifications, photoLocation: widget.photoLocation, onThemeModeChanged: widget.onThemeModeChanged, onAccentChanged: widget.onAccentChanged, onEmailNotificationsChanged: widget.onEmailNotificationsChanged, onPushNotificationsChanged: widget.onPushNotificationsChanged, onPhotoLocationChanged: widget.onPhotoLocationChanged, onLogout: widget.onLogout, onSync: widget.onSync)),
+      if (widget.session.user.isAdmin)
+        _MobilePage('Wychowawcy i grupy', Icons.shield_outlined, Icons.shield, StaffPage(state: state, session: widget.session, onMutate: widget.onMutate, onDelete: widget.onDelete)),
     ];
     final bottomDestinations = [0, 3, 5, 4, 9];
     final bottomIndex = bottomDestinations.contains(_tab) ? bottomDestinations.indexOf(_tab) : 4;
@@ -917,18 +935,19 @@ class _MobilePage {
 }
 
 class DashboardPage extends StatelessWidget {
-  const DashboardPage({super.key, required this.session, required this.state, required this.online, required this.queueCount});
+  const DashboardPage({super.key, required this.session, required this.state, required this.online, required this.queueCount, required this.onNavigate});
 
   final AuthSession session;
   final AppState? state;
   final bool online;
   final int queueCount;
+  final ValueChanged<int> onNavigate;
 
   @override
   Widget build(BuildContext context) {
     final game = state?.game;
     final wards = state == null ? <Map<String, dynamic>>[] : jsonList(state!.raw['wards']);
-    final groups = state == null ? <Map<String, dynamic>>[] : jsonList(state!.raw['cohorts']);
+    final tents = state == null ? <Map<String, dynamic>>[] : jsonList(state!.raw['competition_tents']);
     final sessions = state == null ? <Map<String, dynamic>>[] : jsonList(state!.raw['sessions']);
     final messages = state == null ? <Map<String, dynamic>>[] : jsonList(state!.raw['messages']);
     return ListView(
@@ -937,11 +956,11 @@ class DashboardPage extends StatelessWidget {
         HufcHero(name: session.user.name, subtitle: online ? 'Połączono z serwerem' : 'Tryb offline - zapis lokalny'),
         const SizedBox(height: 16),
         Row(children: [
-          Expanded(child: _MetricTile(label: 'Dzieci', value: '${wards.length}', icon: Icons.person_outline)),
+          Expanded(child: _MetricTile(label: 'Dzieci', value: '${wards.length}', icon: Icons.person_outline, onTap: () => onNavigate(1))),
           const SizedBox(width: 10),
-          Expanded(child: _MetricTile(label: 'Grupy', value: '${groups.length}', icon: Icons.groups_outlined)),
+          Expanded(child: _MetricTile(label: 'Współzawodnictwo', value: '${tents.length}', icon: Icons.emoji_events_outlined, onTap: () => onNavigate(7))),
           const SizedBox(width: 10),
-          Expanded(child: _MetricTile(label: 'Wiadomości', value: '${messages.length}', icon: Icons.chat_bubble_outline)),
+          Expanded(child: _MetricTile(label: 'Wiadomości', value: '${messages.length}', icon: Icons.chat_bubble_outline, onTap: () => onNavigate(5))),
         ]),
         const SizedBox(height: 12),
         _InfoBlock(title: 'Aktywna gra', value: game?.name ?? 'Brak danych', icon: Icons.flag_outlined),
@@ -1426,6 +1445,450 @@ class GroupsPage extends StatelessWidget {
             ]),
           ),
       ],
+    );
+  }
+}
+
+class StaffPage extends StatefulWidget {
+  const StaffPage({super.key, required this.state, required this.session, required this.onMutate, required this.onDelete});
+
+  final AppState? state;
+  final AuthSession session;
+  final Future<void> Function(String url, Map<String, dynamic> body, AppState optimistic) onMutate;
+  final Future<void> Function(String url, AppState optimistic) onDelete;
+
+  @override
+  State<StaffPage> createState() => _StaffPageState();
+}
+
+class _StaffPageState extends State<StaffPage> {
+  int _tab = 0;
+
+  @override
+  Widget build(BuildContext context) {
+    final state = widget.state;
+    if (state == null) return const EmptyNotice(text: 'Brak danych o wychowawcach w telefonie.');
+    final cohorts = jsonList(state.raw['cohorts']);
+    return HufcPage(
+      title: 'Wychowawcy i grupy',
+      subtitle: 'Twórz konta wychowawców, przypisuj grupy i sprawdzaj, którzy podopieczni są pod czyją opieką.',
+      children: [
+        SegmentedButton<int>(
+          segments: const [
+            ButtonSegment(value: 0, label: Text('Tworzenie')),
+            ButtonSegment(value: 1, label: Text('Konta')),
+            ButtonSegment(value: 2, label: Text('Grupy')),
+          ],
+          selected: {_tab},
+          onSelectionChanged: (value) => setState(() => _tab = value.first),
+        ),
+        const SizedBox(height: 16),
+        if (_tab == 0) ...[
+          _CreateCaregiverCard(state: state, onMutate: widget.onMutate),
+          _CreateGroupCard(state: state, onMutate: widget.onMutate),
+        ],
+        if (_tab == 1) _AccountsCard(state: state, onMutate: widget.onMutate),
+        if (_tab == 2) ...[
+          if (cohorts.isEmpty) const EmptyNotice(text: 'Nie ma jeszcze grup.'),
+          for (final cohort in cohorts) _GroupCard(state: state, cohort: cohort, onMutate: widget.onMutate, onDelete: widget.onDelete),
+        ],
+      ],
+    );
+  }
+}
+
+class _CreateCaregiverCard extends StatefulWidget {
+  const _CreateCaregiverCard({required this.state, required this.onMutate});
+  final AppState state;
+  final Future<void> Function(String url, Map<String, dynamic> body, AppState optimistic) onMutate;
+
+  @override
+  State<_CreateCaregiverCard> createState() => _CreateCaregiverCardState();
+}
+
+class _CreateCaregiverCardState extends State<_CreateCaregiverCard> {
+  final _name = TextEditingController();
+  final _email = TextEditingController();
+  final _password = TextEditingController();
+  String _role = 'wychowawca';
+  int? _cohortId;
+  bool _saving = false;
+
+  @override
+  void dispose() {
+    _name.dispose();
+    _email.dispose();
+    _password.dispose();
+    super.dispose();
+  }
+
+  Future<void> _submit() async {
+    final name = _name.text.trim();
+    final email = _email.text.trim();
+    final password = _password.text;
+    if (name.isEmpty || email.isEmpty || password.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Podaj imię, e-mail i hasło startowe.')));
+      return;
+    }
+    setState(() => _saving = true);
+    try {
+      final raw = _clone(widget.state.raw);
+      final caregivers = jsonList(raw['caregivers']);
+      final id = -DateTime.now().millisecondsSinceEpoch;
+      caregivers.add({'id': id, 'name': name, 'email': email, 'role': _role, 'group_count': _cohortId != null ? 1 : 0});
+      raw['caregivers'] = caregivers;
+      if (_cohortId != null) {
+        final cohorts = jsonList(raw['cohorts']);
+        raw['cohorts'] = cohorts
+            .map((item) => jsonInt(item['id']) == _cohortId ? {...item, 'caretaker_user_id': id, 'caretaker_user_name': name, 'caretaker': name} : item)
+            .toList();
+      }
+      await widget.onMutate('/api/caregivers', {
+        'name': name,
+        'email': email,
+        'password': password,
+        'role': _role,
+        if (_cohortId != null) 'cohort_id': _cohortId,
+        'game_id': widget.state.game.id,
+      }, AppState.fromJson(raw));
+      _name.clear();
+      _email.clear();
+      _password.clear();
+      if (mounted) {
+        setState(() {
+          _role = 'wychowawca';
+          _cohortId = null;
+        });
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Konto wychowawcy utworzone.')));
+      }
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final cohorts = jsonList(widget.state.raw['cohorts']);
+    return CardPanel(
+      title: 'Dodaj wychowawcę',
+      child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+        TextField(controller: _name, enabled: !_saving, decoration: const InputDecoration(labelText: 'Imię i nazwisko')),
+        const SizedBox(height: 10),
+        TextField(controller: _email, enabled: !_saving, keyboardType: TextInputType.emailAddress, decoration: const InputDecoration(labelText: 'E-mail')),
+        const SizedBox(height: 10),
+        TextField(controller: _password, enabled: !_saving, decoration: const InputDecoration(labelText: 'Hasło startowe')),
+        const SizedBox(height: 10),
+        DropdownButtonFormField<String>(
+          initialValue: _role,
+          decoration: const InputDecoration(labelText: 'Rola'),
+          items: const [
+            DropdownMenuItem(value: 'wychowawca', child: Text('Wychowawca')),
+            DropdownMenuItem(value: 'administrator', child: Text('Administrator')),
+          ],
+          onChanged: _saving ? null : (value) => setState(() => _role = value ?? 'wychowawca'),
+        ),
+        const SizedBox(height: 10),
+        DropdownButtonFormField<int?>(
+          initialValue: _cohortId,
+          decoration: const InputDecoration(labelText: 'Przypisz grupę'),
+          items: [
+            const DropdownMenuItem<int?>(value: null, child: Text('Bez grupy')),
+            ...cohorts.map((item) => DropdownMenuItem<int?>(value: jsonInt(item['id']), child: Text(jsonString(item['name'], fallback: 'Grupa')))),
+          ],
+          onChanged: _saving ? null : (value) => setState(() => _cohortId = value),
+        ),
+        const SizedBox(height: 14),
+        FilledButton(
+          onPressed: _saving ? null : _submit,
+          child: _saving ? const HufcLoader(size: 22, color: Colors.white) : const Text('Utwórz konto'),
+        ),
+      ]),
+    );
+  }
+}
+
+class _CreateGroupCard extends StatefulWidget {
+  const _CreateGroupCard({required this.state, required this.onMutate});
+  final AppState state;
+  final Future<void> Function(String url, Map<String, dynamic> body, AppState optimistic) onMutate;
+
+  @override
+  State<_CreateGroupCard> createState() => _CreateGroupCardState();
+}
+
+class _CreateGroupCardState extends State<_CreateGroupCard> {
+  final _name = TextEditingController();
+  int? _caretakerId;
+  bool _saving = false;
+
+  @override
+  void dispose() {
+    _name.dispose();
+    super.dispose();
+  }
+
+  Future<void> _submit() async {
+    final name = _name.text.trim();
+    if (name.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Podaj nazwę grupy.')));
+      return;
+    }
+    setState(() => _saving = true);
+    try {
+      final caregivers = jsonList(widget.state.raw['caregivers']);
+      final caretaker = caregivers.firstWhere((item) => jsonInt(item['id']) == _caretakerId, orElse: () => <String, dynamic>{});
+      final raw = _clone(widget.state.raw);
+      final cohorts = jsonList(raw['cohorts']);
+      final id = -DateTime.now().millisecondsSinceEpoch;
+      cohorts.add({
+        'id': id,
+        'name': name,
+        'caretaker_user_id': _caretakerId,
+        'caretaker_user_name': jsonString(caretaker['name'], fallback: 'Bez opiekuna'),
+        'ward_count': 0,
+      });
+      raw['cohorts'] = cohorts;
+      await widget.onMutate('/api/cohorts', {
+        'name': name,
+        if (_caretakerId != null) 'caretaker_user_id': _caretakerId,
+        'game_id': widget.state.game.id,
+      }, AppState.fromJson(raw));
+      _name.clear();
+      if (mounted) {
+        setState(() => _caretakerId = null);
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Grupa dodana.')));
+      }
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final caregivers = jsonList(widget.state.raw['caregivers']);
+    return CardPanel(
+      title: 'Nowa grupa',
+      child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+        TextField(controller: _name, enabled: !_saving, decoration: const InputDecoration(labelText: 'Nazwa grupy', hintText: 'np. Grupa 2025 albo Wilki')),
+        const SizedBox(height: 10),
+        DropdownButtonFormField<int?>(
+          initialValue: _caretakerId,
+          decoration: const InputDecoration(labelText: 'Wychowawca'),
+          items: [
+            const DropdownMenuItem<int?>(value: null, child: Text('Bez opiekuna')),
+            ...caregivers.map((item) => DropdownMenuItem<int?>(value: jsonInt(item['id']), child: Text(jsonString(item['name'], fallback: 'Wychowawca')))),
+          ],
+          onChanged: _saving ? null : (value) => setState(() => _caretakerId = value),
+        ),
+        const SizedBox(height: 14),
+        FilledButton(
+          onPressed: _saving ? null : _submit,
+          child: _saving ? const HufcLoader(size: 22, color: Colors.white) : const Text('Dodaj grupę'),
+        ),
+      ]),
+    );
+  }
+}
+
+class _AccountsCard extends StatelessWidget {
+  const _AccountsCard({required this.state, required this.onMutate});
+  final AppState state;
+  final Future<void> Function(String url, Map<String, dynamic> body, AppState optimistic) onMutate;
+
+  void _openEditor(BuildContext context, Map<String, dynamic> person) {
+    final name = TextEditingController(text: jsonString(person['name']));
+    final email = TextEditingController(text: jsonString(person['email']));
+    final password = TextEditingController();
+    var role = jsonString(person['role'], fallback: 'wychowawca');
+    int? cohortId;
+    var saving = false;
+    final cohorts = jsonList(state.raw['cohorts']);
+    showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      isScrollControlled: true,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setModalState) => Padding(
+          padding: EdgeInsets.fromLTRB(20, 6, 20, MediaQuery.of(context).viewInsets.bottom + 24),
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                const Text('Edytuj konto', style: TextStyle(fontSize: 22, fontWeight: FontWeight.w900)),
+                const SizedBox(height: 14),
+                TextField(controller: name, decoration: const InputDecoration(labelText: 'Imię i nazwisko')),
+                const SizedBox(height: 10),
+                TextField(controller: email, keyboardType: TextInputType.emailAddress, decoration: const InputDecoration(labelText: 'E-mail')),
+                const SizedBox(height: 10),
+                DropdownButtonFormField<String>(
+                  initialValue: role,
+                  decoration: const InputDecoration(labelText: 'Rola'),
+                  items: const [
+                    DropdownMenuItem(value: 'wychowawca', child: Text('Wychowawca')),
+                    DropdownMenuItem(value: 'administrator', child: Text('Administrator')),
+                  ],
+                  onChanged: (value) => role = value ?? 'wychowawca',
+                ),
+                const SizedBox(height: 10),
+                DropdownButtonFormField<int?>(
+                  initialValue: null,
+                  decoration: const InputDecoration(labelText: 'Przypisz grupę'),
+                  items: [
+                    const DropdownMenuItem<int?>(value: null, child: Text('Bez zmiany / bez grupy')),
+                    ...cohorts.map((item) => DropdownMenuItem<int?>(value: jsonInt(item['id']), child: Text(jsonString(item['name'], fallback: 'Grupa')))),
+                  ],
+                  onChanged: (value) => cohortId = value,
+                ),
+                const SizedBox(height: 10),
+                TextField(controller: password, decoration: const InputDecoration(labelText: 'Nowe hasło', hintText: 'zostaw puste, jeśli bez zmiany')),
+                const SizedBox(height: 16),
+                FilledButton(
+                  onPressed: saving
+                      ? null
+                      : () async {
+                          final cleanName = name.text.trim();
+                          final cleanEmail = email.text.trim();
+                          if (cleanName.isEmpty || cleanEmail.isEmpty) {
+                            ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Podaj imię i e-mail.')));
+                            return;
+                          }
+                          setModalState(() => saving = true);
+                          final id = jsonInt(person['id']);
+                          final raw = _clone(state.raw);
+                          final caregivers = jsonList(raw['caregivers']);
+                          raw['caregivers'] = caregivers.map((item) => jsonInt(item['id']) == id ? {...item, 'name': cleanName, 'email': cleanEmail, 'role': role} : item).toList();
+                          await onMutate('/api/caregivers', {
+                            'id': id,
+                            'name': cleanName,
+                            'email': cleanEmail,
+                            'role': role,
+                            if (cohortId != null) 'cohort_id': cohortId,
+                            if (password.text.isNotEmpty) 'password': password.text,
+                            'game_id': state.game.id,
+                          }, AppState.fromJson(raw));
+                          if (context.mounted) Navigator.of(context).pop();
+                        },
+                  child: saving ? const HufcLoader(size: 22, color: Colors.white) : const Text('Zapisz konto'),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final caregivers = jsonList(state.raw['caregivers']);
+    return CardPanel(
+      title: 'Konta wychowawców',
+      child: Column(
+        children: [
+          if (caregivers.isEmpty) const EmptyNotice(text: 'Nie ma jeszcze kont wychowawców.'),
+          for (final person in caregivers)
+            HufcListCard(
+              onTap: () => _openEditor(context, person),
+              leading: _Initials(text: jsonString(person['name'], fallback: 'W')),
+              title: jsonString(person['name'], fallback: 'Wychowawca'),
+              subtitle: '${jsonString(person['email'])} · ${jsonString(person['role'], fallback: 'wychowawca')} · ${jsonInt(person['group_count'])} grup',
+              trailing: const Icon(Icons.edit_outlined),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class _GroupCard extends StatefulWidget {
+  const _GroupCard({required this.state, required this.cohort, required this.onMutate, required this.onDelete});
+  final AppState state;
+  final Map<String, dynamic> cohort;
+  final Future<void> Function(String url, Map<String, dynamic> body, AppState optimistic) onMutate;
+  final Future<void> Function(String url, AppState optimistic) onDelete;
+
+  @override
+  State<_GroupCard> createState() => _GroupCardState();
+}
+
+class _GroupCardState extends State<_GroupCard> {
+  int? _caretakerId;
+  bool _saving = false;
+  bool _deleting = false;
+
+  @override
+  void initState() {
+    super.initState();
+    final id = jsonInt(widget.cohort['caretaker_user_id']);
+    _caretakerId = id > 0 ? id : null;
+  }
+
+  Future<void> _save() async {
+    setState(() => _saving = true);
+    try {
+      final caregivers = jsonList(widget.state.raw['caregivers']);
+      final caretaker = caregivers.firstWhere((item) => jsonInt(item['id']) == _caretakerId, orElse: () => <String, dynamic>{});
+      final id = jsonInt(widget.cohort['id']);
+      final raw = _clone(widget.state.raw);
+      final cohorts = jsonList(raw['cohorts']);
+      raw['cohorts'] = cohorts
+          .map((item) => jsonInt(item['id']) == id ? {...item, 'caretaker_user_id': _caretakerId, 'caretaker_user_name': jsonString(caretaker['name'], fallback: 'Bez opiekuna')} : item)
+          .toList();
+      await widget.onMutate('/api/cohorts', {
+        'id': id,
+        'name': jsonString(widget.cohort['name']),
+        if (_caretakerId != null) 'caretaker_user_id': _caretakerId,
+        'game_id': widget.state.game.id,
+      }, AppState.fromJson(raw));
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
+  }
+
+  Future<void> _delete() async {
+    setState(() => _deleting = true);
+    try {
+      final id = jsonInt(widget.cohort['id']);
+      final raw = _clone(widget.state.raw);
+      raw['cohorts'] = jsonList(raw['cohorts']).where((item) => jsonInt(item['id']) != id).toList();
+      await widget.onDelete('/api/cohorts/$id?gameId=${widget.state.game.id}', AppState.fromJson(raw));
+    } finally {
+      if (mounted) setState(() => _deleting = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final caregivers = jsonList(widget.state.raw['caregivers']);
+    final wards = jsonList(widget.state.raw['wards']).where((ward) => jsonInt(ward['cohort_id']) == jsonInt(widget.cohort['id'])).toList();
+    final busy = _saving || _deleting;
+    return CardPanel(
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Text(jsonString(widget.cohort['name'], fallback: 'Grupa'), style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w900)),
+        const SizedBox(height: 4),
+        Text('Wychowawca: ${jsonString(widget.cohort['caretaker_user_name'], fallback: 'Bez opiekuna')}', style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant)),
+        const SizedBox(height: 10),
+        DropdownButtonFormField<int?>(
+          initialValue: _caretakerId,
+          decoration: const InputDecoration(labelText: 'Wychowawca'),
+          items: [
+            const DropdownMenuItem<int?>(value: null, child: Text('Bez opiekuna')),
+            ...caregivers.map((item) => DropdownMenuItem<int?>(value: jsonInt(item['id']), child: Text(jsonString(item['name'], fallback: 'Wychowawca')))),
+          ],
+          onChanged: busy ? null : (value) => setState(() => _caretakerId = value),
+        ),
+        const SizedBox(height: 10),
+        Wrap(spacing: 10, runSpacing: 10, children: [
+          FilledButton(onPressed: busy ? null : _save, child: _saving ? const HufcLoader(size: 20, color: Colors.white) : const Text('Zapisz')),
+          OutlinedButton(onPressed: busy ? null : _delete, child: _deleting ? const HufcLoader(size: 20) : const Text('Usuń grupę')),
+        ]),
+        const SizedBox(height: 10),
+        Text(
+          wards.isEmpty ? 'Brak podopiecznych w tej grupie.' : wards.map((ward) => jsonString(ward['name'])).where((name) => name.isNotEmpty).join(', '),
+          style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant),
+        ),
+      ]),
     );
   }
 }
@@ -2024,10 +2487,13 @@ class _MessagesPageState extends State<MessagesPage> {
 
 
 class GamesPage extends StatefulWidget {
-  const GamesPage({super.key, required this.state, required this.onMutate});
+  const GamesPage({super.key, required this.state, required this.session, required this.onMutate, required this.onDelete, required this.onLoadGame});
 
   final AppState? state;
+  final AuthSession session;
   final Future<void> Function(String url, Map<String, dynamic> body, AppState optimistic) onMutate;
+  final Future<void> Function(String url, AppState optimistic) onDelete;
+  final Future<bool> Function(int gameId) onLoadGame;
 
   @override
   State<GamesPage> createState() => _GamesPageState();
@@ -2079,6 +2545,134 @@ class _GamesPageState extends State<GamesPage> {
     await widget.onMutate('/api/timer', {'game_id': state.game.id, 'command': command}, AppState.fromJson(raw));
   }
 
+  bool _switching = false;
+
+  Future<void> _switchGame(int? gameId) async {
+    if (gameId == null || _switching) return;
+    setState(() => _switching = true);
+    final ok = await widget.onLoadGame(gameId);
+    if (mounted) {
+      setState(() => _switching = false);
+      if (!ok) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Nie udało się przełączyć gry. Sprawdź internet.')));
+      }
+    }
+  }
+
+  Future<void> _deleteGame() async {
+    final state = widget.state;
+    if (state == null || state.games.length <= 1) return;
+    final raw = _clone(state.raw);
+    raw['games'] = jsonList(raw['games']).where((item) => jsonInt(item['id']) != state.game.id).toList();
+    await widget.onDelete('/api/games/${state.game.id}', AppState.fromJson(raw));
+  }
+
+  Future<void> _openCreateGame(BuildContext context) async {
+    final state = widget.state;
+    if (state == null) return;
+    final name = TextEditingController(text: 'Nowa gra');
+    final duration = TextEditingController(text: '90');
+    var template = 'Własna';
+    var date = DateTime.now();
+    var start = const TimeOfDay(hour: 12, minute: 0);
+    var useTemplate = false;
+    var saving = false;
+    await showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      isScrollControlled: true,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setModalState) => Padding(
+          padding: EdgeInsets.fromLTRB(20, 6, 20, MediaQuery.of(context).viewInsets.bottom + 24),
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                const Text('Nowa gra', style: TextStyle(fontSize: 22, fontWeight: FontWeight.w900)),
+                const SizedBox(height: 14),
+                TextField(controller: name, decoration: const InputDecoration(labelText: 'Nazwa gry')),
+                const SizedBox(height: 10),
+                DropdownButtonFormField<String>(
+                  initialValue: template,
+                  decoration: const InputDecoration(labelText: 'Typ'),
+                  items: const [
+                    DropdownMenuItem(value: 'Własna', child: Text('Własna')),
+                    DropdownMenuItem(value: 'Polska', child: Text('Polska')),
+                    DropdownMenuItem(value: 'Włochy', child: Text('Włochy')),
+                    DropdownMenuItem(value: 'Olimp', child: Text('Olimp')),
+                  ],
+                  onChanged: (value) => template = value ?? 'Własna',
+                ),
+                const SizedBox(height: 10),
+                Row(children: [
+                  Expanded(
+                    child: InkWell(
+                      borderRadius: BorderRadius.circular(14),
+                      onTap: () async {
+                        final picked = await showDatePicker(context: context, initialDate: date, firstDate: DateTime(2020), lastDate: DateTime(2100));
+                        if (picked != null) setModalState(() => date = picked);
+                      },
+                      child: InputDecorator(decoration: const InputDecoration(labelText: 'Data'), child: Text(_shortDate(date.toIso8601String()))),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: InkWell(
+                      borderRadius: BorderRadius.circular(14),
+                      onTap: () async {
+                        final picked = await showTimePicker(context: context, initialTime: start);
+                        if (picked != null) setModalState(() => start = picked);
+                      },
+                      child: InputDecorator(
+                        decoration: const InputDecoration(labelText: 'Start'),
+                        child: Text('${start.hour.toString().padLeft(2, '0')}:${start.minute.toString().padLeft(2, '0')}'),
+                      ),
+                    ),
+                  ),
+                ]),
+                const SizedBox(height: 10),
+                TextField(controller: duration, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Czas minut')),
+                CheckboxListTile(
+                  contentPadding: EdgeInsets.zero,
+                  controlAffinity: ListTileControlAffinity.leading,
+                  value: useTemplate,
+                  onChanged: (value) => setModalState(() => useTemplate = value ?? false),
+                  title: const Text('Dodaj przykładowe stacje'),
+                ),
+                const SizedBox(height: 10),
+                FilledButton(
+                  onPressed: saving
+                      ? null
+                      : () async {
+                          final cleanName = name.text.trim();
+                          if (cleanName.isEmpty) {
+                            ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Podaj nazwę gry.')));
+                            return;
+                          }
+                          setModalState(() => saving = true);
+                          final startText = '${start.hour.toString().padLeft(2, '0')}:${start.minute.toString().padLeft(2, '0')}';
+                          final dateText = '${date.year.toString().padLeft(4, '0')}-${date.month.toString().padLeft(2, '0')}-${date.day.toString().padLeft(2, '0')}';
+                          await widget.onMutate('/api/games', {
+                            'name': cleanName,
+                            'template': template,
+                            'game_date': dateText,
+                            'start_time': startText,
+                            'duration_minutes': int.tryParse(duration.text.trim()) ?? 90,
+                            'use_template': useTemplate,
+                          }, state);
+                          if (context.mounted) Navigator.of(context).pop();
+                        },
+                  child: saving ? const HufcLoader(size: 22, color: Colors.white) : const Text('Zapisz grę'),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   Future<void> _saveScore() async {
     final state = widget.state;
     final teamId = _teamId;
@@ -2122,6 +2716,8 @@ class _GamesPageState extends State<GamesPage> {
     }
     final finishedStationIds = state.scores.where((score) => score.teamId == selectedTeamId && score.finished).map((score) => score.stationId).toSet();
     final stationsTitle = selectedTeam == null ? 'Stacje' : 'Stacje · ${selectedTeam.name}';
+    final rawGame = state.raw['game'] as Map<String, dynamic>? ?? const {};
+    final canManageGame = widget.session.user.isAdmin || jsonInt(rawGame['owner_user_id']) == widget.session.user.id;
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
@@ -2129,6 +2725,29 @@ class _GamesPageState extends State<GamesPage> {
         Text(game.name, style: Theme.of(context).textTheme.headlineMedium?.copyWith(fontWeight: FontWeight.w900)),
         Text('${stations.length} stacji · ${teams.length} drużyn · ${finishedStationIds.length}/${stations.length} ukończonych dla wybranej drużyny'),
         const SizedBox(height: 12),
+        CardPanel(
+          title: 'Wybierz grę',
+          child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+            DropdownButtonFormField<int>(
+              initialValue: game.id,
+              decoration: const InputDecoration(labelText: 'Aktywna gra'),
+              items: state.games.map((item) => DropdownMenuItem(value: item.id, child: Text(item.name))).toList(),
+              onChanged: _switching ? null : _switchGame,
+            ),
+            const SizedBox(height: 10),
+            Wrap(spacing: 10, runSpacing: 10, children: [
+              FilledButton.icon(onPressed: _switching ? null : () => _openCreateGame(context), icon: const Icon(Icons.add), label: const Text('Nowa gra')),
+              if (canManageGame)
+                OutlinedButton.icon(
+                  onPressed: (_switching || state.games.length <= 1) ? null : _deleteGame,
+                  icon: const Icon(Icons.delete_outline),
+                  label: const Text('Usuń grę'),
+                ),
+            ]),
+            if (_switching) const Padding(padding: EdgeInsets.only(top: 10), child: LinearProgressIndicator()),
+          ]),
+        ),
+        _GameSettingsForm(key: ValueKey('game-settings-${game.id}'), state: state, canManage: canManageGame, onMutate: widget.onMutate),
         CardPanel(
           child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
             Text(game.timerRunning ? 'Gra trwa' : 'Timer gotowy', style: const TextStyle(fontWeight: FontWeight.w800)),
@@ -2190,6 +2809,145 @@ class _GamesPageState extends State<GamesPage> {
           ]),
         ),
       ],
+    );
+  }
+}
+
+class _GameSettingsForm extends StatefulWidget {
+  const _GameSettingsForm({super.key, required this.state, required this.canManage, required this.onMutate});
+
+  final AppState state;
+  final bool canManage;
+  final Future<void> Function(String url, Map<String, dynamic> body, AppState optimistic) onMutate;
+
+  @override
+  State<_GameSettingsForm> createState() => _GameSettingsFormState();
+}
+
+class _GameSettingsFormState extends State<_GameSettingsForm> {
+  static const _templates = ['Własna', 'Polska', 'Włochy', 'Olimp'];
+
+  late final TextEditingController _name;
+  late final TextEditingController _duration;
+  late String _template;
+  late DateTime _date;
+  late TimeOfDay _start;
+  bool _saving = false;
+
+  @override
+  void initState() {
+    super.initState();
+    final rawGame = widget.state.raw['game'] as Map<String, dynamic>? ?? const {};
+    _name = TextEditingController(text: jsonString(rawGame['name'], fallback: widget.state.game.name));
+    final rawTemplate = jsonString(rawGame['template']);
+    _template = _templates.contains(rawTemplate) ? rawTemplate : 'Własna';
+    _duration = TextEditingController(text: '${widget.state.game.durationMinutes}');
+    _date = DateTime.tryParse(jsonString(rawGame['game_date'])) ?? DateTime.now();
+    final startParts = jsonString(rawGame['start_time'], fallback: '12:00').split(':');
+    _start = TimeOfDay(
+      hour: int.tryParse(startParts.isNotEmpty ? startParts[0] : '') ?? 12,
+      minute: int.tryParse(startParts.length > 1 ? startParts[1] : '') ?? 0,
+    );
+  }
+
+  @override
+  void dispose() {
+    _name.dispose();
+    _duration.dispose();
+    super.dispose();
+  }
+
+  Future<void> _pickDate() async {
+    final picked = await showDatePicker(context: context, initialDate: _date, firstDate: DateTime(2020), lastDate: DateTime(2100));
+    if (picked != null) setState(() => _date = picked);
+  }
+
+  Future<void> _pickTime() async {
+    final picked = await showTimePicker(context: context, initialTime: _start);
+    if (picked != null) setState(() => _start = picked);
+  }
+
+  Future<void> _save() async {
+    final name = _name.text.trim();
+    if (name.isEmpty || _saving) return;
+    setState(() => _saving = true);
+    try {
+      final startText = '${_start.hour.toString().padLeft(2, '0')}:${_start.minute.toString().padLeft(2, '0')}';
+      final dateText = '${_date.year.toString().padLeft(4, '0')}-${_date.month.toString().padLeft(2, '0')}-${_date.day.toString().padLeft(2, '0')}';
+      final duration = int.tryParse(_duration.text.trim()) ?? 90;
+      final raw = _clone(widget.state.raw);
+      final game = Map<String, dynamic>.from(raw['game'] as Map);
+      game['name'] = name;
+      game['template'] = _template;
+      game['game_date'] = dateText;
+      game['start_time'] = startText;
+      game['duration_minutes'] = duration;
+      raw['game'] = game;
+      final games = jsonList(raw['games']);
+      raw['games'] = games.map((item) => jsonInt(item['id']) == widget.state.game.id ? {...item, 'name': name} : item).toList();
+      await widget.onMutate('/api/games', {
+        'id': widget.state.game.id,
+        'name': name,
+        'template': _template,
+        'game_date': dateText,
+        'start_time': startText,
+        'duration_minutes': duration,
+        'game_id': widget.state.game.id,
+      }, AppState.fromJson(raw));
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final enabled = widget.canManage && !_saving;
+    return CardPanel(
+      title: 'Ustaw grę',
+      child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+        if (!widget.canManage)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 10),
+            child: Text('Ta gra należy do innego wychowawcy. Edytować może właściciel albo administrator.', style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant)),
+          ),
+        TextField(controller: _name, enabled: enabled, decoration: const InputDecoration(labelText: 'Nazwa gry')),
+        const SizedBox(height: 10),
+        DropdownButtonFormField<String>(
+          initialValue: _template,
+          decoration: const InputDecoration(labelText: 'Typ'),
+          items: _templates.map((item) => DropdownMenuItem(value: item, child: Text(item))).toList(),
+          onChanged: enabled ? (value) => setState(() => _template = value ?? 'Własna') : null,
+        ),
+        const SizedBox(height: 10),
+        Row(children: [
+          Expanded(
+            child: InkWell(
+              borderRadius: BorderRadius.circular(14),
+              onTap: enabled ? _pickDate : null,
+              child: InputDecorator(decoration: const InputDecoration(labelText: 'Data'), child: Text(_shortDate(_date.toIso8601String()))),
+            ),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: InkWell(
+              borderRadius: BorderRadius.circular(14),
+              onTap: enabled ? _pickTime : null,
+              child: InputDecorator(
+                decoration: const InputDecoration(labelText: 'Start'),
+                child: Text('${_start.hour.toString().padLeft(2, '0')}:${_start.minute.toString().padLeft(2, '0')}'),
+              ),
+            ),
+          ),
+        ]),
+        const SizedBox(height: 10),
+        TextField(controller: _duration, enabled: enabled, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Czas minut')),
+        const SizedBox(height: 14),
+        if (widget.canManage)
+          FilledButton(
+            onPressed: _saving ? null : _save,
+            child: _saving ? const HufcLoader(size: 22, color: Colors.white) : const Text('Zapisz grę'),
+          ),
+      ]),
     );
   }
 }
@@ -3309,22 +4067,25 @@ class StatCard extends StatelessWidget {
 }
 
 class _MetricTile extends StatelessWidget {
-  const _MetricTile({required this.label, required this.value, required this.icon});
+  const _MetricTile({required this.label, required this.value, required this.icon, this.onTap});
 
   final String label;
   final String value;
   final IconData icon;
+  final VoidCallback? onTap;
 
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    return Container(
+    return Material(
+      color: scheme.surfaceContainerHighest,
+      borderRadius: BorderRadius.circular(22),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(22),
+        child: Container(
       height: 104,
       padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: scheme.surfaceContainerHighest,
-        borderRadius: BorderRadius.circular(22),
-      ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -3336,6 +4097,8 @@ class _MetricTile extends StatelessWidget {
             Text(value, style: TextStyle(color: scheme.onSurface, fontWeight: FontWeight.w900, fontSize: 22)),
           ]),
         ],
+      ),
+        ),
       ),
     );
   }
