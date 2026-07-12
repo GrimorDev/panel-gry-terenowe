@@ -6,6 +6,7 @@ import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_background_service/flutter_background_service.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'package:flutter_slidable/flutter_slidable.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:permission_handler/permission_handler.dart';
 
@@ -17,6 +18,25 @@ import 'src/core/sync_service.dart';
 const String _bgNotificationChannelId = 'moj_hufiec_bg';
 const String _bgAlertChannelId = 'moj_hufiec_realtime';
 const int _bgForegroundNotificationId = 8123;
+
+/// Lokalne (per-użytkownik) preferencje listy rozmów — te same co web trzyma w localStorage:
+/// ukryte rozmowy wracają same, gdy przyjdzie w nich nieprzeczytana wiadomość.
+String _closedConversationsKey(int userId) => 'closed_conversations_$userId';
+String _mutedConversationsKey(int userId) => 'muted_conversations_$userId';
+
+Future<Set<String>> _loadKeySet(LocalStore store, String key) async {
+  final raw = await store.get(key);
+  if (raw == null) return <String>{};
+  try {
+    final decoded = jsonDecode(raw);
+    if (decoded is List) return decoded.map((item) => item.toString()).toSet();
+  } catch (_) {}
+  return <String>{};
+}
+
+Future<void> _saveKeySet(LocalStore store, String key, Set<String> values) {
+  return store.put(key, jsonEncode(values.toList()));
+}
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -88,9 +108,12 @@ void _onBackgroundServiceStart(ServiceInstance service) async {
       var knownSessionId = int.tryParse(knownSessionRaw ?? '') ?? 0;
 
       if (hasBaseline) {
+        final mutedKeys = await _loadKeySet(store, _mutedConversationsKey(auth.user.id));
         final newMessages = messages.where((item) => jsonInt(item['id']) > knownMessageId && jsonInt(item['sender_id']) != auth.user.id).toList()
           ..sort((a, b) => jsonInt(a['id']).compareTo(jsonInt(b['id'])));
         for (final message in newMessages.take(3)) {
+          final conversationKey = _conversationKeyForMessage(message, auth.user.id);
+          if (conversationKey != null && mutedKeys.contains(conversationKey)) continue;
           final sender = jsonString(message['sender_name'], fallback: 'Mój Hufiec');
           final body = jsonString(message['body'], fallback: jsonString(message['attachment_name'], fallback: 'Wysłano załącznik.'));
           await notifications.show(
@@ -482,14 +505,16 @@ class _HufcMobileAppState extends State<HufcMobileApp> with WidgetsBindingObserv
   Future<void> _notifyRealtimeChanges(AppState latest) async {
     if (!_pushNotifications || _session == null) return;
     final userId = _session!.user.id;
+    final mutedKeys = await _loadKeySet(widget.store, _mutedConversationsKey(userId));
     final newMessages = jsonList(latest.raw['messages'])
         .where((item) => jsonInt(item['id']) > _knownMessageId && jsonInt(item['sender_id']) != userId)
         .toList()
       ..sort((a, b) => jsonInt(a['id']).compareTo(jsonInt(b['id'])));
     for (final message in newMessages.take(3)) {
+      final key = _conversationKeyForMessage(message, userId);
+      if (key != null && mutedKeys.contains(key)) continue;
       final sender = jsonString(message['sender_name'], fallback: 'Mój Hufiec');
       final body = jsonString(message['body'], fallback: jsonString(message['attachment_name'], fallback: 'Wysłano załącznik.'));
-      final key = _conversationKeyForMessage(message, userId);
       await _showLocalNotification('Nowa wiadomość od $sender', body, payload: key == null ? null : 'conversation:$key');
     }
 
@@ -2693,16 +2718,98 @@ class MessagesPage extends StatefulWidget {
 
 class _MessagesPageState extends State<MessagesPage> {
   final _controller = TextEditingController();
+  final _localStore = LocalStore();
   _Conversation? _selected;
   bool _sending = false;
   bool _attaching = false;
   Map<String, dynamic>? _replyTo;
   Map<String, dynamic>? _editingMessage;
+  Set<String> _closedKeys = {};
+  Set<String> _mutedKeys = {};
 
   @override
   void initState() {
     super.initState();
     _scheduleOpenRequestedConversation();
+    _loadConversationPreferences();
+  }
+
+  Future<void> _loadConversationPreferences() async {
+    final userId = widget.session.user.id;
+    final closed = await _loadKeySet(_localStore, _closedConversationsKey(userId));
+    final muted = await _loadKeySet(_localStore, _mutedConversationsKey(userId));
+    if (!mounted) return;
+    setState(() {
+      _closedKeys = closed;
+      _mutedKeys = muted;
+    });
+  }
+
+  Future<void> _toggleClosed(_Conversation conversation) async {
+    final next = Set<String>.from(_closedKeys);
+    final wasClosed = next.contains(conversation.key);
+    if (wasClosed) {
+      next.remove(conversation.key);
+    } else {
+      next.add(conversation.key);
+    }
+    await _saveKeySet(_localStore, _closedConversationsKey(widget.session.user.id), next);
+    if (!mounted) return;
+    setState(() {
+      _closedKeys = next;
+      if (!wasClosed && _selected?.key == conversation.key) {
+        _selected = null;
+      }
+    });
+    if (!wasClosed) widget.onConversationModeChanged?.call(false);
+  }
+
+  Future<void> _toggleMuted(_Conversation conversation) async {
+    final next = Set<String>.from(_mutedKeys);
+    if (next.contains(conversation.key)) {
+      next.remove(conversation.key);
+    } else {
+      next.add(conversation.key);
+    }
+    await _saveKeySet(_localStore, _mutedConversationsKey(widget.session.user.id), next);
+    if (!mounted) return;
+    setState(() => _mutedKeys = next);
+  }
+
+  void _showConversationActions(_Conversation conversation) {
+    final muted = _mutedKeys.contains(conversation.key);
+    showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      builder: (sheetContext) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.delete_outline),
+              title: const Text('Usuń rozmowę'),
+              onTap: () {
+                Navigator.of(sheetContext).pop();
+                _toggleClosed(conversation);
+              },
+            ),
+            ListTile(
+              leading: Icon(muted ? Icons.notifications_active_outlined : Icons.notifications_off_outlined),
+              title: Text(muted ? 'Odcisz' : 'Wycisz'),
+              onTap: () {
+                Navigator.of(sheetContext).pop();
+                _toggleMuted(conversation);
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.close),
+              title: const Text('Anuluj'),
+              onTap: () => Navigator.of(sheetContext).pop(),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   @override
@@ -2742,11 +2849,14 @@ class _MessagesPageState extends State<MessagesPage> {
 
   void _openConversation(_Conversation conversation) {
     _controller.clear();
+    final wasClosed = _closedKeys.contains(conversation.key);
     setState(() {
       _selected = conversation;
       _replyTo = null;
       _editingMessage = null;
+      if (wasClosed) _closedKeys = Set<String>.from(_closedKeys)..remove(conversation.key);
     });
+    if (wasClosed) unawaited(_saveKeySet(_localStore, _closedConversationsKey(widget.session.user.id), _closedKeys));
     widget.onConversationModeChanged?.call(true);
   }
 
@@ -2949,7 +3059,23 @@ class _MessagesPageState extends State<MessagesPage> {
               const SizedBox(height: 8),
               OutlinedButton.icon(onPressed: () => _detailsToast(context, 'Tworzenie grupy rozmowy będzie zsynchronizowane z panelem web.'), icon: const Icon(Icons.group_add), label: const Text('Utwórz grupę z rozmowy')),
               const SizedBox(height: 8),
-              OutlinedButton.icon(onPressed: () => _detailsToast(context, 'Rozmowa zostanie ukryta lokalnie po dodaniu archiwizacji na serwerze.'), icon: const Icon(Icons.delete_outline), label: const Text('Usuń rozmowę')),
+              OutlinedButton.icon(
+                onPressed: () {
+                  Navigator.of(context).pop();
+                  _toggleMuted(conversation);
+                },
+                icon: Icon(_mutedKeys.contains(conversation.key) ? Icons.notifications_active_outlined : Icons.notifications_off_outlined),
+                label: Text(_mutedKeys.contains(conversation.key) ? 'Odcisz rozmowę' : 'Wycisz rozmowę'),
+              ),
+              const SizedBox(height: 8),
+              OutlinedButton.icon(
+                onPressed: () {
+                  Navigator.of(context).pop();
+                  _toggleClosed(conversation);
+                },
+                icon: const Icon(Icons.delete_outline),
+                label: const Text('Usuń rozmowę'),
+              ),
             ],
           ),
         ),
@@ -2976,17 +3102,57 @@ class _MessagesPageState extends State<MessagesPage> {
     }
 
     if (_selected == null) {
+      final visibleConversations = conversations.where((conversation) {
+        if (!_closedKeys.contains(conversation.key)) return true;
+        return _unreadCountFor(state, conversation.targetType, conversation.targetId) > 0;
+      }).toList();
       return HufcPage(
         title: 'Wiadomości',
-        subtitle: 'Wybierz rozmowę. Wiadomości zapisują się lokalnie i zsynchronizują po odzyskaniu internetu.',
+        subtitle: 'Wybierz rozmowę. Przytrzymaj albo przesuń w prawo, żeby usunąć lub wyciszyć.',
         children: [
-          for (final conversation in conversations)
-            HufcListCard(
-              onTap: () => _openConversation(conversation),
-              leading: _Initials(text: conversation.title),
-              title: conversation.title,
-              subtitle: conversation.lastText,
-              trailing: const Icon(Icons.chevron_right),
+          for (final conversation in visibleConversations)
+            ClipRRect(
+              borderRadius: BorderRadius.circular(18),
+              child: Slidable(
+                key: ValueKey(conversation.key),
+                endActionPane: ActionPane(
+                  motion: const DrawerMotion(),
+                  extentRatio: 0.72,
+                  children: [
+                    SlidableAction(
+                      onPressed: (_) => _toggleClosed(conversation),
+                      backgroundColor: Theme.of(context).colorScheme.error,
+                      foregroundColor: Theme.of(context).colorScheme.onError,
+                      icon: Icons.delete_outline,
+                      label: 'Usuń',
+                    ),
+                    SlidableAction(
+                      onPressed: (_) => _toggleMuted(conversation),
+                      backgroundColor: Theme.of(context).colorScheme.secondary,
+                      foregroundColor: Theme.of(context).colorScheme.onSecondary,
+                      icon: _mutedKeys.contains(conversation.key) ? Icons.notifications_active_outlined : Icons.notifications_off_outlined,
+                      label: _mutedKeys.contains(conversation.key) ? 'Odcisz' : 'Wycisz',
+                    ),
+                    SlidableAction(
+                      onPressed: (actionContext) => Slidable.of(actionContext)?.close(),
+                      backgroundColor: Theme.of(context).colorScheme.surfaceContainerHighest,
+                      foregroundColor: Theme.of(context).colorScheme.onSurface,
+                      icon: Icons.close,
+                      label: 'Anuluj',
+                    ),
+                  ],
+                ),
+                child: GestureDetector(
+                  onLongPress: () => _showConversationActions(conversation),
+                  child: HufcListCard(
+                    onTap: () => _openConversation(conversation),
+                    leading: _Initials(text: conversation.title),
+                    title: conversation.title,
+                    subtitle: _mutedKeys.contains(conversation.key) ? '🔕 ${conversation.lastText}' : conversation.lastText,
+                    trailing: const Icon(Icons.chevron_right),
+                  ),
+                ),
+              ),
             ),
         ],
       );
@@ -4386,6 +4552,15 @@ List<_Conversation> _buildConversations(AppState state, AppUser user) {
   final sorted = conversations.values.toList();
   sorted.sort((a, b) => b.lastAt.compareTo(a.lastAt));
   return sorted;
+}
+
+int _unreadCountFor(AppState state, String targetType, int targetId) {
+  for (final item in jsonList(state.raw['message_unreads'])) {
+    if (jsonString(item['target_type']) == targetType && jsonInt(item['target_id']) == targetId) {
+      return jsonInt(item['unread_count']);
+    }
+  }
+  return 0;
 }
 
 String? _conversationKeyForMessage(Map<String, dynamic> message, int userId) {
