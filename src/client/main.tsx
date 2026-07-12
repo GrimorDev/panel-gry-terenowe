@@ -736,7 +736,16 @@ function App() {
         const body = incoming.body || incoming.photo_title || incoming.attachment_name || "Nowa wiadomość";
         new Notification(title, { body, tag: `hufc-message-${incoming.id}` });
       } catch {
-        // Ciche odświeżanie nie powinno przeszkadzać w pracy panelu.
+        // Gra zapamiętana lokalnie mogła zniknąć po stronie serwera (np. usunięta
+        // bezpośrednio w bazie) - spróbuj wrócić do domyślnej gry serwera zamiast
+        // w kółko pytać o ten sam, już nieistniejący identyfikator.
+        try {
+          const next = await api<AppState>("/api/state");
+          setState((current) => current ? { ...current, ...next } : next);
+          lastMessageIdRef.current = newestMessageId(next.messages);
+        } catch {
+          // Ciche odświeżanie nie powinno przeszkadzać w pracy panelu.
+        }
       }
     }, 7000);
     return () => window.clearInterval(timer);
