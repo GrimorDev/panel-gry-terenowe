@@ -324,6 +324,7 @@ async function ensureSchema() {
   await pool.query("ALTER TABLE session_photos ADD COLUMN IF NOT EXISTS image_data TEXT");
   await pool.query("ALTER TABLE session_photos ADD COLUMN IF NOT EXISTS mime_type VARCHAR(80)");
   await pool.query("ALTER TABLE session_photos ADD COLUMN IF NOT EXISTS share_token VARCHAR(80) UNIQUE");
+  await pool.query("ALTER TABLE session_photos ADD COLUMN IF NOT EXISTS owner_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL");
   await pool.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ");
   await pool.query("UPDATE users SET created_at = NOW() WHERE created_at IS NULL");
   await pool.query("ALTER TABLE users ALTER COLUMN created_at SET DEFAULT NOW()");
@@ -566,8 +567,19 @@ async function state(gameId?: number, user?: User) {
       SELECT p.*, s.title AS session_title, s.session_date, s.location AS session_location
       FROM session_photos p
       JOIN sessions s ON s.id = p.session_id
+      WHERE $1::boolean
+        OR p.owner_user_id = $2
+        OR EXISTS (
+          SELECT 1 FROM internal_shares ish
+          WHERE ish.photo_id = p.id
+            AND (
+              ish.target_type IN ('hufiec', 'staff', 'parents')
+              OR (ish.target_type = 'user' AND ish.target_id = $2)
+              OR (ish.target_type = 'cohort' AND ($3 = 'administrator' OR EXISTS (SELECT 1 FROM cohorts gc WHERE gc.id = ish.target_id AND gc.caretaker_user_id = $2)))
+            )
+        )
       ORDER BY COALESCE(p.created_at, s.session_date::timestamptz) DESC, p.id DESC
-    `),
+    `, [isAdmin(user), user?.id || 0, user?.role || 'wychowawca']),
     pool.query(`
       SELECT a.*, COALESCE(COUNT(i.photo_id), 0)::int AS photo_count
       FROM photo_albums a
@@ -606,9 +618,12 @@ async function state(gameId?: number, user?: User) {
       LEFT JOIN messages rm ON rm.id = m.reply_to_id
       LEFT JOIN users ru ON ru.id = rm.sender_id
       LEFT JOIN session_photos rp ON rp.id = rm.photo_id
+      WHERE m.target_type IN ('hufiec', 'staff', 'parents')
+        OR (m.target_type='user' AND (m.sender_id=$1 OR m.target_id=$1))
+        OR (m.target_type='cohort' AND ($2='administrator' OR EXISTS (SELECT 1 FROM cohorts gc WHERE gc.id=m.target_id AND gc.caretaker_user_id=$1)))
       ORDER BY m.created_at DESC
       LIMIT 80
-    `),
+    `, [user?.id || 0, user?.role || 'wychowawca']),
     user?.id ? pool.query(`
       SELECT m.target_type,
         CASE
@@ -628,7 +643,7 @@ async function state(gameId?: number, user?: User) {
       WHERE COALESCE(m.sender_id, 0) <> $1
         AND m.created_at >= account_user.created_at
         AND (
-          m.target_type IN ('hufiec', 'staff', 'parents', 'team')
+          m.target_type IN ('hufiec', 'staff', 'parents')
           OR (m.target_type='user' AND m.target_id = $1)
           OR (m.target_type='cohort' AND (
             $2 = 'administrator'
@@ -814,9 +829,12 @@ async function pulseState(gameId?: number, user?: User) {
       LEFT JOIN messages rm ON rm.id = m.reply_to_id
       LEFT JOIN users ru ON ru.id = rm.sender_id
       LEFT JOIN session_photos rp ON rp.id = rm.photo_id
+      WHERE m.target_type IN ('hufiec', 'staff', 'parents')
+        OR (m.target_type='user' AND (m.sender_id=$1 OR m.target_id=$1))
+        OR (m.target_type='cohort' AND ($2='administrator' OR EXISTS (SELECT 1 FROM cohorts gc WHERE gc.id=m.target_id AND gc.caretaker_user_id=$1)))
       ORDER BY m.created_at DESC
       LIMIT 80
-    `),
+    `, [userId || 0, user?.role || 'wychowawca']),
     userId ? pool.query(`
       SELECT m.target_type,
         CASE
@@ -836,7 +854,7 @@ async function pulseState(gameId?: number, user?: User) {
       WHERE COALESCE(m.sender_id, 0) <> $1
         AND m.created_at >= account_user.created_at
         AND (
-          m.target_type IN ('hufiec', 'staff', 'parents', 'team')
+          m.target_type IN ('hufiec', 'staff', 'parents')
           OR (m.target_type='user' AND m.target_id = $1)
           OR (m.target_type='cohort' AND (
             $2 = 'administrator'
@@ -1026,7 +1044,15 @@ app.delete("/api/games/:id", async (req, res) => {
 
 app.post("/api/teams", async (req, res) => {
   await assertGameAccess(req.user, Number(req.body.game_id), "manage");
-  await pool.query("INSERT INTO teams (game_id, name, color) VALUES ($1,$2,$3)", [Number(req.body.game_id), String(req.body.name), String(req.body.color || "#1e5c46")]);
+  const id = Number(req.body.id || 0);
+  const name = String(req.body.name || "").trim();
+  const color = String(req.body.color || "#1e5c46");
+  if (!name) return res.status(400).json({ ok: false, error: "Podaj nazwę drużyny" });
+  if (id) {
+    await pool.query("UPDATE teams SET name=$1, color=$2 WHERE id=$3 AND game_id=$4", [name, color, id, Number(req.body.game_id)]);
+  } else {
+    await pool.query("INSERT INTO teams (game_id, name, color) VALUES ($1,$2,$3)", [Number(req.body.game_id), name, color]);
+  }
   res.json(await stateFor(req, Number(req.body.game_id)));
 });
 
@@ -1236,8 +1262,8 @@ app.post("/api/photos", async (req, res) => {
     await pool.query("UPDATE session_photos SET title=$1 WHERE id=$2", [title, id]);
   } else {
     await pool.query(
-      "INSERT INTO session_photos (session_id, title, color, image_data, mime_type, share_token) VALUES ($1,$2,$3,$4,$5,$6)",
-      [sessionId, title, String(req.body.color || "green"), imageData || null, mimeType || null, crypto.randomBytes(18).toString("hex")]
+      "INSERT INTO session_photos (session_id, title, color, image_data, mime_type, share_token, owner_user_id) VALUES ($1,$2,$3,$4,$5,$6,$7)",
+      [sessionId, title, String(req.body.color || "green"), imageData || null, mimeType || null, crypto.randomBytes(18).toString("hex"), req.user?.id || null]
     );
   }
   res.json(await stateFor(req, Number(req.body.game_id || 0) || undefined));
@@ -1305,16 +1331,19 @@ app.post("/api/internal-shares", async (req, res) => {
   const targetType = String(req.body.target_type || "hufiec");
   const targetId = Number(req.body.target_id || 0) || null;
   const note = String(req.body.note || "");
+  if (!["hufiec", "staff", "parents", "cohort", "user"].includes(targetType)) {
+    return res.status(400).json({ ok: false, error: "Nieznany odbiorca udostępnienia" });
+  }
+  const photo = await pool.query("SELECT owner_user_id FROM session_photos WHERE id=$1", [photoId]);
+  if (!photo.rows[0]) return res.status(404).json({ ok: false, error: "Nie znaleziono zdjęcia" });
+  const ownerId = Number(photo.rows[0].owner_user_id || 0);
+  if (req.user?.role !== "administrator" && ownerId !== Number(req.user?.id || 0)) {
+    return res.status(403).json({ ok: false, error: "Udostępnić zdjęcie może tylko jego autor" });
+  }
   await pool.query(
     "INSERT INTO internal_shares (photo_id, target_type, target_id, note, created_by) VALUES ($1,$2,$3,$4,$5)",
     [photoId, targetType, targetId, note, req.user?.id || null]
   );
-  await pool.query(
-    "INSERT INTO messages (sender_id, target_type, target_id, body, photo_id) VALUES ($1,$2,$3,$4,$5)",
-    [req.user?.id || null, targetType, targetId, note.trim() || "Udostępniono zdjęcie", photoId]
-  );
-  if (req.user?.id) await markConversationRead(Number(req.user.id), targetType, targetId || 0);
-  await invalidateMessageCache();
   res.json(await stateFor(req, Number(req.body.game_id || 0) || undefined));
 });
 
@@ -1326,10 +1355,20 @@ app.post("/api/messages", async (req, res) => {
   const replyToId = Number(req.body.reply_to_id || 0) || null;
   const targetType = String(req.body.target_type || "hufiec");
   const targetId = Number(req.body.target_id || 0) || null;
-  if (!body && !attachmentData) return res.status(400).json({ ok: false, error: "Wpisz wiadomość albo dodaj załącznik" });
+  const photoId = Number(req.body.photo_id || 0) || null;
+  if (!body && !attachmentData && !photoId) return res.status(400).json({ ok: false, error: "Wpisz wiadomość albo dodaj załącznik" });
+  if (!["hufiec", "staff", "parents", "user", "cohort"].includes(targetType)) {
+    return res.status(400).json({ ok: false, error: "Nieznany odbiorca wiadomości" });
+  }
+  if (targetType === "cohort" && req.user?.role !== "administrator") {
+    const owns = targetId
+      ? await pool.query("SELECT 1 FROM cohorts WHERE id=$1 AND caretaker_user_id=$2", [targetId, req.user?.id || 0])
+      : { rowCount: 0 };
+    if (!owns.rowCount) return res.status(403).json({ ok: false, error: "Nie jesteś wychowawcą tej grupy" });
+  }
   await pool.query(
     "INSERT INTO messages (sender_id, target_type, target_id, body, photo_id, reply_to_id, attachment_name, attachment_mime, attachment_data) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)",
-    [req.user?.id || null, targetType, targetId, body, Number(req.body.photo_id || 0) || null, replyToId, attachmentName || null, attachmentMime || null, attachmentData || null]
+    [req.user?.id || null, targetType, targetId, body, photoId, replyToId, attachmentName || null, attachmentMime || null, attachmentData || null]
   );
   if (req.user?.id) await markConversationRead(Number(req.user.id), targetType, targetId || 0);
   await invalidateMessageCache();

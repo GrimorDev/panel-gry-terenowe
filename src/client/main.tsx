@@ -1941,7 +1941,23 @@ function AccountDialog({ user, initialTab, prefs, setPrefs, notifications, onClo
 }
 
 function ShareDialog({ state, photo, onClose, onSaved, runBusy }: { state: AppState; photo: Photo; onClose: () => void; onSaved: (state: AppState) => void; runBusy: BusyRunner }) {
-  return <Modal title="Udostępnij w hufcu" onClose={onClose}><form className="stack" onSubmit={async (event) => { event.preventDefault(); onSaved(await runBusy("Udostępnianie zdjęcia...", () => api<AppState>("/api/internal-shares", { method: "POST", body: JSON.stringify({ ...Object.fromEntries(new FormData(event.currentTarget).entries()), photo_id: photo.id, game_id: state.game.id }) }))); }}><p className="help">{photo.title}</p><label>Odbiorcy<select name="target_type" defaultValue="hufiec"><option value="hufiec">Cały hufiec</option><option value="cohort">Wybrana grupa</option><option value="parents">Rodzice</option><option value="staff">Wychowawcy</option></select></label><label>Grupa, jeśli wybrano grupę<select name="target_id" defaultValue=""><option value="">Bez grupy</option>{state.cohorts.map((cohort) => <option key={cohort.id} value={cohort.id}>{cohort.name}</option>)}</select></label><label>Wiadomość<textarea name="note" placeholder="np. Zdjęcia z dzisiejszej zbiórki są już dostępne." /></label><Button variant="primary">Udostępnij</Button></form></Modal>;
+  const [targetType, setTargetType] = useState("hufiec");
+  return <Modal title="Udostępnij w hufcu" onClose={onClose}>
+    <form className="stack" onSubmit={async (event) => { event.preventDefault(); onSaved(await runBusy("Udostępnianie zdjęcia...", () => api<AppState>("/api/internal-shares", { method: "POST", body: JSON.stringify({ ...Object.fromEntries(new FormData(event.currentTarget).entries()), photo_id: photo.id, game_id: state.game.id }) }))); }}>
+      <p className="help">{photo.title}</p>
+      <label>Odbiorcy<select name="target_type" value={targetType} onChange={(event) => setTargetType(event.target.value)}>
+        <option value="hufiec">Cały hufiec</option>
+        <option value="cohort">Wybrana grupa</option>
+        <option value="user">Konkretna osoba</option>
+        <option value="parents">Rodzice</option>
+        <option value="staff">Wychowawcy</option>
+      </select></label>
+      {targetType === "cohort" && <label>Grupa<select name="target_id" defaultValue=""><option value="">Bez grupy</option>{state.cohorts.map((cohort) => <option key={cohort.id} value={cohort.id}>{cohort.name}</option>)}</select></label>}
+      {targetType === "user" && <label>Osoba<select name="target_id" defaultValue="">{state.caregivers.map((caregiver) => <option key={caregiver.id} value={caregiver.id}>{caregiver.name}</option>)}</select></label>}
+      <label>Wiadomość<textarea name="note" placeholder="np. Zdjęcia z dzisiejszej zbiórki są już dostępne." /></label>
+      <Button variant="primary">Udostępnij</Button>
+    </form>
+  </Modal>;
 }
 
 type ConversationMember = { key: string; name: string; hint: string };
@@ -1969,22 +1985,15 @@ function MessagesView({ state, user, setState }: { state: AppState; user: User; 
     document.body.classList.toggle("chat-thread-mobile-active", mobileThreadOpen);
     return () => document.body.classList.remove("chat-thread-mobile-active");
   }, [mobileThreadOpen]);
+  const visibleCohorts = state.cohorts.filter((cohort) => user.role === "administrator" || cohort.caretaker_user_id === user.id);
   const conversations: Conversation[] = [
     { key: "hufiec", label: "Cały hufiec", hint: "wszyscy wychowawcy i administrator", target_type: "hufiec", target_id: null },
     { key: "staff", label: "Wychowawcy", hint: "rozmowa kadry", target_type: "staff", target_id: null },
     { key: "parents", label: "Rodzice", hint: "komunikaty i pytania rodziców", target_type: "parents", target_id: null },
-    ...state.cohorts.map((cohort) => ({ key: "cohort-" + cohort.id, label: cohort.name, hint: cohort.caretaker_user_name || cohort.caretaker || "grupa bez opiekuna", target_type: "cohort", target_id: cohort.id })),
+    ...visibleCohorts.map((cohort) => ({ key: "cohort-" + cohort.id, label: cohort.name, hint: cohort.caretaker_user_name || cohort.caretaker || "grupa bez opiekuna", target_type: "cohort", target_id: cohort.id })),
     ...state.caregivers.filter((caregiver) => caregiver.id !== user.id).map((caregiver) => ({ key: "user-" + caregiver.id, label: caregiver.name, hint: caregiver.role, target_type: "user", target_id: caregiver.id }))
   ];
-  const teamConversations: Conversation[] = state.teams.map((team) => ({
-    key: "team-" + team.id,
-    label: team.name,
-    hint: "drużyna gry terenowej",
-    target_type: "team",
-    target_id: team.id,
-    members: [{ key: "team-" + team.id, name: team.name, hint: `${team.total_points || 0} pkt` }]
-  }));
-  const allConversations = [...conversations, ...teamConversations];
+  const allConversations = conversations;
   const [activeKey, setActiveKey] = useState(allConversations[0]?.key || "hufiec");
   const active = allConversations.find((conversation) => conversation.key === activeKey) || allConversations[0];
   function messageBelongsToConversation(message: Message, conversation: Conversation) {

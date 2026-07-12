@@ -46,6 +46,8 @@ jobs:
               '<uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"/>',
               '<uses-permission android:name="android.permission.READ_MEDIA_IMAGES"/>',
               '<uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32"/>',
+              '<uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>',
+              '<uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC"/>',
           ]
           missing = [permission for permission in permissions if permission not in text]
           if missing:
@@ -56,6 +58,9 @@ jobs:
               )
           text = text.replace('android:label="hufc_mobile"', 'android:label="Mój Hufiec"')
           text = text.replace('android:label="hufc mobile"', 'android:label="Mój Hufiec"')
+          bg_service_tag = '<service android:name="id.flutter.flutter_background_service.BackgroundService" android:foregroundServiceType="dataSync"/>'
+          if bg_service_tag not in text:
+              text = text.replace('</application>', '    ' + bg_service_tag + '\\n    </application>', 1)
           manifest.write_text(text, encoding="utf-8")
 
           app_gradle_kts = Path("android/app/build.gradle.kts")
