@@ -616,6 +616,13 @@ class _HufcMobileAppState extends State<HufcMobileApp> with WidgetsBindingObserv
       theme: _appTheme(brightness: Brightness.light, accent: accent),
       darkTheme: _appTheme(brightness: Brightness.dark, accent: accent),
       themeMode: _themeMode,
+      builder: (context, child) {
+        final mediaQuery = MediaQuery.of(context);
+        return MediaQuery(
+          data: mediaQuery.copyWith(textScaler: mediaQuery.textScaler.clamp(minScaleFactor: 0.9, maxScaleFactor: 1.15)),
+          child: child!,
+        );
+      },
       home: _booting
           ? const BootScreen()
           : _session == null
@@ -1019,25 +1026,36 @@ class _ShellScreenState extends State<ShellScreen> {
           IconButton(onPressed: widget.syncing ? null : () => widget.onSync(), icon: const Icon(Icons.sync)),
         ],
       ),
+      extendBody: true,
       body: AnimatedSwitcher(
         duration: const Duration(milliseconds: 220),
         switchInCurve: Curves.easeOutCubic,
         switchOutCurve: Curves.easeInCubic,
         child: KeyedSubtree(key: ValueKey(_tab), child: pages[_tab].child),
       ),
-      bottomNavigationBar: _chatFocused ? null : NavigationBar(
-        selectedIndex: bottomIndex,
-        onDestinationSelected: (value) {
-          _selectTab(bottomDestinations[value]);
-        },
-        destinations: [
-          NavigationDestination(icon: Icon(pages[0].icon), selectedIcon: Icon(pages[0].selectedIcon), label: pages[0].label),
-          NavigationDestination(icon: Icon(pages[3].icon), selectedIcon: Icon(pages[3].selectedIcon), label: pages[3].label),
-          NavigationDestination(icon: Icon(pages[5].icon), selectedIcon: Icon(pages[5].selectedIcon), label: pages[5].label),
-          NavigationDestination(icon: Icon(pages[4].icon), selectedIcon: Icon(pages[4].selectedIcon), label: pages[4].label),
-          NavigationDestination(icon: Icon(pages[9].icon), selectedIcon: Icon(pages[9].selectedIcon), label: pages[9].label),
-        ],
-      ),
+      bottomNavigationBar: _chatFocused
+          ? null
+          : ClipRect(
+              child: BackdropFilter(
+                filter: ImageFilter.blur(sigmaX: 24, sigmaY: 24),
+                child: NavigationBar(
+                  backgroundColor: Theme.of(context).colorScheme.surface.withValues(alpha: 0.7),
+                  surfaceTintColor: Colors.transparent,
+                  elevation: 0,
+                  selectedIndex: bottomIndex,
+                  onDestinationSelected: (value) {
+                    _selectTab(bottomDestinations[value]);
+                  },
+                  destinations: [
+                    NavigationDestination(icon: Icon(pages[0].icon), selectedIcon: Icon(pages[0].selectedIcon), label: pages[0].label),
+                    NavigationDestination(icon: Icon(pages[3].icon), selectedIcon: Icon(pages[3].selectedIcon), label: pages[3].label),
+                    NavigationDestination(icon: Icon(pages[5].icon), selectedIcon: Icon(pages[5].selectedIcon), label: pages[5].label),
+                    NavigationDestination(icon: Icon(pages[4].icon), selectedIcon: Icon(pages[4].selectedIcon), label: pages[4].label),
+                    NavigationDestination(icon: Icon(pages[9].icon), selectedIcon: Icon(pages[9].selectedIcon), label: pages[9].label),
+                  ],
+                ),
+              ),
+            ),
     );
   }
 }
@@ -3910,7 +3928,7 @@ class _GamesPageState extends State<GamesPage> {
 
   Widget _buildManageTab(BuildContext context, AppState state, Game game, List<Team> teams, bool canManageGame, List<Map<String, dynamic>> rawStations) {
     return ListView(
-      padding: const EdgeInsets.all(16),
+      padding: EdgeInsets.fromLTRB(16, 16, 16, 16 + kBottomNavigationBarHeight + MediaQuery.of(context).padding.bottom),
       children: [
         CardPanel(
           title: 'Wybierz grę',
@@ -4036,7 +4054,7 @@ class _GamesPageState extends State<GamesPage> {
     String stationsTitle,
   ) {
     return ListView(
-      padding: const EdgeInsets.all(16),
+      padding: EdgeInsets.fromLTRB(16, 16, 16, 16 + kBottomNavigationBarHeight + MediaQuery.of(context).padding.bottom),
       children: [
         Text('${stations.length} stacji · ${teams.length} drużyn · ${finishedStationIds.length}/${stations.length} ukończonych dla wybranej drużyny'),
         const SizedBox(height: 12),
@@ -4870,7 +4888,7 @@ class HufcPage extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return ListView(
-      padding: const EdgeInsets.fromLTRB(16, 18, 16, 24),
+      padding: EdgeInsets.fromLTRB(16, 18, 16, 24 + kBottomNavigationBarHeight + MediaQuery.of(context).padding.bottom),
       children: [
         Text(title, style: Theme.of(context).textTheme.headlineMedium?.copyWith(fontWeight: FontWeight.w900)),
         const SizedBox(height: 6),
