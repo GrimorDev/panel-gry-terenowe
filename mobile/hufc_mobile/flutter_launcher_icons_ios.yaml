@@ -1,0 +1,6 @@
+flutter_launcher_icons:
+  android: false
+  ios: true
+  image_path: assets/brand/moj-hufiec-icon.png
+  remove_alpha_ios: true
+  background_color_ios: "#0B1F14"
