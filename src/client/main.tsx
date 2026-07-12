@@ -147,12 +147,20 @@ async function syncOfflineQueue() {
   if (!navigator.onLine) return 0;
   let synced = 0;
   for (const item of readOfflineQueue()) {
-    const response = await fetch(item.url, { method: item.method, headers: item.body ? { "Content-Type": "application/json" } : undefined, body: item.body });
-    const data = await response.json().catch(() => null);
-    if (!response.ok || data?.ok === false) throw new Error(data?.error || "Blad synchronizacji");
-    cacheState(data);
-    writeOfflineQueue(readOfflineQueue().filter((queued) => queued.id !== item.id));
-    synced += 1;
+    try {
+      const response = await fetch(item.url, { method: item.method, headers: item.body ? { "Content-Type": "application/json" } : undefined, body: item.body });
+      const data = await response.json().catch(() => null);
+      if (!response.ok || data?.ok === false) throw new Error(data?.error || "Blad synchronizacji");
+      cacheState(data);
+      writeOfflineQueue(readOfflineQueue().filter((queued) => queued.id !== item.id));
+      synced += 1;
+    } catch {
+      // A queued change can permanently fail if whatever it targeted was deleted by
+      // someone else in the meantime. Stop replaying for now instead of letting one
+      // stuck entry block every entry queued after it forever - it stays queued for
+      // a later retry, and whatever already synced this round still counts.
+      break;
+    }
   }
   return synced;
 }

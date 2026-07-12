@@ -12,13 +12,22 @@ class SyncService {
     AppState? latest;
     final operations = await store.queue();
     for (final operation in operations) {
-      if (operation.method == 'POST') {
-        latest = await api.postState(session.token, operation.url, operation.body);
-      } else if (operation.method == 'DELETE') {
-        latest = await api.deleteState(session.token, operation.url);
+      try {
+        if (operation.method == 'POST') {
+          latest = await api.postState(session.token, operation.url, operation.body);
+        } else if (operation.method == 'DELETE') {
+          latest = await api.deleteState(session.token, operation.url);
+        }
+        await store.removeQueueItem(operation.id);
+        if (latest != null) await store.saveState(latest);
+      } catch (_) {
+        // A queued change can permanently fail if whatever it targeted (a game,
+        // a station...) was deleted by someone else in the meantime. Stop replaying
+        // the queue for now instead of letting one stuck entry block every entry
+        // after it forever — it stays queued for a later retry — but still fall
+        // through to refresh live state below so the rest of the app recovers now.
+        break;
       }
-      await store.removeQueueItem(operation.id);
-      if (latest != null) await store.saveState(latest);
     }
     try {
       latest = await api.state(session.token, gameId: gameId);
