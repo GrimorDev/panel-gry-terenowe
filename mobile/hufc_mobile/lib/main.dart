@@ -2632,6 +2632,7 @@ class _MobileGalleryPageState extends State<MobileGalleryPage> {
         'session_title': jsonString(session['title'], fallback: 'Galeria'),
         'session_date': jsonString(session['session_date']),
         'session_location': jsonString(session['location']),
+        'owner_user_id': widget.session.user.id,
       };
       final raw = Map<String, dynamic>.from(state.raw);
       raw['photos'] = [photo, ...jsonList(raw['photos'])];
@@ -2762,7 +2763,7 @@ class _MobileGalleryPageState extends State<MobileGalleryPage> {
                 isPrivate: isPrivate,
                 onTap: () => _selectionMode
                     ? _toggleSelection(id)
-                    : showDialog(context: context, builder: (_) => _PhotoPreviewDialog(photo: photo, token: widget.session.token, apiBaseUrl: widget.apiBaseUrl)),
+                    : showDialog(context: context, builder: (_) => _PhotoPreviewDialog(photo: photo, token: widget.session.token, apiBaseUrl: widget.apiBaseUrl, isPrivate: isPrivate)),
                 onLongPress: _selectionMode ? null : () => _startSelection(id),
               );
             },
@@ -5299,16 +5300,18 @@ class _PhotoImage extends StatelessWidget {
 }
 
 class _PhotoPreviewDialog extends StatelessWidget {
-  const _PhotoPreviewDialog({required this.photo, required this.token, required this.apiBaseUrl});
+  const _PhotoPreviewDialog({required this.photo, required this.token, required this.apiBaseUrl, this.isPrivate = false});
 
   final Map<String, dynamic> photo;
   final String token;
   final String apiBaseUrl;
+  final bool isPrivate;
 
   @override
   Widget build(BuildContext context) {
     final title = jsonString(photo['title'], fallback: 'Zdjęcie');
     final date = _shortDate(jsonString(photo['created_at'], fallback: jsonString(photo['session_date'])));
+    final sessionTitle = jsonString(photo['session_title']);
     final location = jsonString(photo['session_location']);
     return Dialog(
       insetPadding: const EdgeInsets.all(14),
@@ -5322,9 +5325,21 @@ class _PhotoPreviewDialog extends StatelessWidget {
           Padding(
             padding: const EdgeInsets.all(16),
             child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Text(title, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w900)),
+              Row(children: [
+                Expanded(child: Text(title, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w900))),
+                Icon(isPrivate ? Icons.lock_outline : Icons.groups_2_outlined, size: 16),
+                const SizedBox(width: 4),
+                Text(isPrivate ? 'prywatne' : 'udostępnione', style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700)),
+              ]),
               if (date.isNotEmpty) Text(date),
-              if (location.isNotEmpty) Text(location),
+              if (sessionTitle.isNotEmpty || location.isNotEmpty)
+                Padding(
+                  padding: const EdgeInsets.only(top: 4),
+                  child: Text(
+                    'Zbiórka: ${[sessionTitle, location].where((value) => value.isNotEmpty).join(' · ')}',
+                    style: TextStyle(fontSize: 12, color: Theme.of(context).colorScheme.onSurfaceVariant),
+                  ),
+                ),
               const SizedBox(height: 12),
               Align(alignment: Alignment.centerRight, child: FilledButton(onPressed: () => Navigator.of(context).pop(), child: const Text('Zamknij'))),
             ]),
