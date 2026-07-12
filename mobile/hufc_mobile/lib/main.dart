@@ -18,6 +18,8 @@ import 'src/core/sync_service.dart';
 const String _bgNotificationChannelId = 'moj_hufiec_bg';
 const String _bgAlertChannelId = 'moj_hufiec_realtime';
 const int _bgForegroundNotificationId = 8123;
+const String _gameTimerChannelId = 'moj_hufiec_timer';
+const int _gameTimerNotificationId = 8124;
 
 /// Lokalne (per-użytkownik) preferencje listy rozmów — te same co web trzyma w localStorage:
 /// ukryte rozmowy wracają same, gdy przyjdzie w nich nieprzeczytana wiadomość.
@@ -235,6 +237,7 @@ class _HufcMobileAppState extends State<HufcMobileApp> with WidgetsBindingObserv
     });
     await _refreshQueue();
     _updateRealtimeBaselines(cached);
+    if (cached != null) unawaited(_syncTimerNotification(cached));
     if (_pushNotifications) {
       await _configureNotifications(request: false);
       unawaited(FlutterBackgroundService().startService());
@@ -355,6 +358,10 @@ class _HufcMobileAppState extends State<HufcMobileApp> with WidgetsBindingObserv
   Future<void> _logout() async {
     _realtimeTimer?.cancel();
     await widget.store.clearAuth();
+    if (_lastTimerNotificationGameId != null) {
+      await _notifications.cancel(_gameTimerNotificationId);
+      _lastTimerNotificationGameId = null;
+    }
     if (!mounted) return;
     setState(() => _session = null);
   }
@@ -388,6 +395,50 @@ class _HufcMobileAppState extends State<HufcMobileApp> with WidgetsBindingObserv
   Future<void> _saveLocal(AppState state) async {
     await widget.store.saveState(state);
     if (mounted) setState(() => _state = state);
+    unawaited(_syncTimerNotification(state));
+  }
+
+  int? _lastTimerNotificationGameId;
+
+  /// Pokazuje trwające powiadomienie z żywym odliczaniem (natywny "chronometer"
+  /// Androida — nie wymaga odświeżania co sekundę) gdy timer gry jest uruchomiony,
+  /// i zdejmuje je, gdy timer jest zatrzymany/zresetowany.
+  Future<void> _syncTimerNotification(AppState state) async {
+    final game = state.game;
+    if (!game.timerRunning) {
+      if (_lastTimerNotificationGameId != null) {
+        await _configureNotifications(request: false);
+        await _notifications.cancel(_gameTimerNotificationId);
+        _lastTimerNotificationGameId = null;
+      }
+      return;
+    }
+    await _configureNotifications(request: false);
+    final elapsed = DateTime.now().difference(game.timerUpdatedAt).inSeconds;
+    final remaining = (game.remainingSeconds - elapsed).clamp(0, game.durationMinutes * 60);
+    final endTime = DateTime.now().add(Duration(seconds: remaining));
+    await _notifications.show(
+      _gameTimerNotificationId,
+      'Gra: ${game.name}',
+      'Trwa odliczanie czasu gry',
+      NotificationDetails(
+        android: AndroidNotificationDetails(
+          _gameTimerChannelId,
+          'Mój Hufiec — czas gry',
+          channelDescription: 'Pokazuje odliczanie czasu trwającej gry terenowej.',
+          ongoing: true,
+          autoCancel: false,
+          showWhen: true,
+          when: endTime.millisecondsSinceEpoch,
+          usesChronometer: true,
+          chronometerCountDown: true,
+          importance: Importance.low,
+          priority: Priority.low,
+          category: AndroidNotificationCategory.stopwatch,
+        ),
+      ),
+    );
+    _lastTimerNotificationGameId = game.id;
   }
 
   Future<void> _mutate(String url, Map<String, dynamic> body, AppState optimistic) async {
@@ -3114,8 +3165,7 @@ class _MessagesPageState extends State<MessagesPage> {
               conversation.subtitle.toLowerCase().contains(query) ||
               conversation.lastText.toLowerCase().contains(query);
         }
-        if (!_closedKeys.contains(conversation.key)) return true;
-        return _unreadCountFor(state, conversation.targetType, conversation.targetId) > 0;
+        return !_closedKeys.contains(conversation.key);
       }).toList();
       return HufcPage(
         title: 'Wiadomości',
@@ -3338,6 +3388,7 @@ class GamesPage extends StatefulWidget {
 
 class _GamesPageState extends State<GamesPage> {
   Timer? _tick;
+  int _tab = 0;
   int? _teamId;
   int? _stationId;
   int _points = 5;
@@ -3436,12 +3487,13 @@ class _GamesPageState extends State<GamesPage> {
     if (_editingStationId == id) _resetStationForm();
   }
 
-  Future<void> _openAddTeam(BuildContext context) async {
+  Future<void> _openTeamDialog(BuildContext context, {Team? team}) async {
     final state = widget.state;
     if (state == null) return;
-    final name = TextEditingController();
-    var colorHex = _teamColorOptions.first;
+    final name = TextEditingController(text: team?.name ?? '');
+    var colorHex = team != null && _teamColorOptions.contains(team.color.toUpperCase()) ? team.color.toUpperCase() : _teamColorOptions.first;
     var saving = false;
+    var deleting = false;
     await showModalBottomSheet<void>(
       context: context,
       showDragHandle: true,
@@ -3453,7 +3505,7 @@ class _GamesPageState extends State<GamesPage> {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              const Text('Dodaj drużynę', style: TextStyle(fontSize: 22, fontWeight: FontWeight.w900)),
+              Text(team != null ? 'Edytuj drużynę' : 'Dodaj drużynę', style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w900)),
               const SizedBox(height: 14),
               TextField(controller: name, decoration: const InputDecoration(labelText: 'Nazwa', hintText: 'np. Wilki')),
               const SizedBox(height: 14),
@@ -3477,7 +3529,7 @@ class _GamesPageState extends State<GamesPage> {
               ),
               const SizedBox(height: 16),
               FilledButton(
-                onPressed: saving
+                onPressed: (saving || deleting)
                     ? null
                     : () async {
                         final cleanName = name.text.trim();
@@ -3486,11 +3538,31 @@ class _GamesPageState extends State<GamesPage> {
                           return;
                         }
                         setModalState(() => saving = true);
-                        await widget.onMutate('/api/teams', {'name': cleanName, 'color': colorHex, 'game_id': state.game.id}, state);
+                        await widget.onMutate('/api/teams', {
+                          if (team != null) 'id': team.id,
+                          'name': cleanName,
+                          'color': colorHex,
+                          'game_id': state.game.id,
+                        }, state);
                         if (context.mounted) Navigator.of(context).pop();
                       },
-                child: saving ? const HufcLoader(size: 22, color: Colors.white) : const Text('Dodaj'),
+                child: saving ? const HufcLoader(size: 22, color: Colors.white) : Text(team != null ? 'Zapisz zmiany' : 'Dodaj'),
               ),
+              if (team != null) ...[
+                const SizedBox(height: 10),
+                OutlinedButton(
+                  onPressed: (saving || deleting)
+                      ? null
+                      : () async {
+                          setModalState(() => deleting = true);
+                          final raw = _clone(state.raw);
+                          raw['teams'] = jsonList(raw['teams']).where((item) => jsonInt(item['id']) != team.id).toList();
+                          await widget.onDelete('/api/teams/${team.id}?gameId=${state.game.id}', AppState.fromJson(raw));
+                          if (context.mounted) Navigator.of(context).pop();
+                        },
+                  child: deleting ? const HufcLoader(size: 22) : const Text('Usuń drużynę'),
+                ),
+              ],
             ],
           ),
         ),
@@ -3697,13 +3769,38 @@ class _GamesPageState extends State<GamesPage> {
     final canManageGame = widget.session.user.isAdmin || jsonInt(rawGame['owner_user_id']) == widget.session.user.id;
     final rawStations = jsonList(state.raw['stations']).where((item) => jsonInt(item['game_id']) == game.id).toList()
       ..sort((a, b) => jsonInt(a['station_order'], fallback: 1).compareTo(jsonInt(b['station_order'], fallback: 1)));
+
+    return Column(
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text('Gry terenowe', style: Theme.of(context).textTheme.labelLarge),
+            Text(game.name, style: Theme.of(context).textTheme.headlineMedium?.copyWith(fontWeight: FontWeight.w900)),
+            const SizedBox(height: 12),
+            SegmentedButton<int>(
+              segments: const [
+                ButtonSegment(value: 0, label: Text('Zarządzanie'), icon: Icon(Icons.tune)),
+                ButtonSegment(value: 1, label: Text('Gra'), icon: Icon(Icons.flag)),
+              ],
+              selected: {_tab},
+              onSelectionChanged: (value) => setState(() => _tab = value.first),
+            ),
+          ]),
+        ),
+        Expanded(
+          child: _tab == 0
+              ? _buildManageTab(context, state, game, teams, canManageGame, rawStations)
+              : _buildPlayTab(context, game, teams, stations, canManageGame, finishedStationIds, stationsTitle),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildManageTab(BuildContext context, AppState state, Game game, List<Team> teams, bool canManageGame, List<Map<String, dynamic>> rawStations) {
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
-        Text('Gry terenowe', style: Theme.of(context).textTheme.labelLarge),
-        Text(game.name, style: Theme.of(context).textTheme.headlineMedium?.copyWith(fontWeight: FontWeight.w900)),
-        Text('${stations.length} stacji · ${teams.length} drużyn · ${finishedStationIds.length}/${stations.length} ukończonych dla wybranej drużyny'),
-        const SizedBox(height: 12),
         CardPanel(
           title: 'Wybierz grę',
           child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
@@ -3728,6 +3825,111 @@ class _GamesPageState extends State<GamesPage> {
         ),
         _GameSettingsForm(key: ValueKey('game-settings-${game.id}'), state: state, canManage: canManageGame, onMutate: widget.onMutate),
         CardPanel(
+          child: Theme(
+            data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
+            child: ExpansionTile(
+              tilePadding: EdgeInsets.zero,
+              childrenPadding: const EdgeInsets.only(top: 12),
+              title: const Text('Zarządzaj stacjami', style: TextStyle(fontWeight: FontWeight.w900, fontSize: 18)),
+              subtitle: Text('${rawStations.length} stacji · dotknij, żeby rozwinąć'),
+              children: [
+                if (!canManageGame)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 10),
+                    child: Text('Ta gra należy do innego wychowawcy. Edytować może właściciel albo administrator.', style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant)),
+                  ),
+                TextField(controller: _stationTitle, enabled: canManageGame, decoration: const InputDecoration(labelText: 'Nazwa stacji', hintText: 'np. Most nad rzeką')),
+                const SizedBox(height: 10),
+                TextField(controller: _stationOrder, enabled: canManageGame, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Kolejność')),
+                const SizedBox(height: 10),
+                Row(children: [
+                  Expanded(child: TextField(controller: _stationLat, enabled: canManageGame, keyboardType: const TextInputType.numberWithOptions(decimal: true, signed: true), decoration: const InputDecoration(labelText: 'Lat', hintText: 'np. 52.229770'))),
+                  const SizedBox(width: 10),
+                  Expanded(child: TextField(controller: _stationLng, enabled: canManageGame, keyboardType: const TextInputType.numberWithOptions(decimal: true, signed: true), decoration: const InputDecoration(labelText: 'Lng', hintText: 'np. 21.011780'))),
+                ]),
+                const SizedBox(height: 12),
+                Row(children: [
+                  Expanded(
+                    child: FilledButton(
+                      onPressed: canManageGame && !_savingStation ? _saveStation : null,
+                      child: _savingStation ? const HufcLoader(size: 22, color: Colors.white) : Text(_editingStationId == null ? 'Zapisz stację' : 'Zapisz zmiany'),
+                    ),
+                  ),
+                  if (_editingStationId != null) ...[
+                    const SizedBox(width: 10),
+                    OutlinedButton(onPressed: _resetStationForm, child: const Text('Anuluj')),
+                  ],
+                ]),
+                if (rawStations.isNotEmpty) ...[
+                  const SizedBox(height: 16),
+                  const Divider(),
+                  const SizedBox(height: 8),
+                  for (final rawStation in rawStations)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 8),
+                      child: Row(children: [
+                        Expanded(
+                          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                            Text('${jsonInt(rawStation['station_order'], fallback: 1)}. ${jsonString(rawStation['title'], fallback: 'Stacja')}', style: const TextStyle(fontWeight: FontWeight.w800)),
+                            Text(
+                              rawStation['lat'] != null ? '${rawStation['lat']}, ${rawStation['lng']}' : 'bez punktu',
+                              style: TextStyle(fontSize: 12, color: Theme.of(context).colorScheme.onSurfaceVariant),
+                            ),
+                          ]),
+                        ),
+                        if (canManageGame) ...[
+                          IconButton(onPressed: () => _fillStationForm(rawStation), icon: const Icon(Icons.edit_outlined)),
+                          IconButton(onPressed: () => _deleteStation(jsonInt(rawStation['id'])), icon: const Icon(Icons.delete_outline)),
+                        ],
+                      ]),
+                    ),
+                ],
+              ],
+            ),
+          ),
+        ),
+        CardPanel(
+          title: 'Drużyny',
+          child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+            if (canManageGame)
+              Align(
+                alignment: Alignment.centerRight,
+                child: Padding(
+                  padding: const EdgeInsets.only(bottom: 10),
+                  child: OutlinedButton.icon(onPressed: () => _openTeamDialog(context), icon: const Icon(Icons.add), label: const Text('Dodaj drużynę')),
+                ),
+              ),
+            if (teams.isEmpty) const EmptyNotice(text: 'Nie ma jeszcze drużyn.'),
+            for (final team in teams)
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: CircleAvatar(backgroundColor: _colorFromString(team.color)),
+                title: Text(team.name, style: const TextStyle(fontWeight: FontWeight.w800)),
+                subtitle: Text('${team.totalPoints} pkt'),
+                trailing: canManageGame ? const Icon(Icons.edit_outlined) : null,
+                onTap: canManageGame ? () => _openTeamDialog(context, team: team) : null,
+              ),
+          ]),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildPlayTab(
+    BuildContext context,
+    Game game,
+    List<Team> teams,
+    List<Station> stations,
+    bool canManageGame,
+    Set<int> finishedStationIds,
+    String stationsTitle,
+  ) {
+    return ListView(
+      padding: const EdgeInsets.all(16),
+      children: [
+        Text('${stations.length} stacji · ${teams.length} drużyn · ${finishedStationIds.length}/${stations.length} ukończonych dla wybranej drużyny'),
+        const SizedBox(height: 12),
+        CardPanel(
           child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
             Text(game.timerRunning ? 'Gra trwa' : 'Timer gotowy', style: const TextStyle(fontWeight: FontWeight.w800)),
             Text(_formatSeconds(_remaining(game)), style: const TextStyle(fontSize: 68, fontWeight: FontWeight.w900, color: Color(0xFF1F5C36))),
@@ -3741,103 +3943,41 @@ class _GamesPageState extends State<GamesPage> {
           ]),
         ),
         CardPanel(
-          title: stationsTitle,
-          child: Column(
-            children: stations.map((station) {
-              final done = finishedStationIds.contains(station.id);
-              return Padding(
-                padding: const EdgeInsets.only(bottom: 8),
-                child: InkWell(
-                  borderRadius: BorderRadius.circular(16),
-                  onTap: () => setState(() => _stationId = station.id),
-                  child: Container(
-                    padding: const EdgeInsets.all(14),
-                    decoration: BoxDecoration(
-                      color: done ? const Color(0xFF1F5C36) : Theme.of(context).colorScheme.surface,
-                      border: Border.all(color: _stationId == station.id ? const Color(0xFF1F5C36) : Theme.of(context).dividerColor),
-                      borderRadius: BorderRadius.circular(16),
-                    ),
-                    child: Row(children: [
-                      Expanded(child: Text(station.title, style: TextStyle(fontWeight: FontWeight.w900, color: done ? Colors.white : null))),
-                      Text(done ? 'ukończona' : 'nieodwiedzona', style: TextStyle(color: done ? Colors.white70 : Theme.of(context).colorScheme.onSurfaceVariant)),
-                      const SizedBox(width: 10),
-                      if (done) const CircleAvatar(radius: 14, backgroundColor: Colors.white, child: Icon(Icons.check, size: 18, color: Color(0xFF1F5C36))),
-                    ]),
-                  ),
-                ),
-              );
-            }).toList(),
-          ),
-        ),
-        CardPanel(
-          title: 'Zarządzaj stacjami',
-          child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-            if (!canManageGame)
-              Padding(
-                padding: const EdgeInsets.only(bottom: 10),
-                child: Text('Ta gra należy do innego wychowawcy. Edytować może właściciel albo administrator.', style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant)),
-              ),
-            TextField(controller: _stationTitle, enabled: canManageGame, decoration: const InputDecoration(labelText: 'Nazwa stacji', hintText: 'np. Most nad rzeką')),
-            const SizedBox(height: 10),
-            TextField(controller: _stationOrder, enabled: canManageGame, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Kolejność')),
-            const SizedBox(height: 10),
-            Row(children: [
-              Expanded(child: TextField(controller: _stationLat, enabled: canManageGame, keyboardType: const TextInputType.numberWithOptions(decimal: true, signed: true), decoration: const InputDecoration(labelText: 'Lat', hintText: 'np. 52.229770'))),
-              const SizedBox(width: 10),
-              Expanded(child: TextField(controller: _stationLng, enabled: canManageGame, keyboardType: const TextInputType.numberWithOptions(decimal: true, signed: true), decoration: const InputDecoration(labelText: 'Lng', hintText: 'np. 21.011780'))),
-            ]),
-            const SizedBox(height: 12),
-            Row(children: [
-              Expanded(
-                child: FilledButton(
-                  onPressed: canManageGame && !_savingStation ? _saveStation : null,
-                  child: _savingStation ? const HufcLoader(size: 22, color: Colors.white) : Text(_editingStationId == null ? 'Zapisz stację' : 'Zapisz zmiany'),
-                ),
-              ),
-              if (_editingStationId != null) ...[
-                const SizedBox(width: 10),
-                OutlinedButton(onPressed: _resetStationForm, child: const Text('Anuluj')),
-              ],
-            ]),
-            if (rawStations.isNotEmpty) ...[
-              const SizedBox(height: 16),
-              const Divider(),
-              const SizedBox(height: 8),
-              for (final rawStation in rawStations)
-                Padding(
-                  padding: const EdgeInsets.only(bottom: 8),
-                  child: Row(children: [
-                    Expanded(
-                      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                        Text('${jsonInt(rawStation['station_order'], fallback: 1)}. ${jsonString(rawStation['title'], fallback: 'Stacja')}', style: const TextStyle(fontWeight: FontWeight.w800)),
-                        Text(
-                          rawStation['lat'] != null ? '${rawStation['lat']}, ${rawStation['lng']}' : 'bez punktu',
-                          style: TextStyle(fontSize: 12, color: Theme.of(context).colorScheme.onSurfaceVariant),
-                        ),
-                      ]),
-                    ),
-                    if (canManageGame) ...[
-                      IconButton(onPressed: () => _fillStationForm(rawStation), icon: const Icon(Icons.edit_outlined)),
-                      IconButton(onPressed: () => _deleteStation(jsonInt(rawStation['id'])), icon: const Icon(Icons.delete_outline)),
-                    ],
-                  ]),
-                ),
-            ],
-          ]),
-        ),
-        CardPanel(
           title: 'Ranking',
-          child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-            if (canManageGame)
-              Align(
-                alignment: Alignment.centerRight,
-                child: Padding(
-                  padding: const EdgeInsets.only(bottom: 10),
-                  child: OutlinedButton.icon(onPressed: () => _openAddTeam(context), icon: const Icon(Icons.add), label: const Text('Dodaj drużynę')),
+          child: teams.isEmpty
+              ? const EmptyNotice(text: 'Nie ma jeszcze drużyn. Dodaj je w zakładce Zarządzanie.')
+              : Column(children: teams.map((team) => ListTile(title: Text(team.name), trailing: Text('${team.totalPoints} pkt', style: const TextStyle(fontWeight: FontWeight.w800)))).toList()),
+        ),
+        CardPanel(
+          title: stationsTitle,
+          child: stations.isEmpty
+              ? const EmptyNotice(text: 'Nie ma jeszcze stacji. Dodaj je w zakładce Zarządzanie.')
+              : Column(
+                  children: stations.map((station) {
+                    final done = finishedStationIds.contains(station.id);
+                    return Padding(
+                      padding: const EdgeInsets.only(bottom: 8),
+                      child: InkWell(
+                        borderRadius: BorderRadius.circular(16),
+                        onTap: () => setState(() => _stationId = station.id),
+                        child: Container(
+                          padding: const EdgeInsets.all(14),
+                          decoration: BoxDecoration(
+                            color: done ? const Color(0xFF1F5C36) : Theme.of(context).colorScheme.surface,
+                            border: Border.all(color: _stationId == station.id ? const Color(0xFF1F5C36) : Theme.of(context).dividerColor),
+                            borderRadius: BorderRadius.circular(16),
+                          ),
+                          child: Row(children: [
+                            Expanded(child: Text(station.title, style: TextStyle(fontWeight: FontWeight.w900, color: done ? Colors.white : null))),
+                            Text(done ? 'ukończona' : 'nieodwiedzona', style: TextStyle(color: done ? Colors.white70 : Theme.of(context).colorScheme.onSurfaceVariant)),
+                            const SizedBox(width: 10),
+                            if (done) const CircleAvatar(radius: 14, backgroundColor: Colors.white, child: Icon(Icons.check, size: 18, color: Color(0xFF1F5C36))),
+                          ]),
+                        ),
+                      ),
+                    );
+                  }).toList(),
                 ),
-              ),
-            ...teams.map((team) => ListTile(title: Text(team.name), trailing: Text('${team.totalPoints} pkt', style: const TextStyle(fontWeight: FontWeight.w800)))),
-          ]),
         ),
         CardPanel(
           title: 'Ocena stacji',
@@ -4793,15 +4933,6 @@ List<_Conversation> _buildConversations(AppState state, AppUser user) {
   final sorted = conversations.values.toList();
   sorted.sort((a, b) => b.lastAt.compareTo(a.lastAt));
   return sorted;
-}
-
-int _unreadCountFor(AppState state, String targetType, int targetId) {
-  for (final item in jsonList(state.raw['message_unreads'])) {
-    if (jsonString(item['target_type']) == targetType && jsonInt(item['target_id']) == targetId) {
-      return jsonInt(item['unread_count']);
-    }
-  }
-  return 0;
 }
 
 String? _conversationKeyForMessage(Map<String, dynamic> message, int userId) {

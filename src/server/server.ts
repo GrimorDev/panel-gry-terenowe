@@ -1028,7 +1028,15 @@ app.delete("/api/games/:id", async (req, res) => {
 
 app.post("/api/teams", async (req, res) => {
   await assertGameAccess(req.user, Number(req.body.game_id), "manage");
-  await pool.query("INSERT INTO teams (game_id, name, color) VALUES ($1,$2,$3)", [Number(req.body.game_id), String(req.body.name), String(req.body.color || "#1e5c46")]);
+  const id = Number(req.body.id || 0);
+  const name = String(req.body.name || "").trim();
+  const color = String(req.body.color || "#1e5c46");
+  if (!name) return res.status(400).json({ ok: false, error: "Podaj nazwę drużyny" });
+  if (id) {
+    await pool.query("UPDATE teams SET name=$1, color=$2 WHERE id=$3 AND game_id=$4", [name, color, id, Number(req.body.game_id)]);
+  } else {
+    await pool.query("INSERT INTO teams (game_id, name, color) VALUES ($1,$2,$3)", [Number(req.body.game_id), name, color]);
+  }
   res.json(await stateFor(req, Number(req.body.game_id)));
 });
 
