@@ -20,6 +20,13 @@ const pool = new Pool({
   password: process.env.DB_PASS || "field_games_password"
 });
 
+process.on("unhandledRejection", (reason) => {
+  console.error("Unhandled rejection (request failed, server keeps running):", reason);
+});
+process.on("uncaughtException", (error) => {
+  console.error("Uncaught exception (request failed, server keeps running):", error);
+});
+
 const redis = process.env.REDIS_URL
   ? new Redis(process.env.REDIS_URL, { enableOfflineQueue: false, maxRetriesPerRequest: 1 })
   : null;
@@ -105,18 +112,31 @@ function readCookies(req: Request) {
   return Object.fromEntries(header.split(";").map((item) => item.trim().split("=")).filter(([key]) => key));
 }
 
-function requireAuth(req: Request, res: Response, next: NextFunction) {
+async function requireAuth(req: Request, res: Response, next: NextFunction) {
   const authHeader = String(req.headers.authorization || "");
   const bearer = authHeader.toLowerCase().startsWith("bearer ") ? authHeader.slice(7).trim() : "";
   const token = bearer || readCookies(req).hufc_session;
   if (!token) return res.status(401).json({ ok: false, error: "Brak logowania" });
   const [payload, signature] = token.split(".");
   if (!payload || signature !== sign(payload)) return res.status(401).json({ ok: false, error: "Sesja wygasła" });
+  let tokenUser: User;
   try {
-    req.user = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
-    return next();
+    tokenUser = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
   } catch {
     return res.status(401).json({ ok: false, error: "Sesja wygasła" });
+  }
+  // Tokens are self-signed and stateless, so a deleted or edited account would otherwise
+  // stay "valid" forever. Re-check against the database on every request so a removed
+  // account's cached token stops being usable immediately, instead of e.g. still being
+  // able to reference itself as owner_user_id on new rows and violating foreign keys.
+  try {
+    const result = await pool.query("SELECT id, email, name, role FROM users WHERE id=$1", [tokenUser.id]);
+    const current = result.rows[0];
+    if (!current) return res.status(401).json({ ok: false, error: "Konto zostało usunięte" });
+    req.user = { id: current.id, email: current.email, name: current.name, role: current.role };
+    return next();
+  } catch {
+    return res.status(500).json({ ok: false, error: "Błąd serwera" });
   }
 }
 
