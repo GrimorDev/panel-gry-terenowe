@@ -456,7 +456,7 @@ async function gamesList(user?: User) {
 
 async function availableGamesFor(user?: User) {
   let list = await gamesList(user);
-  if (!list.length && user?.id && !isAdmin(user)) {
+  if (!list.length && user?.id) {
     await pool.query(
       `INSERT INTO games (name, template, game_date, start_time, duration_minutes, timer_remaining_seconds, owner_user_id)
        VALUES ($1,$2,CURRENT_DATE,$3,$4,$5,$6)`,
