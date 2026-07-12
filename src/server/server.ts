@@ -11,8 +11,6 @@ const port = Number(process.env.PORT || 80);
 const sessionSecret = process.env.SESSION_SECRET || "change-this-secret-in-portainer";
 const adminEmail = process.env.ADMIN_EMAIL || "grimordev@gmail.com";
 const adminPassword = process.env.ADMIN_PASSWORD || "PrywatnieNr7!";
-const demoEmail = process.env.DEMO_EMAIL || "admin@hufc.local";
-const demoPassword = process.env.DEMO_PASSWORD || "hufc1234";
 
 const pool = new Pool({
   host: process.env.DB_HOST || "127.0.0.1",
@@ -353,54 +351,6 @@ async function ensureSchema() {
      ON CONFLICT (email) DO UPDATE SET role=$3`,
     [adminEmail, "Administrator hufca", "administrator", hashPassword(adminPassword)]
   );
-  await pool.query(
-    `INSERT INTO users (email, name, role, password_hash)
-     VALUES ($1, $2, $3, $4)
-     ON CONFLICT (email) DO UPDATE SET role=$3`,
-    [demoEmail, "Demo wychowawca", "wychowawca", hashPassword(demoPassword)]
-  );
-  await pool.query("UPDATE games SET owner_user_id = (SELECT id FROM users WHERE lower(email)=lower($1) LIMIT 1) WHERE owner_user_id IS NULL", [adminEmail]);
-  await pool.query("UPDATE sessions SET owner_user_id = (SELECT id FROM users WHERE lower(email)=lower($1) LIMIT 1) WHERE owner_user_id IS NULL", [adminEmail]);
-
-  const games = await pool.query("SELECT COUNT(*)::int AS count FROM games");
-  if (games.rows[0].count === 0) {
-    await pool.query(
-      "INSERT INTO games (name, template, duration_minutes, timer_remaining_seconds) VALUES ($1, $2, $3, $4)",
-      ["Pierwsza gra terenowa", "Własna", 90, 5400]
-    );
-  }
-
-  const cohorts = await pool.query("SELECT COUNT(*)::int AS count FROM cohorts");
-  if (cohorts.rows[0].count === 0) {
-    await pool.query(`
-      INSERT INTO cohorts (id, name, caretaker) VALUES
-        (1, 'Rocznik 2013', 'Anna Kowalska'),
-        (2, 'Rocznik 2014', 'Anna Kowalska'),
-        (3, 'Rocznik 2015', 'Tomasz Nowicki')
-      ON CONFLICT DO NOTHING;
-
-      INSERT INTO wards (name, age, parent_name, contact, cohort_id) VALUES
-        ('Julia Nowak', 12, 'Anna Nowak', '600 111 222', 2),
-        ('Kacper Wiśniewski', 13, 'Marek Wiśniewski', '601 222 333', 1),
-        ('Zofia Kowalska', 11, 'Ewa Kowalska', '602 333 444', 3),
-        ('Antoni Zieliński', 12, 'Piotr Zieliński', '603 444 555', 2),
-        ('Maja Lewandowska', 13, 'Katarzyna Lewandowska', '604 555 666', 1);
-
-      INSERT INTO sessions (title, session_date, location, attendance, total, cohort_id, scope) VALUES
-        ('Zbiórka Wilków', CURRENT_DATE + INTERVAL '7 days', 'Harcówka, ul. Leśna 4', 9, 12, 2, 'grupa'),
-        ('Zbiórka Lisów', CURRENT_DATE + INTERVAL '9 days', 'Harcówka, ul. Leśna 4', 11, 11, 1, 'grupa'),
-        ('Rajd nad jezioro', CURRENT_DATE + INTERVAL '14 days', 'Jezioro Kaczor, plaża wschodnia', 22, 28, NULL, 'grupa'),
-        ('Zbiórka Sów', CURRENT_DATE + INTERVAL '16 days', 'Harcówka, sala 2', 7, 10, 3, 'moja');
-
-      INSERT INTO session_photos (session_id, title, color)
-      SELECT id, title, CASE WHEN id % 3 = 0 THEN 'accent' WHEN id % 2 = 0 THEN 'sand' ELSE 'green' END
-      FROM sessions
-      LIMIT 4;
-
-      SELECT setval('cohorts_id_seq', (SELECT MAX(id) FROM cohorts));
-    `);
-  }
-
   await pool.query("UPDATE games SET owner_user_id = (SELECT id FROM users WHERE lower(email)=lower($1) LIMIT 1) WHERE owner_user_id IS NULL", [adminEmail]);
   await pool.query("UPDATE sessions SET owner_user_id = (SELECT id FROM users WHERE lower(email)=lower($1) LIMIT 1) WHERE owner_user_id IS NULL", [adminEmail]);
 }
