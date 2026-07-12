@@ -608,9 +608,12 @@ async function state(gameId?: number, user?: User) {
       LEFT JOIN messages rm ON rm.id = m.reply_to_id
       LEFT JOIN users ru ON ru.id = rm.sender_id
       LEFT JOIN session_photos rp ON rp.id = rm.photo_id
+      WHERE m.target_type IN ('hufiec', 'staff', 'parents')
+        OR (m.target_type='user' AND (m.sender_id=$1 OR m.target_id=$1))
+        OR (m.target_type='cohort' AND ($2='administrator' OR EXISTS (SELECT 1 FROM cohorts gc WHERE gc.id=m.target_id AND gc.caretaker_user_id=$1)))
       ORDER BY m.created_at DESC
       LIMIT 80
-    `),
+    `, [user?.id || 0, user?.role || 'wychowawca']),
     user?.id ? pool.query(`
       SELECT m.target_type,
         CASE
@@ -630,7 +633,7 @@ async function state(gameId?: number, user?: User) {
       WHERE COALESCE(m.sender_id, 0) <> $1
         AND m.created_at >= account_user.created_at
         AND (
-          m.target_type IN ('hufiec', 'staff', 'parents', 'team')
+          m.target_type IN ('hufiec', 'staff', 'parents')
           OR (m.target_type='user' AND m.target_id = $1)
           OR (m.target_type='cohort' AND (
             $2 = 'administrator'
@@ -816,9 +819,12 @@ async function pulseState(gameId?: number, user?: User) {
       LEFT JOIN messages rm ON rm.id = m.reply_to_id
       LEFT JOIN users ru ON ru.id = rm.sender_id
       LEFT JOIN session_photos rp ON rp.id = rm.photo_id
+      WHERE m.target_type IN ('hufiec', 'staff', 'parents')
+        OR (m.target_type='user' AND (m.sender_id=$1 OR m.target_id=$1))
+        OR (m.target_type='cohort' AND ($2='administrator' OR EXISTS (SELECT 1 FROM cohorts gc WHERE gc.id=m.target_id AND gc.caretaker_user_id=$1)))
       ORDER BY m.created_at DESC
       LIMIT 80
-    `),
+    `, [userId || 0, user?.role || 'wychowawca']),
     userId ? pool.query(`
       SELECT m.target_type,
         CASE
@@ -838,7 +844,7 @@ async function pulseState(gameId?: number, user?: User) {
       WHERE COALESCE(m.sender_id, 0) <> $1
         AND m.created_at >= account_user.created_at
         AND (
-          m.target_type IN ('hufiec', 'staff', 'parents', 'team')
+          m.target_type IN ('hufiec', 'staff', 'parents')
           OR (m.target_type='user' AND m.target_id = $1)
           OR (m.target_type='cohort' AND (
             $2 = 'administrator'
@@ -1332,6 +1338,15 @@ app.post("/api/messages", async (req, res) => {
   const targetId = Number(req.body.target_id || 0) || null;
   const photoId = Number(req.body.photo_id || 0) || null;
   if (!body && !attachmentData && !photoId) return res.status(400).json({ ok: false, error: "Wpisz wiadomość albo dodaj załącznik" });
+  if (!["hufiec", "staff", "parents", "user", "cohort"].includes(targetType)) {
+    return res.status(400).json({ ok: false, error: "Nieznany odbiorca wiadomości" });
+  }
+  if (targetType === "cohort" && req.user?.role !== "administrator") {
+    const owns = targetId
+      ? await pool.query("SELECT 1 FROM cohorts WHERE id=$1 AND caretaker_user_id=$2", [targetId, req.user?.id || 0])
+      : { rowCount: 0 };
+    if (!owns.rowCount) return res.status(403).json({ ok: false, error: "Nie jesteś wychowawcą tej grupy" });
+  }
   await pool.query(
     "INSERT INTO messages (sender_id, target_type, target_id, body, photo_id, reply_to_id, attachment_name, attachment_mime, attachment_data) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)",
     [req.user?.id || null, targetType, targetId, body, photoId, replyToId, attachmentName || null, attachmentMime || null, attachmentData || null]

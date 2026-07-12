@@ -3401,13 +3401,24 @@ class _GamesPageState extends State<GamesPage> {
   int? _editingStationId;
   bool _savingStation = false;
 
+  final LocalStore _milestoneStore = LocalStore();
+  final _milestoneMinute = TextEditingController();
+  final _milestoneLabel = TextEditingController();
+  int? _milestonesGameId;
+  List<_TimerMilestone> _milestones = [];
+  final Set<String> _alertedMilestoneIds = {};
+  bool _timeUpAlerted = false;
+
   static const _teamColorOptions = ['#1E5C46', '#B8492C', '#2E7D5A', '#315A86', '#8A5A2B', '#6A4C93'];
 
   @override
   void initState() {
     super.initState();
     _tick = Timer.periodic(const Duration(seconds: 1), (_) {
-      if (mounted && widget.state?.game.timerRunning == true) setState(() {});
+      final game = widget.state?.game;
+      if (!mounted || game == null || !game.timerRunning) return;
+      setState(() {});
+      _checkMilestones(game);
     });
   }
 
@@ -3418,7 +3429,74 @@ class _GamesPageState extends State<GamesPage> {
     _stationOrder.dispose();
     _stationLat.dispose();
     _stationLng.dispose();
+    _milestoneMinute.dispose();
+    _milestoneLabel.dispose();
     super.dispose();
+  }
+
+  void _ensureMilestonesLoaded(int gameId) {
+    if (_milestonesGameId == gameId) return;
+    _milestonesGameId = gameId;
+    _milestones = [];
+    _alertedMilestoneIds.clear();
+    _timeUpAlerted = false;
+    unawaited(_loadMilestones(gameId));
+  }
+
+  Future<void> _loadMilestones(int gameId) async {
+    final raw = await _milestoneStore.get('timer_milestones_$gameId');
+    if (raw == null || !mounted || _milestonesGameId != gameId) return;
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is List) {
+        final items = decoded
+            .whereType<Map>()
+            .map((item) => _TimerMilestone.fromJson(Map<String, dynamic>.from(item)))
+            .toList()
+          ..sort((a, b) => a.minute.compareTo(b.minute));
+        setState(() => _milestones = items);
+      }
+    } catch (_) {}
+  }
+
+  Future<void> _saveMilestones() {
+    final gameId = _milestonesGameId;
+    if (gameId == null) return Future.value();
+    return _milestoneStore.put('timer_milestones_$gameId', jsonEncode(_milestones.map((item) => item.toJson()).toList()));
+  }
+
+  void _addMilestone(int gameId, int durationMinutes) {
+    final minute = int.tryParse(_milestoneMinute.text.trim());
+    final label = _milestoneLabel.text.trim();
+    if (minute == null || minute <= 0 || minute > durationMinutes || label.isEmpty) return;
+    setState(() {
+      _milestones = [..._milestones, _TimerMilestone(id: '${DateTime.now().microsecondsSinceEpoch}', minute: minute, label: label)]
+        ..sort((a, b) => a.minute.compareTo(b.minute));
+    });
+    _milestoneMinute.clear();
+    _milestoneLabel.clear();
+    unawaited(_saveMilestones());
+  }
+
+  void _removeMilestone(String id) {
+    setState(() => _milestones = _milestones.where((item) => item.id != id).toList());
+    _alertedMilestoneIds.remove(id);
+    unawaited(_saveMilestones());
+  }
+
+  void _checkMilestones(Game game) {
+    if (_milestonesGameId != game.id) return;
+    final remaining = _remaining(game);
+    final elapsedMinutes = (game.durationMinutes * 60 - remaining) / 60;
+    for (final item in _milestones) {
+      if (elapsedMinutes >= item.minute && _alertedMilestoneIds.add(item.id)) {
+        unawaited(_fireLocalAlert('Bramka czasu osiągnięta', '${item.label} · ${item.minute} min'));
+      }
+    }
+    if (remaining <= 0 && !_timeUpAlerted) {
+      _timeUpAlerted = true;
+      unawaited(_fireLocalAlert('Koniec czasu gry', 'Czas gry "${game.name}" się skończył.'));
+    }
   }
 
   void _fillStationForm(Map<String, dynamic> station) {
@@ -3589,6 +3667,8 @@ class _GamesPageState extends State<GamesPage> {
     if (command == 'reset') {
       game['timer_running'] = false;
       game['remaining_seconds'] = jsonInt(game['duration_minutes'], fallback: 90) * 60;
+      _alertedMilestoneIds.clear();
+      _timeUpAlerted = false;
     }
     raw['game'] = game;
     await widget.onMutate('/api/timer', {'game_id': state.game.id, 'command': command}, AppState.fromJson(raw));
@@ -3754,6 +3834,7 @@ class _GamesPageState extends State<GamesPage> {
     final state = widget.state;
     if (state == null) return const EmptyNotice(text: 'Brak danych gry w telefonie.');
     final game = state.game;
+    _ensureMilestonesLoaded(game.id);
     final teams = state.teams.where((team) => team.gameId == game.id).toList()..sort((a, b) => b.totalPoints.compareTo(a.totalPoints));
     final stations = state.stations.where((station) => station.gameId == game.id).toList()..sort((a, b) => a.order.compareTo(b.order));
     _teamId ??= teams.isNotEmpty ? teams.first.id : null;
@@ -3940,6 +4021,34 @@ class _GamesPageState extends State<GamesPage> {
               OutlinedButton(onPressed: () => _timer('pause'), child: const Text('Pauza')),
               OutlinedButton(onPressed: () => _timer('reset'), child: const Text('Reset')),
             ]),
+            if (_milestones.isNotEmpty) ...[
+              const SizedBox(height: 16),
+              const Divider(),
+              const SizedBox(height: 8),
+              for (final item in _milestones) _buildMilestoneRow(context, game, item),
+            ],
+            const SizedBox(height: 12),
+            const Divider(),
+            const SizedBox(height: 8),
+            Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              SizedBox(
+                width: 90,
+                child: TextField(
+                  controller: _milestoneMinute,
+                  keyboardType: TextInputType.number,
+                  decoration: const InputDecoration(labelText: 'Minuta', hintText: '15'),
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: TextField(
+                  controller: _milestoneLabel,
+                  decoration: const InputDecoration(labelText: 'Nazwa bramki', hintText: 'np. Zmiana stacji'),
+                ),
+              ),
+              const SizedBox(width: 10),
+              OutlinedButton(onPressed: () => _addMilestone(game.id, game.durationMinutes), child: const Text('Dodaj bramkę')),
+            ]),
           ]),
         ),
         CardPanel(
@@ -3996,6 +4105,58 @@ class _GamesPageState extends State<GamesPage> {
       ],
     );
   }
+
+  Widget _buildMilestoneRow(BuildContext context, Game game, _TimerMilestone item) {
+    final elapsedSeconds = game.durationMinutes * 60 - _remaining(game);
+    final reached = elapsedSeconds >= item.minute * 60;
+    return Container(
+      margin: const EdgeInsets.only(bottom: 8),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      decoration: BoxDecoration(
+        color: reached ? const Color(0xFF1F5C36).withValues(alpha: 0.15) : Theme.of(context).colorScheme.surface,
+        border: Border.all(color: Theme.of(context).dividerColor),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Row(children: [
+        SizedBox(width: 56, child: Text('${item.minute} min', style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant))),
+        Expanded(child: Text(item.label, style: const TextStyle(fontWeight: FontWeight.w800))),
+        Text(
+          reached ? 'osiągnięta' : 'za ${_formatSeconds(item.minute * 60 - elapsedSeconds)}',
+          style: TextStyle(color: reached ? const Color(0xFF1F5C36) : Theme.of(context).colorScheme.onSurfaceVariant, fontWeight: reached ? FontWeight.w800 : FontWeight.w500),
+        ),
+        IconButton(onPressed: () => _removeMilestone(item.id), icon: const Icon(Icons.close, size: 18), tooltip: 'Usuń bramkę'),
+      ]),
+    );
+  }
+}
+
+class _TimerMilestone {
+  const _TimerMilestone({required this.id, required this.minute, required this.label});
+
+  final String id;
+  final int minute;
+  final String label;
+
+  Map<String, dynamic> toJson() => {'id': id, 'minute': minute, 'label': label};
+
+  factory _TimerMilestone.fromJson(Map<String, dynamic> json) => _TimerMilestone(
+        id: jsonString(json['id'], fallback: '${DateTime.now().microsecondsSinceEpoch}'),
+        minute: jsonInt(json['minute']),
+        label: jsonString(json['label'], fallback: 'Bramka'),
+      );
+}
+
+Future<void> _fireLocalAlert(String title, String body) async {
+  const android = AndroidNotificationDetails(
+    'moj_hufiec_realtime',
+    'Mój Hufiec',
+    channelDescription: 'Nowe wiadomości i zbiórki z systemu Mój Hufiec.',
+    importance: Importance.high,
+    priority: Priority.high,
+  );
+  const ios = DarwinNotificationDetails();
+  final id = DateTime.now().millisecondsSinceEpoch.remainder(2147483647);
+  await FlutterLocalNotificationsPlugin().show(id, title, body, const NotificationDetails(android: android, iOS: ios));
 }
 
 class _GameSettingsForm extends StatefulWidget {
@@ -4886,7 +5047,8 @@ List<_Conversation> _buildConversations(AppState state, AppUser user) {
 
   for (final cohort in jsonList(state.raw['cohorts'])) {
     final id = jsonInt(cohort['id']);
-    if (id > 0) {
+    final canSee = user.isAdmin || jsonInt(cohort['caretaker_user_id']) == user.id;
+    if (id > 0 && canSee) {
       upsert(_Conversation(
         targetType: 'cohort',
         targetId: id,
@@ -4896,10 +5058,6 @@ List<_Conversation> _buildConversations(AppState state, AppUser user) {
         lastAt: fallbackAt,
       ));
     }
-  }
-
-  for (final team in state.teams) {
-    upsert(_Conversation(targetType: 'team', targetId: team.id, title: team.name, subtitle: 'drużyna gry terenowej', lastText: 'Brak wiadomości', lastAt: fallbackAt));
   }
 
   for (final caregiver in jsonList(state.raw['caregivers'])) {
@@ -5002,8 +5160,6 @@ List<_ConversationMember> _conversationMembers(_Conversation conversation, AppSt
     for (final ward in jsonList(state.raw['wards']).where((item) => jsonInt(item['cohort_id']) == conversation.targetId)) {
       add(jsonString(ward['name'], fallback: 'Podopieczny'), 'podopieczny');
     }
-  } else if (conversation.targetType == 'team') {
-    add(conversation.title, 'drużyna gry terenowej');
   }
 
   return members;

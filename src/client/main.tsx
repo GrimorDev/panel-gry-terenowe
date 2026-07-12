@@ -1969,22 +1969,15 @@ function MessagesView({ state, user, setState }: { state: AppState; user: User; 
     document.body.classList.toggle("chat-thread-mobile-active", mobileThreadOpen);
     return () => document.body.classList.remove("chat-thread-mobile-active");
   }, [mobileThreadOpen]);
+  const visibleCohorts = state.cohorts.filter((cohort) => user.role === "administrator" || cohort.caretaker_user_id === user.id);
   const conversations: Conversation[] = [
     { key: "hufiec", label: "Cały hufiec", hint: "wszyscy wychowawcy i administrator", target_type: "hufiec", target_id: null },
     { key: "staff", label: "Wychowawcy", hint: "rozmowa kadry", target_type: "staff", target_id: null },
     { key: "parents", label: "Rodzice", hint: "komunikaty i pytania rodziców", target_type: "parents", target_id: null },
-    ...state.cohorts.map((cohort) => ({ key: "cohort-" + cohort.id, label: cohort.name, hint: cohort.caretaker_user_name || cohort.caretaker || "grupa bez opiekuna", target_type: "cohort", target_id: cohort.id })),
+    ...visibleCohorts.map((cohort) => ({ key: "cohort-" + cohort.id, label: cohort.name, hint: cohort.caretaker_user_name || cohort.caretaker || "grupa bez opiekuna", target_type: "cohort", target_id: cohort.id })),
     ...state.caregivers.filter((caregiver) => caregiver.id !== user.id).map((caregiver) => ({ key: "user-" + caregiver.id, label: caregiver.name, hint: caregiver.role, target_type: "user", target_id: caregiver.id }))
   ];
-  const teamConversations: Conversation[] = state.teams.map((team) => ({
-    key: "team-" + team.id,
-    label: team.name,
-    hint: "drużyna gry terenowej",
-    target_type: "team",
-    target_id: team.id,
-    members: [{ key: "team-" + team.id, name: team.name, hint: `${team.total_points || 0} pkt` }]
-  }));
-  const allConversations = [...conversations, ...teamConversations];
+  const allConversations = conversations;
   const [activeKey, setActiveKey] = useState(allConversations[0]?.key || "hufiec");
   const active = allConversations.find((conversation) => conversation.key === activeKey) || allConversations[0];
   function messageBelongsToConversation(message: Message, conversation: Conversation) {
