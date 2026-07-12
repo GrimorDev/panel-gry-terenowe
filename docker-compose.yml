@@ -16,8 +16,6 @@ services:
       SESSION_SECRET: ${SESSION_SECRET:-zmien-to-w-portainerze}
       ADMIN_EMAIL: ${ADMIN_EMAIL:-grimordev@gmail.com}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-PrywatnieNr7!}
-      DEMO_EMAIL: ${DEMO_EMAIL:-admin@hufc.local}
-      DEMO_PASSWORD: ${DEMO_PASSWORD:-hufc1234}
       REDIS_URL: redis://redis:6379
     depends_on:
       db:
