@@ -2718,6 +2718,7 @@ class MessagesPage extends StatefulWidget {
 
 class _MessagesPageState extends State<MessagesPage> {
   final _controller = TextEditingController();
+  final _searchController = TextEditingController();
   final _localStore = LocalStore();
   _Conversation? _selected;
   bool _sending = false;
@@ -2726,6 +2727,7 @@ class _MessagesPageState extends State<MessagesPage> {
   Map<String, dynamic>? _editingMessage;
   Set<String> _closedKeys = {};
   Set<String> _mutedKeys = {};
+  String _searchQuery = '';
 
   @override
   void initState() {
@@ -2824,6 +2826,7 @@ class _MessagesPageState extends State<MessagesPage> {
   void dispose() {
     widget.onConversationModeChanged?.call(false);
     _controller.dispose();
+    _searchController.dispose();
     super.dispose();
   }
 
@@ -2849,11 +2852,13 @@ class _MessagesPageState extends State<MessagesPage> {
 
   void _openConversation(_Conversation conversation) {
     _controller.clear();
+    _searchController.clear();
     final wasClosed = _closedKeys.contains(conversation.key);
     setState(() {
       _selected = conversation;
       _replyTo = null;
       _editingMessage = null;
+      _searchQuery = '';
       if (wasClosed) _closedKeys = Set<String>.from(_closedKeys)..remove(conversation.key);
     });
     if (wasClosed) unawaited(_saveKeySet(_localStore, _closedConversationsKey(widget.session.user.id), _closedKeys));
@@ -3102,7 +3107,13 @@ class _MessagesPageState extends State<MessagesPage> {
     }
 
     if (_selected == null) {
+      final query = _searchQuery.trim().toLowerCase();
       final visibleConversations = conversations.where((conversation) {
+        if (query.isNotEmpty) {
+          return conversation.title.toLowerCase().contains(query) ||
+              conversation.subtitle.toLowerCase().contains(query) ||
+              conversation.lastText.toLowerCase().contains(query);
+        }
         if (!_closedKeys.contains(conversation.key)) return true;
         return _unreadCountFor(state, conversation.targetType, conversation.targetId) > 0;
       }).toList();
@@ -3110,6 +3121,28 @@ class _MessagesPageState extends State<MessagesPage> {
         title: 'Wiadomości',
         subtitle: 'Wybierz rozmowę. Przytrzymaj albo przesuń w prawo, żeby usunąć lub wyciszyć.',
         children: [
+          TextField(
+            controller: _searchController,
+            onChanged: (value) => setState(() => _searchQuery = value),
+            decoration: InputDecoration(
+              hintText: 'Szukaj rozmowy (też ukrytych)…',
+              prefixIcon: const Icon(Icons.search),
+              suffixIcon: _searchQuery.isEmpty
+                  ? null
+                  : IconButton(
+                      icon: const Icon(Icons.close),
+                      onPressed: () {
+                        _searchController.clear();
+                        setState(() => _searchQuery = '');
+                      },
+                    ),
+              filled: true,
+              fillColor: Theme.of(context).colorScheme.surfaceContainerHighest,
+              border: OutlineInputBorder(borderRadius: BorderRadius.circular(22), borderSide: BorderSide.none),
+            ),
+          ),
+          const SizedBox(height: 14),
+          if (visibleConversations.isEmpty) EmptyNotice(text: query.isEmpty ? 'Nie ma jeszcze rozmów.' : 'Brak rozmów pasujących do „$query”.'),
           for (final conversation in visibleConversations)
             ClipRRect(
               borderRadius: BorderRadius.circular(18),
@@ -3310,6 +3343,14 @@ class _GamesPageState extends State<GamesPage> {
   int _points = 5;
   bool _correct = false;
   int _cooperation = 3;
+  final _stationTitle = TextEditingController();
+  final _stationOrder = TextEditingController(text: '1');
+  final _stationLat = TextEditingController();
+  final _stationLng = TextEditingController();
+  int? _editingStationId;
+  bool _savingStation = false;
+
+  static const _teamColorOptions = ['#1E5C46', '#B8492C', '#2E7D5A', '#315A86', '#8A5A2B', '#6A4C93'];
 
   @override
   void initState() {
@@ -3322,7 +3363,139 @@ class _GamesPageState extends State<GamesPage> {
   @override
   void dispose() {
     _tick?.cancel();
+    _stationTitle.dispose();
+    _stationOrder.dispose();
+    _stationLat.dispose();
+    _stationLng.dispose();
     super.dispose();
+  }
+
+  void _fillStationForm(Map<String, dynamic> station) {
+    setState(() {
+      _editingStationId = jsonInt(station['id']);
+      _stationTitle.text = jsonString(station['title']);
+      _stationOrder.text = '${jsonInt(station['station_order'], fallback: 1)}';
+      _stationLat.text = station['lat'] == null ? '' : '${station['lat']}';
+      _stationLng.text = station['lng'] == null ? '' : '${station['lng']}';
+    });
+  }
+
+  void _resetStationForm() {
+    setState(() {
+      _editingStationId = null;
+      _stationTitle.clear();
+      _stationOrder.text = '1';
+      _stationLat.clear();
+      _stationLng.clear();
+    });
+  }
+
+  Future<void> _saveStation() async {
+    final state = widget.state;
+    final title = _stationTitle.text.trim();
+    if (state == null || title.isEmpty || _savingStation) return;
+    setState(() => _savingStation = true);
+    try {
+      final order = int.tryParse(_stationOrder.text.trim()) ?? 1;
+      final lat = double.tryParse(_stationLat.text.trim());
+      final lng = double.tryParse(_stationLng.text.trim());
+      final id = _editingStationId;
+      final raw = _clone(state.raw);
+      final rawStations = jsonList(raw['stations']);
+      final existing = id != null ? rawStations.firstWhere((item) => jsonInt(item['id']) == id, orElse: () => <String, dynamic>{}) : <String, dynamic>{};
+      final next = {
+        ...existing,
+        'id': id ?? -DateTime.now().millisecondsSinceEpoch,
+        'game_id': state.game.id,
+        'title': title,
+        'station_order': order,
+        'lat': lat,
+        'lng': lng,
+      };
+      raw['stations'] = id != null ? rawStations.map((item) => jsonInt(item['id']) == id ? next : item).toList() : [...rawStations, next];
+      await widget.onMutate('/api/stations', {
+        if (id != null) 'id': id,
+        'title': title,
+        'station_order': order,
+        'lat': lat ?? '',
+        'lng': lng ?? '',
+        'game_id': state.game.id,
+      }, AppState.fromJson(raw));
+      _resetStationForm();
+    } finally {
+      if (mounted) setState(() => _savingStation = false);
+    }
+  }
+
+  Future<void> _deleteStation(int id) async {
+    final state = widget.state;
+    if (state == null) return;
+    final raw = _clone(state.raw);
+    raw['stations'] = jsonList(raw['stations']).where((item) => jsonInt(item['id']) != id).toList();
+    await widget.onDelete('/api/stations/$id?gameId=${state.game.id}', AppState.fromJson(raw));
+    if (_editingStationId == id) _resetStationForm();
+  }
+
+  Future<void> _openAddTeam(BuildContext context) async {
+    final state = widget.state;
+    if (state == null) return;
+    final name = TextEditingController();
+    var colorHex = _teamColorOptions.first;
+    var saving = false;
+    await showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      isScrollControlled: true,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setModalState) => Padding(
+          padding: EdgeInsets.fromLTRB(20, 6, 20, MediaQuery.of(context).viewInsets.bottom + 24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              const Text('Dodaj drużynę', style: TextStyle(fontSize: 22, fontWeight: FontWeight.w900)),
+              const SizedBox(height: 14),
+              TextField(controller: name, decoration: const InputDecoration(labelText: 'Nazwa', hintText: 'np. Wilki')),
+              const SizedBox(height: 14),
+              Text('Kolor', style: Theme.of(context).textTheme.labelLarge),
+              const SizedBox(height: 8),
+              Wrap(
+                spacing: 10,
+                runSpacing: 10,
+                children: _teamColorOptions.map((value) {
+                  final selected = colorHex == value;
+                  return InkWell(
+                    borderRadius: BorderRadius.circular(20),
+                    onTap: () => setModalState(() => colorHex = value),
+                    child: Container(
+                      width: 36,
+                      height: 36,
+                      decoration: BoxDecoration(color: _colorFromString(value), shape: BoxShape.circle, border: Border.all(color: selected ? Colors.white : Colors.transparent, width: 3)),
+                    ),
+                  );
+                }).toList(),
+              ),
+              const SizedBox(height: 16),
+              FilledButton(
+                onPressed: saving
+                    ? null
+                    : () async {
+                        final cleanName = name.text.trim();
+                        if (cleanName.isEmpty) {
+                          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Podaj nazwę drużyny.')));
+                          return;
+                        }
+                        setModalState(() => saving = true);
+                        await widget.onMutate('/api/teams', {'name': cleanName, 'color': colorHex, 'game_id': state.game.id}, state);
+                        if (context.mounted) Navigator.of(context).pop();
+                      },
+                child: saving ? const HufcLoader(size: 22, color: Colors.white) : const Text('Dodaj'),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 
   int _remaining(Game game) {
@@ -3522,6 +3695,8 @@ class _GamesPageState extends State<GamesPage> {
     final stationsTitle = selectedTeam == null ? 'Stacje' : 'Stacje · ${selectedTeam.name}';
     final rawGame = state.raw['game'] as Map<String, dynamic>? ?? const {};
     final canManageGame = widget.session.user.isAdmin || jsonInt(rawGame['owner_user_id']) == widget.session.user.id;
+    final rawStations = jsonList(state.raw['stations']).where((item) => jsonInt(item['game_id']) == game.id).toList()
+      ..sort((a, b) => jsonInt(a['station_order'], fallback: 1).compareTo(jsonInt(b['station_order'], fallback: 1)));
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
@@ -3595,8 +3770,74 @@ class _GamesPageState extends State<GamesPage> {
           ),
         ),
         CardPanel(
+          title: 'Zarządzaj stacjami',
+          child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+            if (!canManageGame)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 10),
+                child: Text('Ta gra należy do innego wychowawcy. Edytować może właściciel albo administrator.', style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant)),
+              ),
+            TextField(controller: _stationTitle, enabled: canManageGame, decoration: const InputDecoration(labelText: 'Nazwa stacji', hintText: 'np. Most nad rzeką')),
+            const SizedBox(height: 10),
+            TextField(controller: _stationOrder, enabled: canManageGame, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Kolejność')),
+            const SizedBox(height: 10),
+            Row(children: [
+              Expanded(child: TextField(controller: _stationLat, enabled: canManageGame, keyboardType: const TextInputType.numberWithOptions(decimal: true, signed: true), decoration: const InputDecoration(labelText: 'Lat', hintText: 'np. 52.229770'))),
+              const SizedBox(width: 10),
+              Expanded(child: TextField(controller: _stationLng, enabled: canManageGame, keyboardType: const TextInputType.numberWithOptions(decimal: true, signed: true), decoration: const InputDecoration(labelText: 'Lng', hintText: 'np. 21.011780'))),
+            ]),
+            const SizedBox(height: 12),
+            Row(children: [
+              Expanded(
+                child: FilledButton(
+                  onPressed: canManageGame && !_savingStation ? _saveStation : null,
+                  child: _savingStation ? const HufcLoader(size: 22, color: Colors.white) : Text(_editingStationId == null ? 'Zapisz stację' : 'Zapisz zmiany'),
+                ),
+              ),
+              if (_editingStationId != null) ...[
+                const SizedBox(width: 10),
+                OutlinedButton(onPressed: _resetStationForm, child: const Text('Anuluj')),
+              ],
+            ]),
+            if (rawStations.isNotEmpty) ...[
+              const SizedBox(height: 16),
+              const Divider(),
+              const SizedBox(height: 8),
+              for (final rawStation in rawStations)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 8),
+                  child: Row(children: [
+                    Expanded(
+                      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                        Text('${jsonInt(rawStation['station_order'], fallback: 1)}. ${jsonString(rawStation['title'], fallback: 'Stacja')}', style: const TextStyle(fontWeight: FontWeight.w800)),
+                        Text(
+                          rawStation['lat'] != null ? '${rawStation['lat']}, ${rawStation['lng']}' : 'bez punktu',
+                          style: TextStyle(fontSize: 12, color: Theme.of(context).colorScheme.onSurfaceVariant),
+                        ),
+                      ]),
+                    ),
+                    if (canManageGame) ...[
+                      IconButton(onPressed: () => _fillStationForm(rawStation), icon: const Icon(Icons.edit_outlined)),
+                      IconButton(onPressed: () => _deleteStation(jsonInt(rawStation['id'])), icon: const Icon(Icons.delete_outline)),
+                    ],
+                  ]),
+                ),
+            ],
+          ]),
+        ),
+        CardPanel(
           title: 'Ranking',
-          child: Column(children: teams.map((team) => ListTile(title: Text(team.name), trailing: Text('${team.totalPoints} pkt', style: const TextStyle(fontWeight: FontWeight.w800)))).toList()),
+          child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+            if (canManageGame)
+              Align(
+                alignment: Alignment.centerRight,
+                child: Padding(
+                  padding: const EdgeInsets.only(bottom: 10),
+                  child: OutlinedButton.icon(onPressed: () => _openAddTeam(context), icon: const Icon(Icons.add), label: const Text('Dodaj drużynę')),
+                ),
+              ),
+            ...teams.map((team) => ListTile(title: Text(team.name), trailing: Text('${team.totalPoints} pkt', style: const TextStyle(fontWeight: FontWeight.w800)))),
+          ]),
         ),
         CardPanel(
           title: 'Ocena stacji',
