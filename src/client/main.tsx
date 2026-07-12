@@ -147,12 +147,20 @@ async function syncOfflineQueue() {
   if (!navigator.onLine) return 0;
   let synced = 0;
   for (const item of readOfflineQueue()) {
-    const response = await fetch(item.url, { method: item.method, headers: item.body ? { "Content-Type": "application/json" } : undefined, body: item.body });
-    const data = await response.json().catch(() => null);
-    if (!response.ok || data?.ok === false) throw new Error(data?.error || "Blad synchronizacji");
-    cacheState(data);
-    writeOfflineQueue(readOfflineQueue().filter((queued) => queued.id !== item.id));
-    synced += 1;
+    try {
+      const response = await fetch(item.url, { method: item.method, headers: item.body ? { "Content-Type": "application/json" } : undefined, body: item.body });
+      const data = await response.json().catch(() => null);
+      if (!response.ok || data?.ok === false) throw new Error(data?.error || "Blad synchronizacji");
+      cacheState(data);
+      writeOfflineQueue(readOfflineQueue().filter((queued) => queued.id !== item.id));
+      synced += 1;
+    } catch {
+      // A queued change can permanently fail if whatever it targeted was deleted by
+      // someone else in the meantime. Stop replaying for now instead of letting one
+      // stuck entry block every entry queued after it forever - it stays queued for
+      // a later retry, and whatever already synced this round still counts.
+      break;
+    }
   }
   return synced;
 }
@@ -736,7 +744,16 @@ function App() {
         const body = incoming.body || incoming.photo_title || incoming.attachment_name || "Nowa wiadomość";
         new Notification(title, { body, tag: `hufc-message-${incoming.id}` });
       } catch {
-        // Ciche odświeżanie nie powinno przeszkadzać w pracy panelu.
+        // Gra zapamiętana lokalnie mogła zniknąć po stronie serwera (np. usunięta
+        // bezpośrednio w bazie) - spróbuj wrócić do domyślnej gry serwera zamiast
+        // w kółko pytać o ten sam, już nieistniejący identyfikator.
+        try {
+          const next = await api<AppState>("/api/state");
+          setState((current) => current ? { ...current, ...next } : next);
+          lastMessageIdRef.current = newestMessageId(next.messages);
+        } catch {
+          // Ciche odświeżanie nie powinno przeszkadzać w pracy panelu.
+        }
       }
     }, 7000);
     return () => window.clearInterval(timer);
