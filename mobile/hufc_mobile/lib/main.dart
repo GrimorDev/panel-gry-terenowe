@@ -2392,9 +2392,11 @@ class _MobileGalleryPageState extends State<MobileGalleryPage> {
     final state = widget.state;
     if (state == null || _selectedIds.isEmpty) return;
     final cohorts = jsonList(state.raw['cohorts']);
+    final caregivers = jsonList(state.raw['caregivers']).where((item) => jsonInt(item['id']) != widget.session.user.id).toList();
     final ids = _selectedIds.toList();
     var targetType = 'hufiec';
     int? cohortId;
+    int? personId = caregivers.isNotEmpty ? jsonInt(caregivers.first['id']) : null;
     final note = TextEditingController();
     var sharing = false;
     await showModalBottomSheet<void>(
@@ -2418,6 +2420,7 @@ class _MobileGalleryPageState extends State<MobileGalleryPage> {
                 items: const [
                   DropdownMenuItem(value: 'hufiec', child: Text('Cały hufiec')),
                   DropdownMenuItem(value: 'cohort', child: Text('Wybrana grupa')),
+                  DropdownMenuItem(value: 'user', child: Text('Konkretna osoba')),
                   DropdownMenuItem(value: 'parents', child: Text('Rodzice')),
                   DropdownMenuItem(value: 'staff', child: Text('Wychowawcy')),
                 ],
@@ -2435,6 +2438,18 @@ class _MobileGalleryPageState extends State<MobileGalleryPage> {
                   onChanged: (value) => setModalState(() => cohortId = value),
                 ),
               ],
+              if (targetType == 'user') ...[
+                const SizedBox(height: 10),
+                if (caregivers.isEmpty)
+                  Text('Nie ma innych kont w systemie.', style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant))
+                else
+                  DropdownButtonFormField<int?>(
+                    initialValue: personId,
+                    decoration: const InputDecoration(labelText: 'Osoba'),
+                    items: caregivers.map((item) => DropdownMenuItem<int?>(value: jsonInt(item['id']), child: Text(jsonString(item['name'], fallback: 'Użytkownik')))).toList(),
+                    onChanged: (value) => setModalState(() => personId = value),
+                  ),
+              ],
               const SizedBox(height: 10),
               TextField(controller: note, minLines: 2, maxLines: 3, decoration: const InputDecoration(labelText: 'Notatka (opcjonalnie)', hintText: 'np. Zdjęcia z dzisiejszej zbiórki')),
               const SizedBox(height: 16),
@@ -2448,6 +2463,7 @@ class _MobileGalleryPageState extends State<MobileGalleryPage> {
                             'photo_id': id,
                             'target_type': targetType,
                             if (targetType == 'cohort' && cohortId != null) 'target_id': cohortId,
+                            if (targetType == 'user' && personId != null) 'target_id': personId,
                             'note': note.text.trim(),
                             'game_id': state.game.id,
                           }, widget.state ?? state);
@@ -2650,19 +2666,32 @@ class _MobileGalleryPageState extends State<MobileGalleryPage> {
       title: _albumSessionId == null ? 'Galeria' : albumTitle!,
       subtitle: _selectionMode ? 'Zaznaczono ${_selectedIds.length} ${_selectedIds.length == 1 ? 'zdjęcie' : 'zdjęć'}.' : 'Zdjęcia z zajęć. Możesz robić zdjęcia, wgrywać je i otwierać podgląd.',
       actions: _selectionMode
-          ? [
-              FilledButton.icon(onPressed: _bulkDelete, icon: const Icon(Icons.delete_outline), label: const Text('Usuń')),
-              OutlinedButton.icon(onPressed: _openShareSheet, icon: const Icon(Icons.share_outlined), label: const Text('Udostępnij')),
-              OutlinedButton.icon(onPressed: _openAlbumSheet, icon: const Icon(Icons.folder_copy_outlined), label: const Text('Przenieś do albumu')),
-              OutlinedButton.icon(onPressed: _openSendAsMessageSheet, icon: const Icon(Icons.forum_outlined), label: const Text('Wyślij jako wiadomość')),
-              TextButton(onPressed: _exitSelection, child: const Text('Anuluj')),
-            ]
+          ? const []
           : [
               FilledButton.icon(onPressed: _uploading ? null : () => _pick(ImageSource.camera), icon: const Icon(Icons.photo_camera), label: const Text('Zrób')),
               OutlinedButton.icon(onPressed: _uploading ? null : () => _pick(ImageSource.gallery), icon: const Icon(Icons.photo_library), label: const Text('Wgraj')),
               OutlinedButton.icon(onPressed: shownPhotos.isEmpty ? null : () => setState(() => _selectionMode = true), icon: const Icon(Icons.checklist), label: const Text('Wybierz')),
             ],
       children: [
+        if (_selectionMode)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 14),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+              Row(children: [
+                Expanded(child: FilledButton.icon(onPressed: _bulkDelete, icon: const Icon(Icons.delete_outline), label: const Text('Usuń'))),
+                const SizedBox(width: 10),
+                Expanded(child: OutlinedButton.icon(onPressed: _openShareSheet, icon: const Icon(Icons.share_outlined), label: const Text('Udostępnij'))),
+              ]),
+              const SizedBox(height: 10),
+              Row(children: [
+                Expanded(child: OutlinedButton.icon(onPressed: _openAlbumSheet, icon: const Icon(Icons.folder_copy_outlined), label: const Text('Do albumu'))),
+                const SizedBox(width: 10),
+                Expanded(child: OutlinedButton.icon(onPressed: _openSendAsMessageSheet, icon: const Icon(Icons.forum_outlined), label: const Text('Jako wiadomość'))),
+              ]),
+              const SizedBox(height: 6),
+              Center(child: TextButton(onPressed: _exitSelection, child: const Text('Anuluj'))),
+            ]),
+          ),
         if (_albumSessionId != null)
           Align(
             alignment: Alignment.centerLeft,

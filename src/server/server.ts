@@ -567,9 +567,19 @@ async function state(gameId?: number, user?: User) {
       SELECT p.*, s.title AS session_title, s.session_date, s.location AS session_location
       FROM session_photos p
       JOIN sessions s ON s.id = p.session_id
-      WHERE ($1::boolean OR p.owner_user_id IS NULL OR p.owner_user_id=$2 OR EXISTS (SELECT 1 FROM internal_shares ish WHERE ish.photo_id = p.id))
+      WHERE $1::boolean
+        OR p.owner_user_id = $2
+        OR EXISTS (
+          SELECT 1 FROM internal_shares ish
+          WHERE ish.photo_id = p.id
+            AND (
+              ish.target_type IN ('hufiec', 'staff', 'parents')
+              OR (ish.target_type = 'user' AND ish.target_id = $2)
+              OR (ish.target_type = 'cohort' AND ($3 = 'administrator' OR EXISTS (SELECT 1 FROM cohorts gc WHERE gc.id = ish.target_id AND gc.caretaker_user_id = $2)))
+            )
+        )
       ORDER BY COALESCE(p.created_at, s.session_date::timestamptz) DESC, p.id DESC
-    `, [isAdmin(user), user?.id || 0]),
+    `, [isAdmin(user), user?.id || 0, user?.role || 'wychowawca']),
     pool.query(`
       SELECT a.*, COALESCE(COUNT(i.photo_id), 0)::int AS photo_count
       FROM photo_albums a
@@ -1321,6 +1331,15 @@ app.post("/api/internal-shares", async (req, res) => {
   const targetType = String(req.body.target_type || "hufiec");
   const targetId = Number(req.body.target_id || 0) || null;
   const note = String(req.body.note || "");
+  if (!["hufiec", "staff", "parents", "cohort", "user"].includes(targetType)) {
+    return res.status(400).json({ ok: false, error: "Nieznany odbiorca udostępnienia" });
+  }
+  const photo = await pool.query("SELECT owner_user_id FROM session_photos WHERE id=$1", [photoId]);
+  if (!photo.rows[0]) return res.status(404).json({ ok: false, error: "Nie znaleziono zdjęcia" });
+  const ownerId = Number(photo.rows[0].owner_user_id || 0);
+  if (req.user?.role !== "administrator" && ownerId !== Number(req.user?.id || 0)) {
+    return res.status(403).json({ ok: false, error: "Udostępnić zdjęcie może tylko jego autor" });
+  }
   await pool.query(
     "INSERT INTO internal_shares (photo_id, target_type, target_id, note, created_by) VALUES ($1,$2,$3,$4,$5)",
     [photoId, targetType, targetId, note, req.user?.id || null]

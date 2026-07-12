@@ -1941,7 +1941,23 @@ function AccountDialog({ user, initialTab, prefs, setPrefs, notifications, onClo
 }
 
 function ShareDialog({ state, photo, onClose, onSaved, runBusy }: { state: AppState; photo: Photo; onClose: () => void; onSaved: (state: AppState) => void; runBusy: BusyRunner }) {
-  return <Modal title="Udostępnij w hufcu" onClose={onClose}><form className="stack" onSubmit={async (event) => { event.preventDefault(); onSaved(await runBusy("Udostępnianie zdjęcia...", () => api<AppState>("/api/internal-shares", { method: "POST", body: JSON.stringify({ ...Object.fromEntries(new FormData(event.currentTarget).entries()), photo_id: photo.id, game_id: state.game.id }) }))); }}><p className="help">{photo.title}</p><label>Odbiorcy<select name="target_type" defaultValue="hufiec"><option value="hufiec">Cały hufiec</option><option value="cohort">Wybrana grupa</option><option value="parents">Rodzice</option><option value="staff">Wychowawcy</option></select></label><label>Grupa, jeśli wybrano grupę<select name="target_id" defaultValue=""><option value="">Bez grupy</option>{state.cohorts.map((cohort) => <option key={cohort.id} value={cohort.id}>{cohort.name}</option>)}</select></label><label>Wiadomość<textarea name="note" placeholder="np. Zdjęcia z dzisiejszej zbiórki są już dostępne." /></label><Button variant="primary">Udostępnij</Button></form></Modal>;
+  const [targetType, setTargetType] = useState("hufiec");
+  return <Modal title="Udostępnij w hufcu" onClose={onClose}>
+    <form className="stack" onSubmit={async (event) => { event.preventDefault(); onSaved(await runBusy("Udostępnianie zdjęcia...", () => api<AppState>("/api/internal-shares", { method: "POST", body: JSON.stringify({ ...Object.fromEntries(new FormData(event.currentTarget).entries()), photo_id: photo.id, game_id: state.game.id }) }))); }}>
+      <p className="help">{photo.title}</p>
+      <label>Odbiorcy<select name="target_type" value={targetType} onChange={(event) => setTargetType(event.target.value)}>
+        <option value="hufiec">Cały hufiec</option>
+        <option value="cohort">Wybrana grupa</option>
+        <option value="user">Konkretna osoba</option>
+        <option value="parents">Rodzice</option>
+        <option value="staff">Wychowawcy</option>
+      </select></label>
+      {targetType === "cohort" && <label>Grupa<select name="target_id" defaultValue=""><option value="">Bez grupy</option>{state.cohorts.map((cohort) => <option key={cohort.id} value={cohort.id}>{cohort.name}</option>)}</select></label>}
+      {targetType === "user" && <label>Osoba<select name="target_id" defaultValue="">{state.caregivers.map((caregiver) => <option key={caregiver.id} value={caregiver.id}>{caregiver.name}</option>)}</select></label>}
+      <label>Wiadomość<textarea name="note" placeholder="np. Zdjęcia z dzisiejszej zbiórki są już dostępne." /></label>
+      <Button variant="primary">Udostępnij</Button>
+    </form>
+  </Modal>;
 }
 
 type ConversationMember = { key: string; name: string; hint: string };
