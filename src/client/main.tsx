@@ -1322,7 +1322,7 @@ function CompetitionView({ state, setState, runBusy }: { state: AppState; setSta
       <form className="stack" onSubmit={(event) => { event.preventDefault(); savePoints(event.currentTarget); }}>
         <label>Namiot<select name="tent_id" defaultValue={selectedTent?.id || ""} required>{state.competition_tents.map((tent) => <option key={tent.id} value={tent.id}>{tent.name}</option>)}</select></label>
         <label>Kategoria<select name="category" defaultValue="Porządek">{competitionCategories.map((category) => <option key={category}>{category}</option>)}</select></label>
-        <label>Punkty<input name="points" type="number" defaultValue={1} min={-50} max={100} required /></label>
+        <label>Punkty<input name="points" type="number" defaultValue={1} required /></label>
         <label>Powód / komentarz<textarea name="reason" placeholder="np. Wzorowy porządek po ciszy nocnej" required /></label>
         <Button variant="primary">Dodaj wpis</Button>
       </form>

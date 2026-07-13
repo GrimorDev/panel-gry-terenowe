@@ -4363,11 +4363,13 @@ class _CompetitionPageState extends State<CompetitionPage> {
   int _points = 1;
   final _reason = TextEditingController();
   final _tentName = TextEditingController();
+  final _pointsInput = TextEditingController(text: '1');
 
   @override
   void dispose() {
     _reason.dispose();
     _tentName.dispose();
+    _pointsInput.dispose();
     super.dispose();
   }
 
@@ -4478,6 +4480,7 @@ class _CompetitionPageState extends State<CompetitionPage> {
     if (_tentId == null || !state.tents.any((tent) => tent.id == _tentId)) {
       _tentId = state.tents.first.id;
     }
+    _pointsInput.text = '$_points';
     await showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
@@ -4511,9 +4514,30 @@ class _CompetitionPageState extends State<CompetitionPage> {
                 ),
                 const SizedBox(height: 14),
                 Row(children: [
-                  IconButton.filledTonal(onPressed: () => modalSetState(() => _points = (_points - 1).clamp(-50, 50).toInt()), icon: const Icon(Icons.remove)),
-                  Expanded(child: Center(child: Text('$_points pkt', style: const TextStyle(fontSize: 30, fontWeight: FontWeight.w900)))),
-                  IconButton.filledTonal(onPressed: () => modalSetState(() => _points = (_points + 1).clamp(-50, 50).toInt()), icon: const Icon(Icons.add)),
+                  IconButton.filledTonal(
+                    onPressed: () => modalSetState(() {
+                      _points -= 1;
+                      _pointsInput.text = '$_points';
+                    }),
+                    icon: const Icon(Icons.remove),
+                  ),
+                  Expanded(
+                    child: TextField(
+                      controller: _pointsInput,
+                      textAlign: TextAlign.center,
+                      keyboardType: const TextInputType.numberWithOptions(signed: true),
+                      style: const TextStyle(fontSize: 30, fontWeight: FontWeight.w900),
+                      decoration: const InputDecoration(border: InputBorder.none, suffixText: 'pkt'),
+                      onChanged: (value) => _points = int.tryParse(value.trim()) ?? _points,
+                    ),
+                  ),
+                  IconButton.filledTonal(
+                    onPressed: () => modalSetState(() {
+                      _points += 1;
+                      _pointsInput.text = '$_points';
+                    }),
+                    icon: const Icon(Icons.add),
+                  ),
                 ]),
                 const SizedBox(height: 10),
                 TextField(controller: _reason, minLines: 2, maxLines: 4, decoration: const InputDecoration(labelText: 'Powód / komentarz', hintText: 'np. Wzorowy porządek po ciszy nocnej')),
