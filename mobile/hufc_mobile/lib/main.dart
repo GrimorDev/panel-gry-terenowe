@@ -246,6 +246,11 @@ class _HufcMobileAppState extends State<HufcMobileApp> with WidgetsBindingObserv
       await _sync(showNotifications: false);
       _startRealtimePolling();
     }
+    // Pierwsze uruchomienie (nic jeszcze nie zapisane) - domyślnie włącz i od razu poproś
+    // system o zgody, zamiast czekać aż ktoś sam wejdzie w Ustawienia i przełączy suwak.
+    // Jeśli telefon odmówi zgody, przełącznik i tak wróci na wyłączony.
+    if (savedPushNotifications == null) unawaited(_setPushNotifications(true));
+    if (savedPhotoLocation == null) unawaited(_setPhotoLocation(true));
   }
 
   Future<bool> _isOnline() async {
@@ -989,7 +994,7 @@ class _ShellScreenState extends State<ShellScreen> {
       _MobilePage('Podopieczni', Icons.person_outline, Icons.person, WardsPage(state: state, session: widget.session, onMutate: widget.onMutate, onDelete: widget.onDelete)),
       _MobilePage('Grupy', Icons.groups_outlined, Icons.groups, GroupsPage(state: state)),
       _MobilePage('Zbiórki', Icons.calendar_month_outlined, Icons.calendar_month, MeetingsPage(state: state, session: widget.session, onMutate: widget.onMutate, onDelete: widget.onDelete)),
-      _MobilePage('Galeria', Icons.photo_library_outlined, Icons.photo_library, MobileGalleryPage(state: state, session: widget.session, apiBaseUrl: widget.apiBaseUrl, onMutate: widget.onMutate)),
+      _MobilePage('Galeria', Icons.photo_library_outlined, Icons.photo_library, MobileGalleryPage(state: state, session: widget.session, apiBaseUrl: widget.apiBaseUrl, onMutate: widget.onMutate, onDelete: widget.onDelete)),
       _MobilePage('Wiadomości', Icons.chat_bubble_outline, Icons.chat_bubble, MessagesPage(state: state, session: widget.session, apiBaseUrl: widget.apiBaseUrl, onMutate: widget.onMutate, onConversationModeChanged: (value) => setState(() => _chatFocused = value), openConversationKey: widget.openConversationKey, onOpenConversationConsumed: widget.onOpenConversationConsumed)),
       _MobilePage('Gry', Icons.flag_outlined, Icons.flag, GamesPage(state: state, session: widget.session, onMutate: widget.onMutate, onDelete: widget.onDelete, onLoadGame: widget.onLoadGame)),
       _MobilePage('Współzawodnictwo', Icons.emoji_events_outlined, Icons.emoji_events, CompetitionPage(state: state, session: widget.session, onMutate: widget.onMutate, onDelete: widget.onDelete)),
@@ -2354,11 +2359,12 @@ class MeetingsPage extends StatelessWidget {
 }
 
 class MobileGalleryPage extends StatefulWidget {
-  const MobileGalleryPage({super.key, required this.state, required this.session, required this.apiBaseUrl, required this.onMutate});
+  const MobileGalleryPage({super.key, required this.state, required this.session, required this.apiBaseUrl, required this.onMutate, required this.onDelete});
   final AppState? state;
   final AuthSession session;
   final String apiBaseUrl;
   final Future<void> Function(String url, Map<String, dynamic> body, AppState optimistic) onMutate;
+  final Future<void> Function(String url, AppState optimistic) onDelete;
 
   @override
   State<MobileGalleryPage> createState() => _MobileGalleryPageState();
@@ -2367,7 +2373,7 @@ class MobileGalleryPage extends StatefulWidget {
 class _MobileGalleryPageState extends State<MobileGalleryPage> {
   bool _uploading = false;
   bool _albums = false;
-  int? _albumSessionId;
+  int? _viewingAlbumId;
   bool _selectionMode = false;
   Set<int> _selectedIds = {};
 
@@ -2624,11 +2630,6 @@ class _MobileGalleryPageState extends State<MobileGalleryPage> {
   Future<void> _pick(ImageSource source) async {
     final state = widget.state;
     if (state == null || _uploading) return;
-    final sessions = jsonList(state.raw['sessions']);
-    if (sessions.isEmpty) {
-      _toast('Najpierw dodaj zbiórkę, żeby przypisać zdjęcie do galerii.');
-      return;
-    }
     final picker = ImagePicker();
     final file = await picker.pickImage(source: source, imageQuality: 72, maxWidth: 1600);
     if (file == null) return;
@@ -2638,24 +2639,18 @@ class _MobileGalleryPageState extends State<MobileGalleryPage> {
       final mime = file.mimeType ?? 'image/jpeg';
       final title = file.name.replaceAll(RegExp(r'\.[^.]+$'), '').trim().isEmpty ? 'Zdjęcie' : file.name.replaceAll(RegExp(r'\.[^.]+$'), '');
       final imageData = 'data:$mime;base64,${base64Encode(bytes)}';
-      final session = sessions.firstWhere((item) => jsonInt(item['id']) == _albumSessionId, orElse: () => sessions.first);
       final photo = {
         'id': -DateTime.now().millisecondsSinceEpoch,
-        'session_id': jsonInt(session['id']),
         'title': title,
         'image_data': imageData,
         'mime_type': mime,
         'color': '#1F5C36',
         'created_at': DateTime.now().toIso8601String(),
-        'session_title': jsonString(session['title'], fallback: 'Galeria'),
-        'session_date': jsonString(session['session_date']),
-        'session_location': jsonString(session['location']),
         'owner_user_id': widget.session.user.id,
       };
       final raw = Map<String, dynamic>.from(state.raw);
       raw['photos'] = [photo, ...jsonList(raw['photos'])];
       await widget.onMutate('/api/photos', {
-        'session_id': jsonInt(session['id']),
         'title': title,
         'image_data': imageData,
         'mime_type': mime,
@@ -2666,8 +2661,53 @@ class _MobileGalleryPageState extends State<MobileGalleryPage> {
     }
   }
 
-  void _toast(String text) {
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(text)));
+  Future<void> _createAlbumPrompt(BuildContext context) async {
+    final state = widget.state;
+    if (state == null) return;
+    final nameController = TextEditingController();
+    var saving = false;
+    await showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      isScrollControlled: true,
+      builder: (context) => StatefulBuilder(
+        builder: (context, modalSetState) => Padding(
+          padding: EdgeInsets.fromLTRB(20, 6, 20, MediaQuery.of(context).viewInsets.bottom + 24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              const Text('Nowy album', style: TextStyle(fontSize: 20, fontWeight: FontWeight.w900)),
+              const SizedBox(height: 14),
+              TextField(controller: nameController, decoration: const InputDecoration(labelText: 'Nazwa albumu', hintText: 'np. Ognisko zuchowe')),
+              const SizedBox(height: 16),
+              FilledButton(
+                onPressed: saving
+                    ? null
+                    : () async {
+                        final name = nameController.text.trim();
+                        if (name.isEmpty) return;
+                        modalSetState(() => saving = true);
+                        await widget.onMutate('/api/photo-albums', {'name': name, 'photo_ids': const [], 'game_id': state.game.id}, state);
+                        if (context.mounted) Navigator.of(context).pop();
+                      },
+                child: saving ? const HufcLoader(size: 22, color: Colors.white) : const Text('Utwórz'),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _deleteAlbum(int albumId) async {
+    final state = widget.state;
+    if (state == null) return;
+    final raw = _clone(state.raw);
+    raw['photo_albums'] = jsonList(raw['photo_albums']).where((item) => jsonInt(item['id']) != albumId).toList();
+    raw['photo_album_items'] = jsonList(raw['photo_album_items']).where((item) => jsonInt(item['album_id']) != albumId).toList();
+    await widget.onDelete('/api/photo-albums/$albumId?gameId=${state.game.id}', AppState.fromJson(raw));
+    if (mounted) setState(() => _viewingAlbumId = null);
   }
 
   @override
@@ -2675,14 +2715,17 @@ class _MobileGalleryPageState extends State<MobileGalleryPage> {
     final state = widget.state;
     if (state == null) return const EmptyNotice(text: 'Brak galerii w telefonie.');
     final photos = jsonList(state.raw['photos']);
-    final sessions = jsonList(state.raw['sessions']);
-    final shownPhotos = _albumSessionId == null ? photos : photos.where((photo) => jsonInt(photo['session_id']) == _albumSessionId).toList();
-    final albumTitle = _albumSessionId == null
+    final albums = jsonList(state.raw['photo_albums']);
+    final albumItems = jsonList(state.raw['photo_album_items']);
+    final viewingAlbum = _viewingAlbumId == null ? null : albums.firstWhere((item) => jsonInt(item['id']) == _viewingAlbumId, orElse: () => <String, dynamic>{});
+    final memberPhotoIds = _viewingAlbumId == null
         ? null
-        : jsonString(sessions.firstWhere((item) => jsonInt(item['id']) == _albumSessionId, orElse: () => {'title': 'Album'})['title'], fallback: 'Album');
+        : albumItems.where((item) => jsonInt(item['album_id']) == _viewingAlbumId).map((item) => jsonInt(item['photo_id'])).toSet();
+    final shownPhotos = memberPhotoIds == null ? photos : photos.where((photo) => memberPhotoIds.contains(jsonInt(photo['id']))).toList();
+    final albumTitle = viewingAlbum == null || viewingAlbum.isEmpty ? null : jsonString(viewingAlbum['name'], fallback: 'Album');
     final shares = jsonList(state.raw['shares']);
     return HufcPage(
-      title: _albumSessionId == null ? 'Galeria' : albumTitle!,
+      title: albumTitle ?? 'Galeria',
       subtitle: _selectionMode ? 'Zaznaczono ${_selectedIds.length} ${_selectedIds.length == 1 ? 'zdjęcie' : 'zdjęć'}.' : 'Zdjęcia z zajęć. Możesz robić zdjęcia, wgrywać je i otwierać podgląd.',
       actions: _selectionMode
           ? const []
@@ -2711,12 +2754,16 @@ class _MobileGalleryPageState extends State<MobileGalleryPage> {
               Center(child: TextButton(onPressed: _exitSelection, child: const Text('Anuluj'))),
             ]),
           ),
-        if (_albumSessionId != null)
-          Align(
-            alignment: Alignment.centerLeft,
-            child: OutlinedButton.icon(onPressed: () => setState(() => _albumSessionId = null), icon: const Icon(Icons.arrow_back), label: const Text('Albumy')),
+        if (_viewingAlbumId != null)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 12),
+            child: Row(children: [
+              Expanded(child: OutlinedButton.icon(onPressed: () => setState(() => _viewingAlbumId = null), icon: const Icon(Icons.arrow_back), label: const Text('Albumy'))),
+              const SizedBox(width: 10),
+              OutlinedButton.icon(onPressed: () => _deleteAlbum(_viewingAlbumId!), icon: const Icon(Icons.delete_outline), label: const Text('Usuń album')),
+            ]),
           ),
-        if (_albumSessionId == null)
+        if (_viewingAlbumId == null)
           Padding(
             padding: const EdgeInsets.only(bottom: 12),
             child: SegmentedButton<bool>(
@@ -2729,33 +2776,34 @@ class _MobileGalleryPageState extends State<MobileGalleryPage> {
             ),
           ),
         if (_uploading) const Padding(padding: EdgeInsets.only(bottom: 12), child: LinearProgressIndicator()),
-        if (_albums && _albumSessionId == null)
+        if (_albums && _viewingAlbumId == null)
           GridView.builder(
             shrinkWrap: true,
             physics: const NeverScrollableScrollPhysics(),
-            itemCount: sessions.length + 1,
+            itemCount: albums.length + 1,
             gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(crossAxisCount: 2, crossAxisSpacing: 12, mainAxisSpacing: 12, childAspectRatio: 1.15),
             itemBuilder: (context, index) {
               if (index == 0) {
                 return _AlbumTile(
                   title: 'Utwórz album',
-                  subtitle: 'Nowa galeria',
+                  subtitle: 'Nowy album',
                   icon: Icons.add,
-                  onTap: () => _toast('Album tworzy się automatycznie po dodaniu zbiórki w aplikacji web.'),
+                  onTap: () => _createAlbumPrompt(context),
                 );
               }
-              final session = sessions[index - 1];
-              final count = photos.where((photo) => jsonInt(photo['session_id']) == jsonInt(session['id'])).length;
-              final cover = photos.firstWhere((photo) => jsonInt(photo['session_id']) == jsonInt(session['id']), orElse: () => <String, dynamic>{});
+              final album = albums[index - 1];
+              final albumId = jsonInt(album['id']);
+              final memberIds = albumItems.where((item) => jsonInt(item['album_id']) == albumId).map((item) => jsonInt(item['photo_id'])).toSet();
+              final cover = photos.firstWhere((photo) => memberIds.contains(jsonInt(photo['id'])), orElse: () => <String, dynamic>{});
               return _AlbumTile(
-                title: jsonString(session['title'], fallback: 'Album'),
-                subtitle: '$count zdjęć',
+                title: jsonString(album['name'], fallback: 'Album'),
+                subtitle: '${jsonInt(album['photo_count'])} zdjęć',
                 photo: cover,
                 token: widget.session.token,
                 apiBaseUrl: widget.apiBaseUrl,
                 onTap: () => setState(() {
                   _albums = false;
-                  _albumSessionId = jsonInt(session['id']);
+                  _viewingAlbumId = albumId;
                 }),
               );
             },

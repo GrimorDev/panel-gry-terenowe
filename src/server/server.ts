@@ -191,7 +191,7 @@ async function ensureSchema() {
 
     CREATE TABLE IF NOT EXISTS session_photos (
       id SERIAL PRIMARY KEY,
-      session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+      session_id INTEGER REFERENCES sessions(id) ON DELETE CASCADE,
       title VARCHAR(160) NOT NULL,
       color VARCHAR(30) NOT NULL DEFAULT 'green',
       image_data TEXT,
@@ -355,6 +355,7 @@ async function ensureSchema() {
   await pool.query("ALTER TABLE messages ADD COLUMN IF NOT EXISTS reply_to_id INTEGER REFERENCES messages(id) ON DELETE SET NULL");
   await pool.query("ALTER TABLE competition_points ADD COLUMN IF NOT EXISTS previous_points INTEGER");
   await pool.query("ALTER TABLE competition_points ADD COLUMN IF NOT EXISTS edited_at TIMESTAMPTZ");
+  await pool.query("ALTER TABLE session_photos ALTER COLUMN session_id DROP NOT NULL");
   await pool.query("ALTER TABLE messages ADD COLUMN IF NOT EXISTS edited_at TIMESTAMPTZ");
   await pool.query(`
     DELETE FROM competition_tent_members m
@@ -538,7 +539,7 @@ async function state(gameId?: number, user?: User) {
     pool.query(`
       SELECT p.*, s.title AS session_title, s.session_date, s.location AS session_location
       FROM session_photos p
-      JOIN sessions s ON s.id = p.session_id
+      LEFT JOIN sessions s ON s.id = p.session_id
       WHERE $1::boolean
         OR p.owner_user_id = $2
         OR EXISTS (
@@ -1243,7 +1244,7 @@ app.delete("/api/sessions/:id", async (req, res) => {
 app.post("/api/photos", async (req, res) => {
   const id = Number(req.body.id || 0);
   const title = String(req.body.title || "Zdjęcie").trim();
-  const sessionId = Number(req.body.session_id);
+  const sessionId = Number(req.body.session_id || 0) || null;
   const imageData = String(req.body.image_data || "");
   const mimeType = String(req.body.mime_type || "");
   if (id) {
@@ -1476,12 +1477,13 @@ app.get("/share/photo/:token", async (req, res) => {
   const result = await pool.query(`
     SELECT p.title, p.image_data, p.created_at, s.title AS session_title
     FROM session_photos p
-    JOIN sessions s ON s.id = p.session_id
+    LEFT JOIN sessions s ON s.id = p.session_id
     WHERE p.share_token=$1
   `, [req.params.token]);
   const photo = result.rows[0];
   if (!photo) return res.status(404).send("Nie znaleziono zdjęcia");
-  res.type("html").send(`<!doctype html><html lang="pl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${photo.title}</title><style>body{margin:0;font-family:system-ui,sans-serif;background:#f8f5ef;color:#171717}.wrap{max-width:1100px;margin:0 auto;padding:24px}img{width:100%;border-radius:16px;box-shadow:0 16px 40px #0002}p{color:#666}</style></head><body><main class="wrap"><h1>${photo.title}</h1><p>${photo.session_title} · ${new Date(photo.created_at).toLocaleDateString("pl-PL")}</p>${photo.image_data ? `<img src="${photo.image_data}" alt="${photo.title}">` : "<p>Zdjęcie nie ma jeszcze pliku obrazu.</p>"}</main></body></html>`);
+  const caption = [photo.session_title, new Date(photo.created_at).toLocaleDateString("pl-PL")].filter(Boolean).join(" · ");
+  res.type("html").send(`<!doctype html><html lang="pl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${photo.title}</title><style>body{margin:0;font-family:system-ui,sans-serif;background:#f8f5ef;color:#171717}.wrap{max-width:1100px;margin:0 auto;padding:24px}img{width:100%;border-radius:16px;box-shadow:0 16px 40px #0002}p{color:#666}</style></head><body><main class="wrap"><h1>${photo.title}</h1><p>${caption}</p>${photo.image_data ? `<img src="${photo.image_data}" alt="${photo.title}">` : "<p>Zdjęcie nie ma jeszcze pliku obrazu.</p>"}</main></body></html>`);
 });
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
