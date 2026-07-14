@@ -99,7 +99,7 @@ jobs:
           PY
 
       - name: Generate launcher icons
-        run: dart run flutter_launcher_icons
+        run: dart run flutter_launcher_icons -f flutter_launcher_icons_android.yaml
 
       - name: Analyze
         run: flutter analyze

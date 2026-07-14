@@ -1,0 +1,6 @@
+flutter_launcher_icons:
+  android: true
+  ios: false
+  image_path: assets/brand/moj-hufiec-icon.png
+  adaptive_icon_background: "#0B1F14"
+  adaptive_icon_foreground: assets/brand/moj-hufiec-icon.png
