@@ -1179,6 +1179,9 @@ app.post("/api/competition/points", async (req, res) => {
 });
 
 app.delete("/api/competition/points/:id", async (req, res) => {
+  if (req.user?.role !== "administrator") {
+    return res.status(403).json({ ok: false, error: "Tylko administrator może usuwać wpisy historii punktów" });
+  }
   await pool.query("DELETE FROM competition_points WHERE id=$1", [Number(req.params.id)]);
   res.json(await stateFor(req, req.query.gameId ? Number(req.query.gameId) : undefined));
 });

@@ -992,7 +992,7 @@ class _ShellScreenState extends State<ShellScreen> {
       _MobilePage('Galeria', Icons.photo_library_outlined, Icons.photo_library, MobileGalleryPage(state: state, session: widget.session, apiBaseUrl: widget.apiBaseUrl, onMutate: widget.onMutate)),
       _MobilePage('Wiadomości', Icons.chat_bubble_outline, Icons.chat_bubble, MessagesPage(state: state, session: widget.session, apiBaseUrl: widget.apiBaseUrl, onMutate: widget.onMutate, onConversationModeChanged: (value) => setState(() => _chatFocused = value), openConversationKey: widget.openConversationKey, onOpenConversationConsumed: widget.onOpenConversationConsumed)),
       _MobilePage('Gry', Icons.flag_outlined, Icons.flag, GamesPage(state: state, session: widget.session, onMutate: widget.onMutate, onDelete: widget.onDelete, onLoadGame: widget.onLoadGame)),
-      _MobilePage('Współzawodnictwo', Icons.emoji_events_outlined, Icons.emoji_events, CompetitionPage(state: state, onMutate: widget.onMutate, onDelete: widget.onDelete)),
+      _MobilePage('Współzawodnictwo', Icons.emoji_events_outlined, Icons.emoji_events, CompetitionPage(state: state, session: widget.session, onMutate: widget.onMutate, onDelete: widget.onDelete)),
       _MobilePage('Sync', Icons.cloud_sync_outlined, Icons.cloud_sync, SyncPage(online: widget.online, syncing: widget.syncing, queueCount: widget.queueCount, onSync: widget.onSync, onLogout: widget.onLogout)),
       _MobilePage('Ustawienia', Icons.settings_outlined, Icons.settings, SettingsPage(session: widget.session, apiBaseUrl: widget.apiBaseUrl, queueCount: widget.queueCount, themeMode: widget.themeMode, accentHex: widget.accentHex, emailNotifications: widget.emailNotifications, pushNotifications: widget.pushNotifications, photoLocation: widget.photoLocation, onThemeModeChanged: widget.onThemeModeChanged, onAccentChanged: widget.onAccentChanged, onEmailNotificationsChanged: widget.onEmailNotificationsChanged, onPushNotificationsChanged: widget.onPushNotificationsChanged, onPhotoLocationChanged: widget.onPhotoLocationChanged, onLogout: widget.onLogout, onSync: widget.onSync)),
       if (widget.session.user.isAdmin)
@@ -4347,9 +4347,10 @@ class _GameSettingsFormState extends State<_GameSettingsForm> {
 }
 
 class CompetitionPage extends StatefulWidget {
-  const CompetitionPage({super.key, required this.state, required this.onMutate, required this.onDelete});
+  const CompetitionPage({super.key, required this.state, required this.session, required this.onMutate, required this.onDelete});
 
   final AppState? state;
+  final AuthSession session;
   final Future<void> Function(String url, Map<String, dynamic> body, AppState optimistic) onMutate;
   final Future<void> Function(String url, AppState optimistic) onDelete;
 
@@ -4443,6 +4444,66 @@ class _CompetitionPageState extends State<CompetitionPage> {
     raw['competition_points'] = points;
     await widget.onDelete('/api/competition/tents/${tent.id}?gameId=${state.game.id}', AppState.fromJson(raw));
     if (mounted) setState(() => _tentId = tents.isNotEmpty ? jsonInt(tents.first['id']) : null);
+  }
+
+  Future<void> _renameTent(BuildContext context, Tent tent) async {
+    final state = widget.state;
+    if (state == null) return;
+    final nameController = TextEditingController(text: tent.name);
+    var saving = false;
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      useSafeArea: true,
+      builder: (context) => StatefulBuilder(
+        builder: (context, modalSetState) => Padding(
+          padding: EdgeInsets.fromLTRB(18, 18, 18, MediaQuery.of(context).viewInsets.bottom + 18),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Row(children: [
+                const Expanded(child: Text('Zmień nazwę namiotu', style: TextStyle(fontSize: 20, fontWeight: FontWeight.w900))),
+                IconButton(onPressed: () => Navigator.of(context).pop(), icon: const Icon(Icons.close)),
+              ]),
+              const SizedBox(height: 10),
+              TextField(controller: nameController, decoration: const InputDecoration(labelText: 'Nazwa namiotu', hintText: 'np. Wilki')),
+              const SizedBox(height: 14),
+              FilledButton(
+                onPressed: saving
+                    ? null
+                    : () async {
+                        final name = nameController.text.trim();
+                        if (name.isEmpty) return;
+                        modalSetState(() => saving = true);
+                        final raw = _clone(state.raw);
+                        final tents = jsonList(raw['competition_tents']);
+                        final item = tents.firstWhere((entry) => jsonInt(entry['id']) == tent.id, orElse: () => <String, dynamic>{});
+                        item['name'] = name;
+                        raw['competition_tents'] = tents;
+                        await widget.onMutate('/api/competition/tents', {'id': tent.id, 'name': name, 'color': tent.color, 'game_id': state.game.id}, AppState.fromJson(raw));
+                        if (context.mounted) Navigator.of(context).pop();
+                      },
+                child: saving ? const HufcLoader(size: 22, color: Colors.white) : const Text('Zapisz'),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _deletePointEntry(CompetitionPoint point) async {
+    final state = widget.state;
+    if (state == null) return;
+    final raw = _clone(state.raw);
+    final tents = jsonList(raw['competition_tents']);
+    final tent = tents.firstWhere((item) => jsonInt(item['id']) == point.tentId, orElse: () => <String, dynamic>{});
+    if (tent.isNotEmpty) tent['total_points'] = jsonInt(tent['total_points']) - point.points;
+    raw['competition_tents'] = tents;
+    final points = jsonList(raw['competition_points'])..removeWhere((item) => jsonInt(item['id']) == point.id);
+    raw['competition_points'] = points;
+    await widget.onDelete('/api/competition/points/${point.id}?gameId=${state.game.id}', AppState.fromJson(raw));
   }
 
   Future<void> _saveMembers(Tent tent, Set<int> selectedWardIds) async {
@@ -4588,10 +4649,14 @@ class _CompetitionPageState extends State<CompetitionPage> {
               ),
             ]),
             const SizedBox(height: 14),
-            ...state.tents.map((tent) => _TentAdminRow(tent: tent, onDelete: () async {
-                  await _deleteTent(tent);
-                  if (context.mounted) Navigator.of(context).pop();
-                })),
+            ...state.tents.map((tent) => _TentAdminRow(
+                  tent: tent,
+                  onEdit: () => _renameTent(context, tent),
+                  onDelete: () async {
+                    await _deleteTent(tent);
+                    if (context.mounted) Navigator.of(context).pop();
+                  },
+                )),
           ],
         ),
       ),
@@ -4710,9 +4775,63 @@ class _CompetitionPageState extends State<CompetitionPage> {
           title: 'Historia punktów',
           child: state.points.isEmpty
               ? const EmptyNotice(text: 'Brak punktów. Każdy wpis będzie widoczny tutaj z powodem i autorem.')
-              : Column(children: state.points.map((point) => _PointHistoryRow(point: point)).toList()),
+              : Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+                  ...state.points.take(3).map((point) => _PointHistoryRow(point: point)),
+                  if (state.points.length > 3)
+                    OutlinedButton(onPressed: () => _showFullHistory(context), child: const Text('Pokaż pełną historię')),
+                ]),
         ),
       ],
+    );
+  }
+
+  Future<void> _showFullHistory(BuildContext context) async {
+    final isAdmin = widget.session.user.isAdmin;
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      useSafeArea: true,
+      builder: (context) => StatefulBuilder(
+        builder: (context, modalSetState) {
+          final state = widget.state;
+          final points = state?.points ?? const <CompetitionPoint>[];
+          return Padding(
+            padding: EdgeInsets.fromLTRB(18, 18, 18, MediaQuery.of(context).viewInsets.bottom + 18),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Row(children: [
+                  const Expanded(child: Text('Pełna historia punktów', style: TextStyle(fontSize: 20, fontWeight: FontWeight.w900))),
+                  IconButton(onPressed: () => Navigator.of(context).pop(), icon: const Icon(Icons.close)),
+                ]),
+                const SizedBox(height: 10),
+                Flexible(
+                  child: ConstrainedBox(
+                    constraints: BoxConstraints(maxHeight: MediaQuery.of(context).size.height * 0.7),
+                    child: points.isEmpty
+                        ? const EmptyNotice(text: 'Brak punktów.')
+                        : ListView(
+                            shrinkWrap: true,
+                            children: points
+                                .map((point) => _PointHistoryRow(
+                                      point: point,
+                                      onDelete: isAdmin
+                                          ? () async {
+                                              await _deletePointEntry(point);
+                                              modalSetState(() {});
+                                            }
+                                          : null,
+                                    ))
+                                .toList(),
+                          ),
+                  ),
+                ),
+              ],
+            ),
+          );
+        },
+      ),
     );
   }
 }
@@ -4790,9 +4909,10 @@ class _TentMembersRow extends StatelessWidget {
 }
 
 class _TentAdminRow extends StatelessWidget {
-  const _TentAdminRow({required this.tent, required this.onDelete});
+  const _TentAdminRow({required this.tent, required this.onEdit, required this.onDelete});
 
   final Tent tent;
+  final VoidCallback onEdit;
   final VoidCallback onDelete;
 
   @override
@@ -4808,6 +4928,7 @@ class _TentAdminRow extends StatelessWidget {
         Container(width: 16, height: 16, decoration: BoxDecoration(color: _colorFromHex(tent.color), borderRadius: BorderRadius.circular(5))),
         const SizedBox(width: 12),
         Expanded(child: Text(tent.name, style: const TextStyle(fontWeight: FontWeight.w900))),
+        IconButton(onPressed: onEdit, icon: const Icon(Icons.edit_outlined), tooltip: 'Zmień nazwę'),
         OutlinedButton(onPressed: onDelete, child: const Text('Usuń')),
       ]),
     );
@@ -4844,9 +4965,10 @@ class _WardCheckRow extends StatelessWidget {
 }
 
 class _PointHistoryRow extends StatelessWidget {
-  const _PointHistoryRow({required this.point});
+  const _PointHistoryRow({required this.point, this.onDelete});
 
   final CompetitionPoint point;
+  final VoidCallback? onDelete;
 
   @override
   Widget build(BuildContext context) {
@@ -4866,6 +4988,7 @@ class _PointHistoryRow extends StatelessWidget {
           ]),
         ),
         Text('${point.points > 0 ? '+' : ''}${point.points} pkt', style: const TextStyle(fontWeight: FontWeight.w900)),
+        if (onDelete != null) IconButton(onPressed: onDelete, icon: const Icon(Icons.delete_outline), tooltip: 'Usuń wpis'),
       ]),
     );
   }

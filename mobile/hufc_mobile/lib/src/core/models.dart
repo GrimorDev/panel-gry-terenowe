@@ -191,9 +191,10 @@ class TentMember {
 }
 
 class CompetitionPoint {
-  const CompetitionPoint({required this.id, required this.tentName, required this.category, required this.points, required this.reason});
+  const CompetitionPoint({required this.id, required this.tentId, required this.tentName, required this.category, required this.points, required this.reason});
 
   final int id;
+  final int tentId;
   final String tentName;
   final String category;
   final int points;
@@ -201,6 +202,7 @@ class CompetitionPoint {
 
   factory CompetitionPoint.fromJson(Map<String, dynamic> json) => CompetitionPoint(
         id: jsonInt(json['id']),
+        tentId: jsonInt(json['tent_id']),
         tentName: jsonString(json['tent_name'], fallback: 'Namiot'),
         category: jsonString(json['category'], fallback: 'Punkty'),
         points: jsonInt(json['points']),

@@ -1087,7 +1087,7 @@ function App() {
           {view === "sessions" && <Sessions user={user} state={state} onAdd={() => { setEditingSession(null); setModal("session"); }} onEdit={(session) => { setEditingSession(session); setModal("session"); }} onDelete={async (id) => setState(await runBusy("Usuwanie zbiórki...", () => api<AppState>(`/api/sessions/${id}?gameId=${state.game.id}`, { method: "DELETE" })))} />}
           {view === "gallery" && <Gallery state={state} setState={setState} runBusy={runBusy} onUploadPhotos={uploadPhotos} onEditPhoto={(photo) => { setEditingPhoto(photo); setModal("photo"); }} onShareInternal={(photo) => { setSharingPhoto(photo); setModal("share"); }} onDeletePhoto={async (id) => setState(await runBusy("Usuwanie zdjęcia...", () => api<AppState>(`/api/photos/${id}?gameId=${state.game.id}`, { method: "DELETE" })))} />}
           {view === "messages" && <MessagesView state={state} user={user} setState={setState} />}
-          {view === "competition" && <CompetitionView state={state} setState={setState} runBusy={runBusy} />}
+          {view === "competition" && <CompetitionView state={state} user={user} setState={setState} runBusy={runBusy} />}
           {view === "staff" && user.role === "administrator" && <StaffView state={state} setState={setState} />}
           {view === "games" && <GamesModule user={user} state={state} gameTab={gameTab} setGameTab={setGameTab} ranking={ranking} teamId={teamId} stationId={stationId} setTeamId={setTeamId} setStationId={setStationId} activeScore={activeScore} mapRef={mapEl} onSaveGame={saveGame} onDeleteGame={deleteGame} onFocusArea={focusGameArea} onUseCurrentLocation={useCurrentLocation} onUseMapCenter={useMapCenterForStation} onFocusNearestStation={focusNearestStation} onSaveStation={saveStation} onAddTeam={() => setModal("team")} onDeleteStation={async (id) => setState(await runBusy("Usuwanie stacji...", () => api<AppState>(`/api/stations/${id}?gameId=${state.game.id}`, { method: "DELETE" })))} onTimer={timerCommand} onScore={async (payload) => { setState(await runBusy("Zapisywanie oceny...", () => api<AppState>("/api/scores", { method: "POST", body: JSON.stringify(payload) }))); flash("Ocena zapisana"); }} setState={setState} load={(gameId?: number) => runBusy("Przełączanie gry...", () => load(gameId))} openTv={() => setModal("tv")} />}
         </div>
@@ -1220,9 +1220,9 @@ function Cohorts({ state }: { state: AppState }) {
 
 const competitionCategories = ["Porządek", "Zachowanie", "Aktywność w zajęciach", "Punkty dodatkowe"];
 
-function CompetitionView({ state, setState, runBusy }: { state: AppState; setState: (state: AppState) => void; runBusy: BusyRunner }) {
+function CompetitionView({ state, user, setState, runBusy }: { state: AppState; user: User; setState: (state: AppState) => void; runBusy: BusyRunner }) {
   const [selectedTentId, setSelectedTentId] = useState(state.competition_tents[0]?.id || 0);
-  const [competitionModal, setCompetitionModal] = useState<"tents" | "points" | "members" | null>(null);
+  const [competitionModal, setCompetitionModal] = useState<"tents" | "points" | "members" | "history" | null>(null);
   const selectedTent = state.competition_tents.find((tent) => tent.id === selectedTentId) || state.competition_tents[0];
   const selectedMembers = selectedTent ? state.competition_members.filter((member) => member.tent_id === selectedTent.id) : [];
   const selectedWardIds = new Set(selectedMembers.map((member) => member.ward_id));
@@ -1252,6 +1252,18 @@ function CompetitionView({ state, setState, runBusy }: { state: AppState; setSta
   function openMembers(tentId: number) {
     setSelectedTentId(tentId);
     setCompetitionModal("members");
+  }
+
+  async function deletePoint(id: number) {
+    setState(await runBusy("Usuwanie wpisu...", () => api<AppState>(`/api/competition/points/${id}?gameId=${state.game.id}`, { method: "DELETE" })));
+  }
+
+  function renderHistoryRow(point: CompetitionPoint) {
+    return <article key={point.id} className="point-row">
+      <div><strong>{point.tent_name} · {point.category}</strong><p>{point.reason}</p><small>{dateLabel(point.created_at)} · {point.created_by_name || "system"}</small></div>
+      <span className={point.points >= 0 ? "positive" : "negative"}>{point.points > 0 ? "+" : ""}{point.points} pkt</span>
+      {user.role === "administrator" && <Button variant="danger" onClick={() => deletePoint(point.id)}>Usuń</Button>}
+    </article>;
   }
 
   async function saveTent(form: HTMLFormElement) {
@@ -1300,22 +1312,24 @@ function CompetitionView({ state, setState, runBusy }: { state: AppState; setSta
         </Panel>
 
         <Panel title="Historia punktów" className="competition-history-panel">
-          <div className="points-history compact">{history.length ? history.map((point) => <article key={point.id} className="point-row">
-            <div><strong>{point.tent_name} · {point.category}</strong><p>{point.reason}</p><small>{dateLabel(point.created_at)} · {point.created_by_name || "system"}</small></div>
-            <span className={point.points >= 0 ? "positive" : "negative"}>{point.points > 0 ? "+" : ""}{point.points} pkt</span>
-            <Button variant="danger" onClick={async () => setState(await runBusy("Usuwanie wpisu...", () => api<AppState>(`/api/competition/points/${point.id}?gameId=${state.game.id}`, { method: "DELETE" })))}>Usuń</Button>
-          </article>) : <p className="empty">Brak punktów. Każdy wpis będzie widoczny tutaj z powodem i autorem.</p>}</div>
+          <div className="points-history compact">{history.length ? history.slice(0, 3).map((point) => renderHistoryRow(point)) : <p className="empty">Brak punktów. Każdy wpis będzie widoczny tutaj z powodem i autorem.</p>}</div>
+          {history.length > 3 && <Button type="button" onClick={() => setCompetitionModal("history")}>Pokaż pełną historię</Button>}
         </Panel>
       </div>
     </div>
 
+    {competitionModal === "history" && <Modal title="Pełna historia punktów" onClose={() => setCompetitionModal(null)}>
+      <div className="points-history">{history.length ? history.map((point) => renderHistoryRow(point)) : <p className="empty">Brak punktów.</p>}</div>
+    </Modal>}
+
     {competitionModal === "tents" && <Modal title="Zarządzaj namiotami" onClose={() => setCompetitionModal(null)}>
-      <form className="tent-admin-form" onSubmit={(event) => { event.preventDefault(); saveTent(event.currentTarget); }}>
+      <form id="tentForm" className="tent-admin-form" onSubmit={(event) => { event.preventDefault(); saveTent(event.currentTarget); }}>
+        <input type="hidden" name="id" />
         <label>Nazwa namiotu<input name="name" placeholder="np. Namiot 3 / Wilki" required /></label>
         <label>Kolor<input name="color" type="color" defaultValue="#1e5c46" /></label>
-        <Button variant="primary">Dodaj</Button>
+        <Button variant="primary">Dodaj / zapisz zmiany</Button>
       </form>
-      <div className="tent-admin-list">{state.competition_tents.length ? state.competition_tents.map((tent) => <article key={tent.id} className="tent-admin-row"><i style={{ background: tent.color }} /><strong>{tent.name}</strong><Button variant="danger" type="button" onClick={() => deleteTent(tent.id)}>Usuń</Button></article>) : <p className="empty">Nie ma jeszcze żadnego namiotu.</p>}</div>
+      <div className="tent-admin-list">{state.competition_tents.length ? state.competition_tents.map((tent) => <article key={tent.id} className="tent-admin-row"><i style={{ background: tent.color }} /><strong>{tent.name}</strong><Button type="button" onClick={() => fillTentForm(tent)}>Edytuj</Button><Button variant="danger" type="button" onClick={() => deleteTent(tent.id)}>Usuń</Button></article>) : <p className="empty">Nie ma jeszcze żadnego namiotu.</p>}</div>
     </Modal>}
 
     {competitionModal === "points" && <Modal title="Dodaj punkty" onClose={() => setCompetitionModal(null)}>
@@ -1740,6 +1754,14 @@ function fillStationForm(station: Station) {
   (form.elements.namedItem("station_order") as HTMLInputElement).value = String(station.station_order);
   (form.elements.namedItem("lat") as HTMLInputElement).value = station.lat || "";
   (form.elements.namedItem("lng") as HTMLInputElement).value = station.lng || "";
+}
+
+function fillTentForm(tent: CompetitionTent) {
+  const form = document.querySelector<HTMLFormElement>("#tentForm");
+  if (!form) return;
+  (form.elements.namedItem("id") as HTMLInputElement).value = String(tent.id);
+  (form.elements.namedItem("name") as HTMLInputElement).value = tent.name;
+  (form.elements.namedItem("color") as HTMLInputElement).value = tent.color;
 }
 
 function GameRun({ state, ranking, onTimer, setGameTab }: { state: AppState; ranking: Team[]; onTimer: (command: "start" | "pause" | "reset") => void; setGameTab: (tab: any) => void }) {
