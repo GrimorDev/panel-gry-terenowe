@@ -353,6 +353,8 @@ async function ensureSchema() {
   await pool.query("ALTER TABLE messages ADD COLUMN IF NOT EXISTS attachment_mime VARCHAR(120)");
   await pool.query("ALTER TABLE messages ADD COLUMN IF NOT EXISTS attachment_data TEXT");
   await pool.query("ALTER TABLE messages ADD COLUMN IF NOT EXISTS reply_to_id INTEGER REFERENCES messages(id) ON DELETE SET NULL");
+  await pool.query("ALTER TABLE competition_points ADD COLUMN IF NOT EXISTS previous_points INTEGER");
+  await pool.query("ALTER TABLE competition_points ADD COLUMN IF NOT EXISTS edited_at TIMESTAMPTZ");
   await pool.query("ALTER TABLE messages ADD COLUMN IF NOT EXISTS edited_at TIMESTAMPTZ");
   await pool.query(`
     DELETE FROM competition_tent_members m
@@ -654,7 +656,7 @@ async function state(gameId?: number, user?: User) {
       FROM competition_points p
       JOIN competition_tents t ON t.id = p.tent_id
       LEFT JOIN users u ON u.id = p.created_by
-      ORDER BY p.created_at DESC, p.id DESC
+      ORDER BY COALESCE(p.edited_at, p.created_at) DESC, p.id DESC
       LIMIT 120
     `)
   ]);
@@ -1164,6 +1166,7 @@ app.post("/api/competition/tents/:id/members", async (req, res) => {
 });
 
 app.post("/api/competition/points", async (req, res) => {
+  const id = Number(req.body.id || 0);
   const tentId = Number(req.body.tent_id);
   const category = String(req.body.category || "").trim();
   const points = Number(req.body.points || 0);
@@ -1171,10 +1174,22 @@ app.post("/api/competition/points", async (req, res) => {
   if (!tentId) return res.status(400).json({ ok: false, error: "Wybierz namiot" });
   if (!category) return res.status(400).json({ ok: false, error: "Wybierz kategorię punktów" });
   if (!reason) return res.status(400).json({ ok: false, error: "Podaj powód przyznania punktów" });
-  await pool.query(
-    "INSERT INTO competition_points (tent_id, category, points, reason, created_by) VALUES ($1,$2,$3,$4,$5)",
-    [tentId, category, points, reason, req.user?.id || null]
-  );
+  if (id) {
+    if (req.user?.role !== "administrator") {
+      return res.status(403).json({ ok: false, error: "Tylko administrator może edytować wpisy historii punktów" });
+    }
+    const existing = await pool.query("SELECT points FROM competition_points WHERE id=$1", [id]);
+    if (!existing.rows[0]) return res.status(404).json({ ok: false, error: "Nie znaleziono wpisu" });
+    await pool.query(
+      "UPDATE competition_points SET tent_id=$1, category=$2, points=$3, reason=$4, previous_points=$5, edited_at=NOW() WHERE id=$6",
+      [tentId, category, points, reason, Number(existing.rows[0].points), id]
+    );
+  } else {
+    await pool.query(
+      "INSERT INTO competition_points (tent_id, category, points, reason, created_by) VALUES ($1,$2,$3,$4,$5)",
+      [tentId, category, points, reason, req.user?.id || null]
+    );
+  }
   res.json(await stateFor(req, Number(req.body.game_id || 0) || undefined));
 });
 

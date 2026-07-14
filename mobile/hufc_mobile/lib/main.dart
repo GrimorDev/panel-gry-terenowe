@@ -4400,19 +4400,41 @@ class _CompetitionPageState extends State<CompetitionPage> {
     }).toList();
   }
 
-  Future<void> _addPoints() async {
+  Future<void> _savePoints({CompetitionPoint? editing}) async {
     final state = widget.state;
     final tentId = _tentId;
     if (state == null || tentId == null || _reason.text.trim().isEmpty) return;
     final raw = _clone(state.raw);
     final tents = jsonList(raw['competition_tents']);
+    if (editing != null) {
+      final oldTent = tents.firstWhere((item) => jsonInt(item['id']) == editing.tentId, orElse: () => <String, dynamic>{});
+      if (oldTent.isNotEmpty) oldTent['total_points'] = jsonInt(oldTent['total_points']) - editing.points;
+    }
     final tent = tents.firstWhere((item) => jsonInt(item['id']) == tentId, orElse: () => <String, dynamic>{});
     tent['total_points'] = jsonInt(tent['total_points']) + _points;
     raw['competition_tents'] = tents;
     final points = jsonList(raw['competition_points']);
-    points.insert(0, {'id': -DateTime.now().millisecondsSinceEpoch, 'tent_id': tentId, 'tent_name': jsonString(tent['name']), 'category': _category, 'points': _points, 'reason': _reason.text.trim()});
+    if (editing != null) {
+      final item = points.firstWhere((entry) => jsonInt(entry['id']) == editing.id, orElse: () => <String, dynamic>{});
+      item['tent_id'] = tentId;
+      item['tent_name'] = jsonString(tent['name']);
+      item['category'] = _category;
+      item['previous_points'] = editing.points;
+      item['points'] = _points;
+      item['reason'] = _reason.text.trim();
+      item['edited_at'] = DateTime.now().toIso8601String();
+    } else {
+      points.insert(0, {'id': -DateTime.now().millisecondsSinceEpoch, 'tent_id': tentId, 'tent_name': jsonString(tent['name']), 'category': _category, 'points': _points, 'reason': _reason.text.trim()});
+    }
     raw['competition_points'] = points;
-    await widget.onMutate('/api/competition/points', {'game_id': state.game.id, 'tent_id': tentId, 'category': _category, 'points': _points, 'reason': _reason.text.trim()}, AppState.fromJson(raw));
+    await widget.onMutate('/api/competition/points', {
+      if (editing != null) 'id': editing.id,
+      'game_id': state.game.id,
+      'tent_id': tentId,
+      'category': _category,
+      'points': _points,
+      'reason': _reason.text.trim(),
+    }, AppState.fromJson(raw));
     _reason.clear();
   }
 
@@ -4535,10 +4557,15 @@ class _CompetitionPageState extends State<CompetitionPage> {
     await widget.onMutate('/api/competition/tents/${tent.id}/members', {'game_id': state.game.id, 'ward_ids': selectedWardIds.toList()}, AppState.fromJson(raw));
   }
 
-  Future<void> _showPointsModal() async {
+  Future<void> _showPointsModal({CompetitionPoint? editing}) async {
     final state = widget.state;
     if (state == null || state.tents.isEmpty) return;
-    if (_tentId == null || !state.tents.any((tent) => tent.id == _tentId)) {
+    if (editing != null) {
+      _tentId = editing.tentId;
+      _category = editing.category;
+      _points = editing.points;
+      _reason.text = editing.reason;
+    } else if (_tentId == null || !state.tents.any((tent) => tent.id == _tentId)) {
       _tentId = state.tents.first.id;
     }
     _pointsInput.text = '$_points';
@@ -4556,7 +4583,7 @@ class _CompetitionPageState extends State<CompetitionPage> {
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
                 Row(children: [
-                  const Expanded(child: Text('Dodaj punkty', style: TextStyle(fontSize: 20, fontWeight: FontWeight.w900))),
+                  Expanded(child: Text(editing != null ? 'Edytuj wpis' : 'Dodaj punkty', style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w900))),
                   IconButton(onPressed: () => Navigator.of(context).pop(), icon: const Icon(Icons.close)),
                 ]),
                 const SizedBox(height: 10),
@@ -4606,10 +4633,10 @@ class _CompetitionPageState extends State<CompetitionPage> {
                 FilledButton(
                   onPressed: () async {
                     if (_reason.text.trim().isEmpty) return;
-                    await _addPoints();
+                    await _savePoints(editing: editing);
                     if (context.mounted) Navigator.of(context).pop();
                   },
-                  child: const Text('Dodaj wpis'),
+                  child: Text(editing != null ? 'Zapisz zmiany' : 'Dodaj wpis'),
                 ),
               ],
             ),
@@ -4752,7 +4779,10 @@ class _CompetitionPageState extends State<CompetitionPage> {
                         tent: tents[index],
                         rank: index + 1,
                         selected: _tentId == tents[index].id,
-                        onTap: () => setState(() => _tentId = tents[index].id),
+                        onTap: () {
+                          setState(() => _tentId = tents[index].id);
+                          _showFullHistory(context, tentId: tents[index].id);
+                        },
                       ),
                   ],
                 ),
@@ -4785,8 +4815,9 @@ class _CompetitionPageState extends State<CompetitionPage> {
     );
   }
 
-  Future<void> _showFullHistory(BuildContext context) async {
+  Future<void> _showFullHistory(BuildContext context, {int? tentId}) async {
     final isAdmin = widget.session.user.isAdmin;
+    final tentName = tentId == null ? null : widget.state?.tents.firstWhere((tent) => tent.id == tentId, orElse: () => const Tent(id: 0, name: '', color: '#1F5C36', totalPoints: 0, memberCount: 0)).name;
     await showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
@@ -4794,7 +4825,7 @@ class _CompetitionPageState extends State<CompetitionPage> {
       builder: (context) => StatefulBuilder(
         builder: (context, modalSetState) {
           final state = widget.state;
-          final points = state?.points ?? const <CompetitionPoint>[];
+          final points = (state?.points ?? const <CompetitionPoint>[]).where((point) => tentId == null || point.tentId == tentId).toList();
           return Padding(
             padding: EdgeInsets.fromLTRB(18, 18, 18, MediaQuery.of(context).viewInsets.bottom + 18),
             child: Column(
@@ -4802,7 +4833,7 @@ class _CompetitionPageState extends State<CompetitionPage> {
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
                 Row(children: [
-                  const Expanded(child: Text('Pełna historia punktów', style: TextStyle(fontSize: 20, fontWeight: FontWeight.w900))),
+                  Expanded(child: Text(tentName != null && tentName.isNotEmpty ? 'Historia: $tentName' : 'Pełna historia punktów', style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w900))),
                   IconButton(onPressed: () => Navigator.of(context).pop(), icon: const Icon(Icons.close)),
                 ]),
                 const SizedBox(height: 10),
@@ -4816,6 +4847,12 @@ class _CompetitionPageState extends State<CompetitionPage> {
                             children: points
                                 .map((point) => _PointHistoryRow(
                                       point: point,
+                                      onEdit: isAdmin
+                                          ? () async {
+                                              Navigator.of(context).pop();
+                                              await _showPointsModal(editing: point);
+                                            }
+                                          : null,
                                       onDelete: isAdmin
                                           ? () async {
                                               await _deletePointEntry(point);
@@ -4965,13 +5002,15 @@ class _WardCheckRow extends StatelessWidget {
 }
 
 class _PointHistoryRow extends StatelessWidget {
-  const _PointHistoryRow({required this.point, this.onDelete});
+  const _PointHistoryRow({required this.point, this.onEdit, this.onDelete});
 
   final CompetitionPoint point;
+  final VoidCallback? onEdit;
   final VoidCallback? onDelete;
 
   @override
   Widget build(BuildContext context) {
+    final hasOldValue = point.edited && point.previousPoints != null && point.previousPoints != point.points;
     return Container(
       margin: const EdgeInsets.only(bottom: 10),
       padding: const EdgeInsets.all(14),
@@ -4982,12 +5021,33 @@ class _PointHistoryRow extends StatelessWidget {
       child: Row(children: [
         Expanded(
           child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Text('${point.tentName} · ${point.category}', style: const TextStyle(fontWeight: FontWeight.w900)),
+            Row(children: [
+              Expanded(child: Text('${point.tentName} · ${point.category}', style: const TextStyle(fontWeight: FontWeight.w900))),
+              if (point.edited) ...[
+                const SizedBox(width: 6),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                  decoration: BoxDecoration(color: const Color(0xFF1F5C36).withValues(alpha: 0.15), borderRadius: BorderRadius.circular(20)),
+                  child: const Text('Edytowano', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w800, color: Color(0xFF1F5C36))),
+                ),
+              ],
+            ]),
             const SizedBox(height: 4),
             Text(point.reason, style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant)),
           ]),
         ),
-        Text('${point.points > 0 ? '+' : ''}${point.points} pkt', style: const TextStyle(fontWeight: FontWeight.w900)),
+        Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
+          Text(
+            '${point.points > 0 ? '+' : ''}${point.points} pkt',
+            style: TextStyle(fontWeight: FontWeight.w900, color: point.edited ? const Color(0xFF1F5C36) : null),
+          ),
+          if (hasOldValue)
+            Text(
+              '${point.previousPoints! > 0 ? '+' : ''}${point.previousPoints} pkt',
+              style: TextStyle(fontSize: 12, color: Theme.of(context).colorScheme.onSurfaceVariant, decoration: TextDecoration.lineThrough),
+            ),
+        ]),
+        if (onEdit != null) IconButton(onPressed: onEdit, icon: const Icon(Icons.edit_outlined), tooltip: 'Edytuj wpis'),
         if (onDelete != null) IconButton(onPressed: onDelete, icon: const Icon(Icons.delete_outline), tooltip: 'Usuń wpis'),
       ]),
     );

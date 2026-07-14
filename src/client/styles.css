@@ -402,10 +402,13 @@ body:has(.app-shell.theme-night) { background: radial-gradient(circle at 16% 0%,
 .points-history { display: grid; gap: 10px; max-height: 520px; overflow: auto; padding-right: 4px; }
 .point-row { display: grid; grid-template-columns: 54px minmax(0, 1fr) auto; gap: 12px; align-items: start; padding: 12px; border: 1px solid var(--border-default); border-radius: var(--radius-md); background: #fff; }
 .points-history.compact .point-row { grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; }
-.point-row > span { width: 46px; height: 46px; display: grid; place-items: center; border-radius: 14px; font-weight: 800; }
-.points-history.compact .point-row > span { width: auto; min-width: 56px; height: auto; padding: 8px 10px; border-radius: 999px; }
-.point-row > span.positive { background: var(--color-brand-soft); color: var(--color-brand); }
-.point-row > span.negative { background: #FBE8E5; color: var(--color-danger); }
+.point-row .point-values { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; }
+.point-row .point-values > span { min-width: 46px; height: 46px; display: grid; place-items: center; border-radius: 14px; font-weight: 800; padding: 0 10px; }
+.points-history.compact .point-row .point-values > span { width: auto; min-width: 56px; height: auto; padding: 8px 10px; border-radius: 999px; }
+.point-row .point-values > span.positive { background: var(--color-brand-soft); color: var(--color-brand); }
+.point-row .point-values > span.negative { background: #FBE8E5; color: var(--color-danger); }
+.point-row .point-old-value { color: var(--text-muted); text-decoration: line-through; }
+.point-row .edited-badge { display: inline-block; margin-left: 8px; padding: 2px 9px; border-radius: 999px; background: var(--color-brand-soft); color: var(--color-brand); font-size: 11px; font-weight: 800; vertical-align: middle; }
 .point-row p { margin: 4px 0; color: var(--text-primary); }
 .point-row small { color: var(--text-muted); }
 .search { width: min(340px, 100%); margin: 22px 0 16px; }

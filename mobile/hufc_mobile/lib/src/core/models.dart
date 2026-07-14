@@ -191,7 +191,16 @@ class TentMember {
 }
 
 class CompetitionPoint {
-  const CompetitionPoint({required this.id, required this.tentId, required this.tentName, required this.category, required this.points, required this.reason});
+  const CompetitionPoint({
+    required this.id,
+    required this.tentId,
+    required this.tentName,
+    required this.category,
+    required this.points,
+    required this.reason,
+    this.previousPoints,
+    this.edited = false,
+  });
 
   final int id;
   final int tentId;
@@ -199,6 +208,8 @@ class CompetitionPoint {
   final String category;
   final int points;
   final String reason;
+  final int? previousPoints;
+  final bool edited;
 
   factory CompetitionPoint.fromJson(Map<String, dynamic> json) => CompetitionPoint(
         id: jsonInt(json['id']),
@@ -207,6 +218,8 @@ class CompetitionPoint {
         category: jsonString(json['category'], fallback: 'Punkty'),
         points: jsonInt(json['points']),
         reason: jsonString(json['reason']),
+        previousPoints: json['previous_points'] == null ? null : jsonInt(json['previous_points']),
+        edited: json['edited_at'] != null,
       );
 }
 

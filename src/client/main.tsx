@@ -25,7 +25,7 @@ type Message = { id: number; sender_id: number | null; sender_name: string | nul
 type MessageUnread = { target_type: string; target_id: number; unread_count: number };
 type CompetitionTent = { id: number; name: string; color: string; total_points: number; member_count: number; created_at: string };
 type CompetitionMember = { tent_id: number; ward_id: number; ward_name: string; age: number; cohort_name: string | null; tent_name: string };
-type CompetitionPoint = { id: number; tent_id: number; tent_name: string; category: string; points: number; reason: string; created_by: number | null; created_by_name: string | null; created_at: string };
+type CompetitionPoint = { id: number; tent_id: number; tent_name: string; category: string; points: number; reason: string; created_by: number | null; created_by_name: string | null; created_at: string; previous_points: number | null; edited_at: string | null };
 type AppState = { ok: true; game: Game; games: Game[]; teams: Team[]; stations: Station[]; scores: Score[]; materials: Material[]; questions: Question[]; cohorts: Cohort[]; wards: Ward[]; sessions: Session[]; photos: Photo[]; photo_albums: PhotoAlbum[]; photo_album_items: PhotoAlbumItem[]; shares: InternalShare[]; messages: Message[]; message_unreads: MessageUnread[]; caregivers: Caregiver[]; competition_tents: CompetitionTent[]; competition_members: CompetitionMember[]; competition_points: CompetitionPoint[] };
 type GameState = Pick<AppState, "ok" | "game" | "games" | "teams" | "stations" | "scores" | "materials" | "questions">;
 type PulseState = GameState & Pick<AppState, "messages" | "message_unreads">;
@@ -1223,6 +1223,8 @@ const competitionCategories = ["Porządek", "Zachowanie", "Aktywność w zajęci
 function CompetitionView({ state, user, setState, runBusy }: { state: AppState; user: User; setState: (state: AppState) => void; runBusy: BusyRunner }) {
   const [selectedTentId, setSelectedTentId] = useState(state.competition_tents[0]?.id || 0);
   const [competitionModal, setCompetitionModal] = useState<"tents" | "points" | "members" | "history" | null>(null);
+  const [editingPointId, setEditingPointId] = useState<number | null>(null);
+  const [historyTentId, setHistoryTentId] = useState<number | null>(null);
   const selectedTent = state.competition_tents.find((tent) => tent.id === selectedTentId) || state.competition_tents[0];
   const selectedMembers = selectedTent ? state.competition_members.filter((member) => member.tent_id === selectedTent.id) : [];
   const selectedWardIds = new Set(selectedMembers.map((member) => member.ward_id));
@@ -1235,6 +1237,7 @@ function CompetitionView({ state, user, setState, runBusy }: { state: AppState; 
     : [];
   const busyWardsCount = state.wards.length - availableWards.length;
   const history = state.competition_points;
+  const editingPoint = editingPointId != null ? history.find((point) => point.id === editingPointId) || null : null;
 
   useEffect(() => {
     if (!selectedTent && state.competition_tents[0]) setSelectedTentId(state.competition_tents[0].id);
@@ -1258,11 +1261,21 @@ function CompetitionView({ state, user, setState, runBusy }: { state: AppState; 
     setState(await runBusy("Usuwanie wpisu...", () => api<AppState>(`/api/competition/points/${id}?gameId=${state.game.id}`, { method: "DELETE" })));
   }
 
+  function editPoint(id: number) {
+    setEditingPointId(id);
+    setCompetitionModal("points");
+  }
+
   function renderHistoryRow(point: CompetitionPoint) {
+    const edited = Boolean(point.edited_at);
+    const hasOldValue = edited && point.previous_points != null && point.previous_points !== point.points;
     return <article key={point.id} className="point-row">
-      <div><strong>{point.tent_name} · {point.category}</strong><p>{point.reason}</p><small>{dateLabel(point.created_at)} · {point.created_by_name || "system"}</small></div>
-      <span className={point.points >= 0 ? "positive" : "negative"}>{point.points > 0 ? "+" : ""}{point.points} pkt</span>
-      {user.role === "administrator" && <Button variant="danger" onClick={() => deletePoint(point.id)}>Usuń</Button>}
+      <div><strong>{point.tent_name} · {point.category}</strong>{edited && <span className="edited-badge">Edytowano</span>}<p>{point.reason}</p><small>{dateLabel(point.created_at)} · {point.created_by_name || "system"}</small></div>
+      <div className="point-values">
+        <span className={point.points >= 0 ? "positive" : "negative"}>{point.points > 0 ? "+" : ""}{point.points} pkt</span>
+        {hasOldValue && <small className="point-old-value">{point.previous_points! > 0 ? "+" : ""}{point.previous_points} pkt</small>}
+      </div>
+      {user.role === "administrator" && <><Button type="button" onClick={() => editPoint(point.id)}>Edytuj</Button><Button variant="danger" onClick={() => deletePoint(point.id)}>Usuń</Button></>}
     </article>;
   }
 
@@ -1283,8 +1296,9 @@ function CompetitionView({ state, user, setState, runBusy }: { state: AppState; 
 
   async function savePoints(form: HTMLFormElement) {
     const data = Object.fromEntries(new FormData(form).entries());
-    setState(await runBusy("Dodawanie punktów...", () => api<AppState>("/api/competition/points", { method: "POST", body: JSON.stringify({ ...data, game_id: state.game.id }) })));
+    setState(await runBusy("Zapisywanie punktów...", () => api<AppState>("/api/competition/points", { method: "POST", body: JSON.stringify({ ...data, game_id: state.game.id }) })));
     form.reset();
+    setEditingPointId(null);
     setCompetitionModal(null);
   }
 
@@ -1296,10 +1310,10 @@ function CompetitionView({ state, user, setState, runBusy }: { state: AppState; 
   }
 
   return <div>
-    <div className="page-head competition-head"><div><h1>Współzawodnictwo</h1><p className="help">Rywalizacja namiotów: porządek, zachowanie, aktywność i punkty dodatkowe z obowiązkowym powodem.</p></div><div className="button-row competition-actions"><Button onClick={() => setCompetitionModal("tents")}>+ Namioty</Button><Button variant="primary" onClick={() => setCompetitionModal("points")} disabled={!state.competition_tents.length}>+ Dodaj punkty</Button></div></div>
+    <div className="page-head competition-head"><div><h1>Współzawodnictwo</h1><p className="help">Rywalizacja namiotów: porządek, zachowanie, aktywność i punkty dodatkowe z obowiązkowym powodem.</p></div><div className="button-row competition-actions"><Button onClick={() => setCompetitionModal("tents")}>+ Namioty</Button><Button variant="primary" onClick={() => { setEditingPointId(null); setCompetitionModal("points"); }} disabled={!state.competition_tents.length}>+ Dodaj punkty</Button></div></div>
     <div className="competition-dashboard">
       <Panel title="Ranking namiotów" action={<span>na żywo</span>} className="competition-ranking-panel">
-        <div className="tent-ranking">{state.competition_tents.length ? state.competition_tents.map((tent, index) => <button type="button" key={tent.id} className={selectedTent?.id === tent.id ? "active" : ""} onClick={() => setSelectedTentId(tent.id)}>
+        <div className="tent-ranking">{state.competition_tents.length ? state.competition_tents.map((tent, index) => <button type="button" key={tent.id} className={selectedTent?.id === tent.id ? "active" : ""} onClick={() => { setSelectedTentId(tent.id); setHistoryTentId(tent.id); setCompetitionModal("history"); }}>
           <span style={{ background: tent.color }}>{index + 1}</span><div><strong>{tent.name}</strong><small>{tent.member_count} osób w namiocie</small></div><b>{tent.total_points} pkt</b>
         </button>) : <p className="empty">Dodaj pierwszy namiot, aby rozpocząć ranking.</p>}</div>
       </Panel>
@@ -1313,13 +1327,16 @@ function CompetitionView({ state, user, setState, runBusy }: { state: AppState; 
 
         <Panel title="Historia punktów" className="competition-history-panel">
           <div className="points-history compact">{history.length ? history.slice(0, 3).map((point) => renderHistoryRow(point)) : <p className="empty">Brak punktów. Każdy wpis będzie widoczny tutaj z powodem i autorem.</p>}</div>
-          {history.length > 3 && <Button type="button" onClick={() => setCompetitionModal("history")}>Pokaż pełną historię</Button>}
+          {history.length > 3 && <Button type="button" onClick={() => { setHistoryTentId(null); setCompetitionModal("history"); }}>Pokaż pełną historię</Button>}
         </Panel>
       </div>
     </div>
 
-    {competitionModal === "history" && <Modal title="Pełna historia punktów" onClose={() => setCompetitionModal(null)}>
-      <div className="points-history">{history.length ? history.map((point) => renderHistoryRow(point)) : <p className="empty">Brak punktów.</p>}</div>
+    {competitionModal === "history" && <Modal title={historyTentId != null ? `Historia: ${state.competition_tents.find((tent) => tent.id === historyTentId)?.name || ""}` : "Pełna historia punktów"} onClose={() => setCompetitionModal(null)}>
+      <div className="points-history">{(() => {
+        const filtered = historyTentId != null ? history.filter((point) => point.tent_id === historyTentId) : history;
+        return filtered.length ? filtered.map((point) => renderHistoryRow(point)) : <p className="empty">Brak punktów.</p>;
+      })()}</div>
     </Modal>}
 
     {competitionModal === "tents" && <Modal title="Zarządzaj namiotami" onClose={() => setCompetitionModal(null)}>
@@ -1332,13 +1349,14 @@ function CompetitionView({ state, user, setState, runBusy }: { state: AppState; 
       <div className="tent-admin-list">{state.competition_tents.length ? state.competition_tents.map((tent) => <article key={tent.id} className="tent-admin-row"><i style={{ background: tent.color }} /><strong>{tent.name}</strong><Button type="button" onClick={() => fillTentForm(tent)}>Edytuj</Button><Button variant="danger" type="button" onClick={() => deleteTent(tent.id)}>Usuń</Button></article>) : <p className="empty">Nie ma jeszcze żadnego namiotu.</p>}</div>
     </Modal>}
 
-    {competitionModal === "points" && <Modal title="Dodaj punkty" onClose={() => setCompetitionModal(null)}>
-      <form className="stack" onSubmit={(event) => { event.preventDefault(); savePoints(event.currentTarget); }}>
-        <label>Namiot<select name="tent_id" defaultValue={selectedTent?.id || ""} required>{state.competition_tents.map((tent) => <option key={tent.id} value={tent.id}>{tent.name}</option>)}</select></label>
-        <label>Kategoria<select name="category" defaultValue="Porządek">{competitionCategories.map((category) => <option key={category}>{category}</option>)}</select></label>
-        <label>Punkty<input name="points" type="number" defaultValue={1} required /></label>
-        <label>Powód / komentarz<textarea name="reason" placeholder="np. Wzorowy porządek po ciszy nocnej" required /></label>
-        <Button variant="primary">Dodaj wpis</Button>
+    {competitionModal === "points" && <Modal title={editingPoint ? "Edytuj wpis" : "Dodaj punkty"} onClose={() => setCompetitionModal(null)}>
+      <form key={editingPoint?.id || "new"} className="stack" onSubmit={(event) => { event.preventDefault(); savePoints(event.currentTarget); }}>
+        <input type="hidden" name="id" defaultValue={editingPoint?.id || ""} />
+        <label>Namiot<select name="tent_id" defaultValue={editingPoint?.tent_id || selectedTent?.id || ""} required>{state.competition_tents.map((tent) => <option key={tent.id} value={tent.id}>{tent.name}</option>)}</select></label>
+        <label>Kategoria<select name="category" defaultValue={editingPoint?.category || "Porządek"}>{competitionCategories.map((category) => <option key={category}>{category}</option>)}</select></label>
+        <label>Punkty<input name="points" type="number" defaultValue={editingPoint?.points ?? 1} required /></label>
+        <label>Powód / komentarz<textarea name="reason" defaultValue={editingPoint?.reason || ""} placeholder="np. Wzorowy porządek po ciszy nocnej" required /></label>
+        <Button variant="primary">{editingPoint ? "Zapisz zmiany" : "Dodaj wpis"}</Button>
       </form>
     </Modal>}
 
