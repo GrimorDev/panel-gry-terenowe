@@ -1454,7 +1454,7 @@ class DashboardPage extends StatelessWidget {
                   style: TextStyle(color: Theme.of(context).colorScheme.onErrorContainer, fontWeight: FontWeight.w800),
                 ),
               ),
-              TextButton(onPressed: openAppSettings, child: const Text('Ustawienia')),
+              const TextButton(onPressed: openAppSettings, child: Text('Ustawienia')),
             ]),
           ),
         ],
