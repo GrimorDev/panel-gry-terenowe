@@ -358,6 +358,23 @@ async function ensureSchema() {
   await pool.query("ALTER TABLE session_photos ALTER COLUMN session_id DROP NOT NULL");
   await pool.query("ALTER TABLE messages ADD COLUMN IF NOT EXISTS edited_at TIMESTAMPTZ");
   await pool.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS dashboard_tiles TEXT");
+  await pool.query("ALTER TABLE competition_tents ADD COLUMN IF NOT EXISTS cohort_id INTEGER REFERENCES cohorts(id) ON DELETE SET NULL");
+  await pool.query("ALTER TABLE competition_tents ADD COLUMN IF NOT EXISTS created_by INTEGER REFERENCES users(id) ON DELETE SET NULL");
+  // Namioty istniejące sprzed wprowadzenia izolacji per-grupa nie mają jeszcze cohort_id -
+  // dociągamy go z grupy pierwszego przypisanego podopiecznego, żeby wychowawca, który już
+  // korzysta z namiotu, dalej go widział bez żadnej dodatkowej akcji z jego strony.
+  await pool.query(`
+    UPDATE competition_tents t
+    SET cohort_id = (
+      SELECT w.cohort_id
+      FROM competition_tent_members m
+      JOIN wards w ON w.id = m.ward_id
+      WHERE m.tent_id = t.id AND w.cohort_id IS NOT NULL
+      ORDER BY m.created_at ASC
+      LIMIT 1
+    )
+    WHERE t.cohort_id IS NULL
+  `);
   await pool.query(`
     DELETE FROM competition_tent_members m
     USING (
@@ -403,6 +420,32 @@ async function assertGameAccess(user: User | undefined, gameId: number, mode: "v
   const error = new Error(message) as Error & { status?: number };
   error.status = 403;
   throw error;
+}
+
+async function myCohortId(user?: User): Promise<number | null> {
+  if (!user?.id) return null;
+  const result = await pool.query("SELECT id FROM cohorts WHERE caretaker_user_id=$1 ORDER BY id ASC LIMIT 1", [user.id]);
+  return result.rows[0]?.id ?? null;
+}
+
+// Namiot jest widoczny/edytowalny dla admina, wychowawcy przypisanego do jego grupy,
+// jego twórcy, albo kogokolwiek kto już dodawał do niego punkty - ten ostatni warunek
+// jest siatką bezpieczeństwa na wypadek gdyby przypisanie grupa/wychowawca w danych
+// nie było w 100% dokładne, żeby nikomu nic nie zniknęło przy tej zmianie.
+async function canManageTent(user: User | undefined, tentId: number): Promise<boolean> {
+  if (isAdmin(user)) return true;
+  if (!user?.id || !tentId) return false;
+  const result = await pool.query(
+    `SELECT 1 FROM competition_tents t
+     WHERE t.id = $1
+       AND (
+         t.created_by = $2
+         OR EXISTS (SELECT 1 FROM cohorts c WHERE c.id = t.cohort_id AND c.caretaker_user_id = $2)
+         OR EXISTS (SELECT 1 FROM competition_points cp WHERE cp.tent_id = t.id AND cp.created_by = $2)
+       )`,
+    [tentId, user.id]
+  );
+  return !!result.rows[0];
 }
 
 async function assertSessionManage(user: User | undefined, sessionId: number) {
@@ -642,25 +685,38 @@ async function state(gameId?: number, user?: User) {
         COALESCE((SELECT COUNT(*) FROM competition_tent_members m WHERE m.tent_id = t.id), 0)::int AS member_count
       FROM competition_tents t
       LEFT JOIN competition_points p ON p.tent_id = t.id
+      WHERE $1::boolean
+        OR t.created_by = $2
+        OR EXISTS (SELECT 1 FROM cohorts c WHERE c.id = t.cohort_id AND c.caretaker_user_id = $2)
+        OR EXISTS (SELECT 1 FROM competition_points cp WHERE cp.tent_id = t.id AND cp.created_by = $2)
       GROUP BY t.id
       ORDER BY total_points DESC, t.name ASC
-    `),
+    `, [isAdmin(user), user?.id || 0]),
     pool.query(`
       SELECT m.*, w.name AS ward_name, w.age, c.name AS cohort_name, t.name AS tent_name
       FROM competition_tent_members m
       JOIN wards w ON w.id = m.ward_id
       JOIN competition_tents t ON t.id = m.tent_id
       LEFT JOIN cohorts c ON c.id = w.cohort_id
+      WHERE $1::boolean
+        OR t.created_by = $2
+        OR EXISTS (SELECT 1 FROM cohorts gc WHERE gc.id = t.cohort_id AND gc.caretaker_user_id = $2)
+        OR EXISTS (SELECT 1 FROM competition_points cp WHERE cp.tent_id = t.id AND cp.created_by = $2)
       ORDER BY w.name
-    `),
+    `, [isAdmin(user), user?.id || 0]),
     pool.query(`
       SELECT p.*, t.name AS tent_name, u.name AS created_by_name
       FROM competition_points p
       JOIN competition_tents t ON t.id = p.tent_id
       LEFT JOIN users u ON u.id = p.created_by
+      WHERE $1::boolean
+        OR t.created_by = $2
+        OR p.created_by = $2
+        OR EXISTS (SELECT 1 FROM cohorts gc WHERE gc.id = t.cohort_id AND gc.caretaker_user_id = $2)
+        OR EXISTS (SELECT 1 FROM competition_points cp WHERE cp.tent_id = t.id AND cp.created_by = $2)
       ORDER BY COALESCE(p.edited_at, p.created_at) DESC, p.id DESC
       LIMIT 120
-    `)
+    `, [isAdmin(user), user?.id || 0])
   ]);
 
   return {
@@ -1140,21 +1196,41 @@ app.post("/api/competition/tents", async (req, res) => {
   const color = String(req.body.color || "#1e5c46").trim();
   if (!name) return res.status(400).json({ ok: false, error: "Podaj nazwę namiotu" });
   if (id) {
+    if (!(await canManageTent(req.user, id))) {
+      return res.status(403).json({ ok: false, error: "Nie masz dostępu do tego namiotu" });
+    }
     await pool.query("UPDATE competition_tents SET name=$1, color=$2 WHERE id=$3", [name, color, id]);
   } else {
-    await pool.query("INSERT INTO competition_tents (name, color) VALUES ($1,$2)", [name, color]);
+    const cohortId = isAdmin(req.user) ? (Number(req.body.cohort_id || 0) || null) : await myCohortId(req.user);
+    await pool.query("INSERT INTO competition_tents (name, color, cohort_id, created_by) VALUES ($1,$2,$3,$4)", [name, color, cohortId, req.user?.id || null]);
   }
   res.json(await stateFor(req, Number(req.body.game_id || 0) || undefined));
 });
 
 app.delete("/api/competition/tents/:id", async (req, res) => {
-  await pool.query("DELETE FROM competition_tents WHERE id=$1", [Number(req.params.id)]);
+  const id = Number(req.params.id);
+  if (!(await canManageTent(req.user, id))) {
+    return res.status(403).json({ ok: false, error: "Nie masz dostępu do tego namiotu" });
+  }
+  await pool.query("DELETE FROM competition_tents WHERE id=$1", [id]);
   res.json(await stateFor(req, req.query.gameId ? Number(req.query.gameId) : undefined));
 });
 
 app.post("/api/competition/tents/:id/members", async (req, res) => {
   const tentId = Number(req.params.id);
-  const wardIds = Array.isArray(req.body.ward_ids) ? req.body.ward_ids.map(Number).filter(Boolean) : [];
+  if (!(await canManageTent(req.user, tentId))) {
+    return res.status(403).json({ ok: false, error: "Nie masz dostępu do tego namiotu" });
+  }
+  let wardIds = Array.isArray(req.body.ward_ids) ? req.body.ward_ids.map(Number).filter(Boolean) : [];
+  if (!isAdmin(req.user)) {
+    const tentCohort = await pool.query("SELECT cohort_id FROM competition_tents WHERE id=$1", [tentId]);
+    const cohortId = tentCohort.rows[0]?.cohort_id;
+    if (cohortId) {
+      const allowedWards = await pool.query("SELECT id FROM wards WHERE cohort_id=$1", [cohortId]);
+      const allowedIds = new Set(allowedWards.rows.map((row: { id: number }) => row.id));
+      wardIds = wardIds.filter((wardId: number) => allowedIds.has(wardId));
+    }
+  }
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
@@ -1198,6 +1274,9 @@ app.post("/api/competition/points", async (req, res) => {
       [tentId, category, points, reason, Number(existing.rows[0].points), id]
     );
   } else {
+    if (!(await canManageTent(req.user, tentId))) {
+      return res.status(403).json({ ok: false, error: "Nie masz dostępu do tego namiotu" });
+    }
     await pool.query(
       "INSERT INTO competition_points (tent_id, category, points, reason, created_by) VALUES ($1,$2,$3,$4,$5)",
       [tentId, category, points, reason, req.user?.id || null]
