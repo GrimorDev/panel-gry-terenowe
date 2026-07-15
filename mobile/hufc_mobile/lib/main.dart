@@ -624,7 +624,7 @@ class _HufcMobileAppState extends State<HufcMobileApp> with WidgetsBindingObserv
       builder: (context, child) {
         final mediaQuery = MediaQuery.of(context);
         return MediaQuery(
-          data: mediaQuery.copyWith(textScaler: mediaQuery.textScaler.clamp(minScaleFactor: 0.9, maxScaleFactor: 1.15)),
+          data: mediaQuery.copyWith(textScaler: mediaQuery.textScaler.clamp(minScaleFactor: 0.85, maxScaleFactor: 1.0)),
           child: child!,
         );
       },
@@ -768,7 +768,14 @@ class _LoginScreenState extends State<LoginScreen> {
                     elevation: 0,
                     color: Colors.white.withValues(alpha: 0.96),
                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(28)),
-                    child: Padding(
+                    child: Theme(
+                      // Ta karta jest zawsze jasna (biała), niezależnie od trybu ciemny/jasny
+                      // reszty apki — bez tego tekst bez jawnego koloru dziedziczył domyślny
+                      // kolor z ciemnego motywu (prawie biały) i znikał na białym tle karty.
+                      data: _appTheme(brightness: Brightness.light, accent: _colorFromHex('#1F5C46')),
+                      child: Builder(builder: (context) {
+                        final cardTheme = Theme.of(context);
+                        return Padding(
                       padding: const EdgeInsets.all(24),
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -782,15 +789,15 @@ class _LoginScreenState extends State<LoginScreen> {
                                 child: Column(
                                   crossAxisAlignment: CrossAxisAlignment.start,
                                   children: [
-                                    Text('Mój Hufiec', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w900)),
+                                    Text('Mój Hufiec', style: TextStyle(fontSize: 17, fontWeight: FontWeight.w900, color: Colors.black87)),
                                     Text('Aplikacja wychowawcy', style: TextStyle(color: Colors.black54)),
                                   ],
                                 ),
                               ),
                             ],
                           ),
-                          const SizedBox(height: 28),
-                          const Text('Logowanie', style: TextStyle(fontSize: 28, fontWeight: FontWeight.w900)),
+                          const SizedBox(height: 26),
+                          const Text('Logowanie', style: TextStyle(fontSize: 24, fontWeight: FontWeight.w900, color: Colors.black87)),
                           const SizedBox(height: 8),
                           const Text(
                             'Zaloguj się raz z internetem. Potem aplikacja zapisze dane do pracy w terenie.',
@@ -860,10 +867,10 @@ class _LoginScreenState extends State<LoginScreen> {
                             Container(
                               padding: const EdgeInsets.all(14),
                               decoration: BoxDecoration(
-                                color: theme.colorScheme.errorContainer,
+                                color: cardTheme.colorScheme.errorContainer,
                                 borderRadius: BorderRadius.circular(16),
                               ),
-                              child: Text(_error!, style: TextStyle(color: theme.colorScheme.onErrorContainer)),
+                              child: Text(_error!, style: TextStyle(color: cardTheme.colorScheme.onErrorContainer)),
                             ),
                           ],
                           const SizedBox(height: 18),
@@ -886,6 +893,8 @@ class _LoginScreenState extends State<LoginScreen> {
                           ),
                         ],
                       ),
+                        );
+                      }),
                     ),
                   ),
                 ),
