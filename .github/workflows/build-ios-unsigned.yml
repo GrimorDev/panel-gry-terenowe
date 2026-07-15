@@ -45,6 +45,7 @@ jobs:
           data["NSPhotoLibraryUsageDescription"] = "Aplikacja Mój Hufiec używa galerii do wybierania zdjęć."
           data["NSPhotoLibraryAddUsageDescription"] = "Aplikacja Mój Hufiec zapisuje zdjęcia dodane w galerii."
           data["NSLocationWhenInUseUsageDescription"] = "Aplikacja Mój Hufiec używa lokalizacji do dopisywania miejsca wykonania zdjęcia."
+          data["NSFaceIDUsageDescription"] = "Aplikacja Mój Hufiec używa Face ID do szybkiego odblokowania bez wpisywania hasła."
           plist.write_bytes(plistlib.dumps(data))
           PY
 

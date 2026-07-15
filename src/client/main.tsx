@@ -11,7 +11,7 @@ type Caregiver = { id: number; email: string; name: string; role: string; group_
 type Cohort = { id: number; name: string; caretaker: string; caretaker_user_id: number | null; caretaker_user_name: string | null; caretaker_email: string | null; ward_count: number };
 type Ward = { id: number; name: string; age: number; parent_name: string; contact: string; cohort_id: number | null; cohort_name: string | null };
 type Session = { id: number; title: string; session_date: string; location: string; attendance: number; total: number; cohort_id: number | null; cohort_name: string | null; scope: string; owner_user_id: number | null; owner_name: string | null; participant_user_ids: number[]; participant_names: string };
-type Photo = { id: number; session_id: number; session_title: string; session_date: string; session_location: string | null; title: string; color: string; image_data: string | null; mime_type: string | null; share_token: string | null; created_at: string };
+type Photo = { id: number; session_id: number | null; session_title: string | null; session_date: string | null; session_location: string | null; title: string; color: string; image_data: string | null; mime_type: string | null; share_token: string | null; created_at: string };
 type PhotoAlbum = { id: number; name: string; photo_count: number; created_at: string; created_by: number | null };
 type PhotoAlbumItem = { album_id: number; photo_id: number; created_at: string };
 type Game = { id: number; name: string; template: string; game_date: string; start_time: string; duration_minutes: number; remaining_seconds: number; timer_running: boolean; status: string; owner_user_id: number | null; owner_name: string | null; team_count?: number; station_count?: number };
@@ -1028,7 +1028,7 @@ function App() {
     flash(`Punkt ustawiony: ${center.lat.toFixed(5)}, ${center.lng.toFixed(5)}`);
   }
 
-  async function uploadPhotos(sessionId: number, files: File[]) {
+  async function uploadPhotos(sessionId: number | null, files: File[]) {
     if (!state) return;
     const nextState = await runBusy(files.length === 1 ? "Wgrywanie zdjęcia..." : "Wgrywanie zdjęć...", async () => {
       let next = state;
@@ -1036,7 +1036,7 @@ function App() {
         const image = await imageFileToDataUrl(file);
         next = await api<AppState>("/api/photos", {
           method: "POST",
-          body: JSON.stringify({ session_id: sessionId, game_id: state.game.id, ...image })
+          body: JSON.stringify({ ...(sessionId ? { session_id: sessionId } : {}), game_id: state.game.id, ...image })
         });
       }
       return next;
@@ -1269,13 +1269,17 @@ function CompetitionView({ state, user, setState, runBusy }: { state: AppState; 
   function renderHistoryRow(point: CompetitionPoint) {
     const edited = Boolean(point.edited_at);
     const hasOldValue = edited && point.previous_points != null && point.previous_points !== point.points;
+    const dateInfo = `Wystawiono ${dateLabel(point.created_at)}${edited && point.edited_at ? ` · edytowano ${dateLabel(point.edited_at)}` : ""} · ${point.created_by_name || "system"}`;
     return <article key={point.id} className="point-row">
-      <div><strong>{point.tent_name} · {point.category}</strong>{edited && <span className="edited-badge">Edytowano</span>}<p>{point.reason}</p><small>{dateLabel(point.created_at)} · {point.created_by_name || "system"}</small></div>
-      <div className="point-values">
-        <span className={point.points >= 0 ? "positive" : "negative"}>{point.points > 0 ? "+" : ""}{point.points} pkt</span>
-        {hasOldValue && <small className="point-old-value">{point.previous_points! > 0 ? "+" : ""}{point.previous_points} pkt</small>}
+      <div><strong>{point.tent_name} · {point.category}</strong>{edited && <span className="edited-badge">Edytowano</span>}<p>{point.reason}</p></div>
+      <div className="point-footer">
+        <small>{dateInfo}</small>
+        <div className="point-values">
+          <span className={point.points >= 0 ? "positive" : "negative"}>{point.points > 0 ? "+" : ""}{point.points} pkt</span>
+          {hasOldValue && <small className="point-old-value">{point.previous_points! > 0 ? "+" : ""}{point.previous_points} pkt</small>}
+        </div>
+        {user.role === "administrator" && <div className="point-actions"><Button type="button" onClick={() => editPoint(point.id)}>Edytuj</Button><Button variant="danger" onClick={() => { if (window.confirm(`Usunąć wpis "${point.category}" (${point.points > 0 ? "+" : ""}${point.points} pkt)? Namiot straci te punkty, tej operacji nie da się cofnąć.`)) deletePoint(point.id); }}>Usuń</Button></div>}
       </div>
-      {user.role === "administrator" && <><Button type="button" onClick={() => editPoint(point.id)}>Edytuj</Button><Button variant="danger" onClick={() => deletePoint(point.id)}>Usuń</Button></>}
     </article>;
   }
 
@@ -1468,14 +1472,14 @@ async function sharePhoto(photo: Photo) {
   field.remove();
 }
 
-function Gallery({ state, setState, runBusy, onUploadPhotos, onEditPhoto, onShareInternal, onDeletePhoto }: { state: AppState; setState: (state: AppState) => void; runBusy: BusyRunner; onUploadPhotos: (sessionId: number, files: File[]) => void; onEditPhoto: (photo: Photo) => void; onShareInternal: (photo: Photo) => void; onDeletePhoto: (id: number) => void }) {
+function Gallery({ state, setState, runBusy, onUploadPhotos, onEditPhoto, onShareInternal, onDeletePhoto }: { state: AppState; setState: (state: AppState) => void; runBusy: BusyRunner; onUploadPhotos: (sessionId: number | null, files: File[]) => void; onEditPhoto: (photo: Photo) => void; onShareInternal: (photo: Photo) => void; onDeletePhoto: (id: number) => void }) {
   const [openId, setOpenId] = useState<number | null>(null);
   const [tab, setTab] = useState<"all" | "albums">("all");
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
   const [albumModal, setAlbumModal] = useState(false);
   const [albumName, setAlbumName] = useState("");
   const [selectedAlbumId, setSelectedAlbumId] = useState<number | null>(null);
-  const photos = useMemo(() => state.photos.filter((photo) => photo.image_data).sort((a, b) => Date.parse(b.created_at || b.session_date) - Date.parse(a.created_at || a.session_date)), [state.photos]);
+  const photos = useMemo(() => state.photos.filter((photo) => photo.image_data).sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at)), [state.photos]);
   const defaultSession = useMemo(() => [...state.sessions].sort((a, b) => Date.parse(b.session_date) - Date.parse(a.session_date))[0], [state.sessions]);
   const openIndex = openId ? photos.findIndex((photo) => photo.id === openId) : -1;
   const openPhoto = openIndex >= 0 ? photos[openIndex] : null;
@@ -1484,7 +1488,7 @@ function Gallery({ state, setState, runBusy, onUploadPhotos, onEditPhoto, onShar
   const groupedPhotos = useMemo(() => {
     const groups = new Map<string, Photo[]>();
     for (const photo of photos) {
-      const key = String(photo.created_at || photo.session_date).slice(0, 10);
+      const key = String(photo.created_at).slice(0, 10);
       groups.set(key, [...(groups.get(key) || []), photo]);
     }
     return [...groups.entries()];
@@ -1508,11 +1512,7 @@ function Gallery({ state, setState, runBusy, onUploadPhotos, onEditPhoto, onShar
   const uploadToDefaultSession = (files: FileList | null) => {
     const selected = Array.from(files || []);
     if (!selected.length) return;
-    if (!defaultSession) {
-      alert("Najpierw zaplanuj zbiórkę, żeby zdjęcia miały miejsce w galerii.");
-      return;
-    }
-    onUploadPhotos(defaultSession.id, selected);
+    onUploadPhotos(defaultSession ? defaultSession.id : null, selected);
   };
   const togglePhoto = (id: number) => setSelectedIds((current) => current.includes(id) ? current.filter((item) => item !== id) : [...current, id]);
   const clearSelection = () => setSelectedIds([]);
@@ -1656,7 +1656,7 @@ function GalleryPhotoCard({ photo, selected, onToggle, onOpen, onEdit, onShareIn
       <button className="gallery-menu-button" type="button" aria-label="Opcje zdjęcia" onClick={() => { setMenuOpen(!menuOpen); setInfoOpen(false); }}>•••</button>
       {infoOpen && <div className="photo-info-menu gallery-popover">
         <strong>{photo.title}</strong>
-        <span>{dateLabel(photo.created_at || photo.session_date)}</span>
+        <span>{dateLabel(photo.created_at)}</span>
         <span>{photo.session_title}</span>
         {photo.session_location && <span>{photo.session_location}</span>}
         {photo.mime_type && <small>{photo.mime_type}</small>}
@@ -1687,7 +1687,7 @@ function GalleryLightbox({ photo, current, total, onClose, onPrev, onNext, onSha
     <button className="lightbox-nav prev" aria-label="Poprzednie zdjęcie" onClick={onPrev}><span>Poprzednie</span></button>
     <figure>
       {photo.image_data && <img src={photo.image_data} alt={photo.title} />}
-      <figcaption><strong>{photo.title}</strong><span>{current}/{total} · {dateLabel(photo.created_at || photo.session_date)}</span></figcaption>
+      <figcaption><strong>{photo.title}</strong><span>{current}/{total} · {dateLabel(photo.created_at)}</span></figcaption>
     </figure>
     <button className="lightbox-nav next" aria-label="Następne zdjęcie" onClick={onNext}><span>Następne</span></button>
     <div className="lightbox-actions"><Button onClick={onShare}>Udostępnij</Button></div>
@@ -1907,7 +1907,7 @@ function PhotoTile({ photo, onOpen, onEdit, onShareInternal, onDelete }: { photo
     {showControls && <button className="photo-info-button" type="button" aria-label="Informacje o zdjęciu" onClick={() => { setInfoOpen(!infoOpen); setMenuOpen(false); }}>i</button>}
     {infoOpen && <div className="photo-info-menu">
       <strong>{photo.title}</strong>
-      <span>{dateLabel(photo.created_at || photo.session_date)}</span>
+      <span>{dateLabel(photo.created_at)}</span>
       <span>{photo.session_title}</span>
       {photo.mime_type && <small>{photo.mime_type}</small>}
     </div>}

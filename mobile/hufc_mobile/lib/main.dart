@@ -8,6 +8,7 @@ import 'package:flutter_background_service/flutter_background_service.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:flutter_slidable/flutter_slidable.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:local_auth/local_auth.dart';
 import 'package:permission_handler/permission_handler.dart';
 
 import 'src/core/api_client.dart';
@@ -182,6 +183,11 @@ class _HufcMobileAppState extends State<HufcMobileApp> with WidgetsBindingObserv
   bool _pushNotifications = false;
   bool _photoLocation = false;
   bool _notificationsReady = false;
+  bool _biometricEnabled = false;
+  bool _biometricAvailable = false;
+  bool _locked = false;
+  List<String> _dashboardTiles = _defaultDashboardTiles;
+  final LocalAuthentication _localAuth = LocalAuthentication();
   StreamSubscription<List<ConnectivityResult>>? _connectivitySubscription;
   Timer? _realtimeTimer;
   int _knownMessageId = 0;
@@ -209,7 +215,19 @@ class _HufcMobileAppState extends State<HufcMobileApp> with WidgetsBindingObserv
     if (state == AppLifecycleState.resumed) {
       unawaited(_recoverConnection(showNotifications: true));
       _startRealtimePolling();
+      unawaited(_refreshPushPermissionStatus());
     }
+  }
+
+  bool _pushBlockedBySystem = false;
+
+  /// Android/iOS odmawiają pokazać okno z prośbą o zgodę ponownie po tym, jak user
+  /// raz je odrzuci — żadna zmiana w kodzie tego nie obejdzie, jedyna droga to
+  /// ręczne wejście w ustawienia systemowe. Sprawdzamy to, żeby pokazać na Pulpicie
+  /// jeden przycisk zamiast każdego tłumaczyć, gdzie szukać tego w telefonie.
+  Future<void> _refreshPushPermissionStatus() async {
+    final status = await Permission.notification.status;
+    if (mounted) setState(() => _pushBlockedBySystem = !_pushNotifications && status.isPermanentlyDenied);
   }
 
   Future<void> _boot() async {
@@ -219,10 +237,23 @@ class _HufcMobileAppState extends State<HufcMobileApp> with WidgetsBindingObserv
     final savedEmailNotifications = await widget.store.get('notify_email');
     final savedPushNotifications = await widget.store.get('notify_push');
     final savedPhotoLocation = await widget.store.get('photo_location');
+    final savedBiometric = await widget.store.get('biometric_unlock');
+    final savedDashboardTiles = await widget.store.get('dashboard_tiles');
     if (savedApiBaseUrl != null) widget.api.setBaseUrl(savedApiBaseUrl);
     final auth = await widget.store.readAuth();
     final cached = await widget.store.readState();
     final online = await _isOnline();
+    bool biometricAvailable = false;
+    try {
+      // Niektóre telefony/wersje wtyczki zwracają true tylko na jednym z tych dwóch
+      // sprawdzeń mimo że sprzęt faktycznie obsługuje odcisk/Face ID - łączymy je przez
+      // "lub", żeby nie chować przełącznika bez potrzeby.
+      final supported = await _localAuth.isDeviceSupported();
+      final canCheck = await _localAuth.canCheckBiometrics;
+      biometricAvailable = supported || canCheck;
+    } catch (_) {}
+    final biometricEnabled = savedBiometric == 'true' && biometricAvailable;
+    final dashboardTiles = _resolveDashboardTiles(savedDashboardTiles, cached, auth?.user.id ?? 0);
     setState(() {
       _session = auth;
       _state = cached;
@@ -233,6 +264,10 @@ class _HufcMobileAppState extends State<HufcMobileApp> with WidgetsBindingObserv
       _emailNotifications = savedEmailNotifications != 'false';
       _pushNotifications = savedPushNotifications == 'true';
       _photoLocation = savedPhotoLocation == 'true';
+      _biometricAvailable = biometricAvailable;
+      _biometricEnabled = biometricEnabled;
+      _locked = auth != null && biometricEnabled;
+      _dashboardTiles = dashboardTiles;
       _booting = false;
     });
     await _refreshQueue();
@@ -246,6 +281,12 @@ class _HufcMobileAppState extends State<HufcMobileApp> with WidgetsBindingObserv
       await _sync(showNotifications: false);
       _startRealtimePolling();
     }
+    // Pierwsze uruchomienie (nic jeszcze nie zapisane) - domyślnie włącz i od razu poproś
+    // system o zgody, zamiast czekać aż ktoś sam wejdzie w Ustawienia i przełączy suwak.
+    // Jeśli telefon odmówi zgody, przełącznik i tak wróci na wyłączony.
+    if (savedPushNotifications == null) unawaited(_setPushNotifications(true));
+    if (savedPhotoLocation == null) unawaited(_setPhotoLocation(true));
+    unawaited(_refreshPushPermissionStatus());
   }
 
   Future<bool> _isOnline() async {
@@ -355,6 +396,57 @@ class _HufcMobileAppState extends State<HufcMobileApp> with WidgetsBindingObserv
     setState(() => _photoLocation = enabled);
   }
 
+  Future<void> _setBiometricEnabled(bool value) async {
+    var enabled = value;
+    if (value) {
+      // Wymagamy udanego odcisku/Face ID zanim faktycznie włączymy odblokowanie —
+      // inaczej ktoś mógłby zaznaczyć przełącznik i sam się zablokować z telefonu
+      // bez zarejestrowanej biometrii.
+      try {
+        enabled = await _localAuth.authenticate(
+          localizedReason: 'Potwierdź, żeby włączyć odblokowanie aplikacji',
+          options: const AuthenticationOptions(biometricOnly: true, stickyAuth: true),
+        );
+      } catch (_) {
+        enabled = false;
+      }
+      if (!enabled && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Nie udało się potwierdzić tożsamości. Odblokowanie zostaje wyłączone.')));
+      }
+    }
+    await widget.store.put('biometric_unlock', enabled.toString());
+    if (!mounted) return;
+    setState(() => _biometricEnabled = enabled);
+  }
+
+  Future<void> _setDashboardTiles(List<String> tiles) async {
+    // Wybór kafelków to preferencja urządzenia/konta - zapisujemy ją lokalnie od razu,
+    // żeby UI trzymał wybór natychmiast i nie znikał przy kolejnym pełnym pobraniu stanu
+    // z serwera. Zapis do bazy jest tylko "przy okazji", w tle, best-effort.
+    await widget.store.put('dashboard_tiles', jsonEncode(tiles));
+    if (mounted) setState(() => _dashboardTiles = tiles);
+    if (_session == null || !_online) return;
+    try {
+      await widget.api.postState(_session!.token, '/api/profile/dashboard-tiles', {'tiles': tiles, 'game_id': _state?.game.id ?? 0});
+    } catch (_) {
+      // Brak połączenia albo serwer jeszcze nie ma tego endpointu - lokalny wybór
+      // i tak już jest zapisany, spróbujemy zsynchronizować przy kolejnej okazji.
+    }
+  }
+
+  Future<void> _unlockWithBiometrics() async {
+    bool unlocked;
+    try {
+      unlocked = await _localAuth.authenticate(
+        localizedReason: 'Odblokuj Mój Hufiec',
+        options: const AuthenticationOptions(biometricOnly: true, stickyAuth: true),
+      );
+    } catch (_) {
+      unlocked = false;
+    }
+    if (unlocked && mounted) setState(() => _locked = false);
+  }
+
   Future<void> _logout() async {
     _realtimeTimer?.cancel();
     await widget.store.clearAuth();
@@ -363,7 +455,10 @@ class _HufcMobileAppState extends State<HufcMobileApp> with WidgetsBindingObserv
       _lastTimerNotificationGameId = null;
     }
     if (!mounted) return;
-    setState(() => _session = null);
+    setState(() {
+      _session = null;
+      _locked = false;
+    });
   }
 
   Future<void> _sync({bool showNotifications = false}) async {
@@ -619,7 +714,7 @@ class _HufcMobileAppState extends State<HufcMobileApp> with WidgetsBindingObserv
       builder: (context, child) {
         final mediaQuery = MediaQuery.of(context);
         return MediaQuery(
-          data: mediaQuery.copyWith(textScaler: mediaQuery.textScaler.clamp(minScaleFactor: 0.9, maxScaleFactor: 1.15)),
+          data: mediaQuery.copyWith(textScaler: mediaQuery.textScaler.clamp(minScaleFactor: 0.85, maxScaleFactor: 1.0)),
           child: child!,
         );
       },
@@ -631,7 +726,9 @@ class _HufcMobileAppState extends State<HufcMobileApp> with WidgetsBindingObserv
                   apiBaseUrl: _apiBaseUrl,
                   onApiBaseUrlChanged: _setApiBaseUrl,
                 )
-              : ShellScreen(
+              : _locked
+                  ? AppLockScreen(userName: _session!.user.name, onUnlock: _unlockWithBiometrics, onUseLogout: _logout)
+                  : ShellScreen(
                   session: _session!,
                   state: _state,
                   apiBaseUrl: _apiBaseUrl,
@@ -653,6 +750,12 @@ class _HufcMobileAppState extends State<HufcMobileApp> with WidgetsBindingObserv
                   onEmailNotificationsChanged: _setEmailNotifications,
                   onPushNotificationsChanged: _setPushNotifications,
                   onPhotoLocationChanged: _setPhotoLocation,
+                  pushBlockedBySystem: _pushBlockedBySystem,
+                  biometricAvailable: _biometricAvailable,
+                  biometricEnabled: _biometricEnabled,
+                  onBiometricEnabledChanged: _setBiometricEnabled,
+                  dashboardTiles: _dashboardTiles,
+                  onDashboardTilesChanged: _setDashboardTiles,
                   openConversationKey: _pendingConversationKey,
                   onOpenConversationConsumed: _consumePendingConversation,
                 ),
@@ -763,7 +866,14 @@ class _LoginScreenState extends State<LoginScreen> {
                     elevation: 0,
                     color: Colors.white.withValues(alpha: 0.96),
                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(28)),
-                    child: Padding(
+                    child: Theme(
+                      // Ta karta jest zawsze jasna (biała), niezależnie od trybu ciemny/jasny
+                      // reszty apki — bez tego tekst bez jawnego koloru dziedziczył domyślny
+                      // kolor z ciemnego motywu (prawie biały) i znikał na białym tle karty.
+                      data: _appTheme(brightness: Brightness.light, accent: _colorFromHex('#1F5C46')),
+                      child: Builder(builder: (context) {
+                        final cardTheme = Theme.of(context);
+                        return Padding(
                       padding: const EdgeInsets.all(24),
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -777,15 +887,15 @@ class _LoginScreenState extends State<LoginScreen> {
                                 child: Column(
                                   crossAxisAlignment: CrossAxisAlignment.start,
                                   children: [
-                                    Text('Mój Hufiec', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w900)),
+                                    Text('Mój Hufiec', style: TextStyle(fontSize: 17, fontWeight: FontWeight.w900, color: Colors.black87)),
                                     Text('Aplikacja wychowawcy', style: TextStyle(color: Colors.black54)),
                                   ],
                                 ),
                               ),
                             ],
                           ),
-                          const SizedBox(height: 28),
-                          const Text('Logowanie', style: TextStyle(fontSize: 28, fontWeight: FontWeight.w900)),
+                          const SizedBox(height: 26),
+                          const Text('Logowanie', style: TextStyle(fontSize: 24, fontWeight: FontWeight.w900, color: Colors.black87)),
                           const SizedBox(height: 8),
                           const Text(
                             'Zaloguj się raz z internetem. Potem aplikacja zapisze dane do pracy w terenie.',
@@ -855,10 +965,10 @@ class _LoginScreenState extends State<LoginScreen> {
                             Container(
                               padding: const EdgeInsets.all(14),
                               decoration: BoxDecoration(
-                                color: theme.colorScheme.errorContainer,
+                                color: cardTheme.colorScheme.errorContainer,
                                 borderRadius: BorderRadius.circular(16),
                               ),
-                              child: Text(_error!, style: TextStyle(color: theme.colorScheme.onErrorContainer)),
+                              child: Text(_error!, style: TextStyle(color: cardTheme.colorScheme.onErrorContainer)),
                             ),
                           ],
                           const SizedBox(height: 18),
@@ -881,12 +991,66 @@ class _LoginScreenState extends State<LoginScreen> {
                           ),
                         ],
                       ),
+                        );
+                      }),
                     ),
                   ),
                 ),
               ),
             ),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+class AppLockScreen extends StatefulWidget {
+  const AppLockScreen({super.key, required this.userName, required this.onUnlock, required this.onUseLogout});
+
+  final String userName;
+  final Future<void> Function() onUnlock;
+  final VoidCallback onUseLogout;
+
+  @override
+  State<AppLockScreen> createState() => _AppLockScreenState();
+}
+
+class _AppLockScreenState extends State<AppLockScreen> {
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) => widget.onUnlock());
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Scaffold(
+      body: SafeArea(
+        child: Center(
+          child: Padding(
+            padding: const EdgeInsets.all(24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const _BrandLogoMark(size: 64),
+                const SizedBox(height: 20),
+                Text('Cześć, ${widget.userName}', style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w900), textAlign: TextAlign.center),
+                const SizedBox(height: 6),
+                Text('Aplikacja jest zablokowana', style: TextStyle(color: theme.colorScheme.onSurfaceVariant)),
+                const SizedBox(height: 28),
+                FilledButton.icon(
+                  onPressed: widget.onUnlock,
+                  icon: const Icon(Icons.fingerprint),
+                  label: const Text('Odblokuj'),
+                  style: FilledButton.styleFrom(minimumSize: const Size(220, 54)),
+                ),
+                const SizedBox(height: 12),
+                TextButton(onPressed: widget.onUseLogout, child: const Text('Wyloguj się zamiast tego')),
+              ],
+            ),
+          ),
         ),
       ),
     );
@@ -917,6 +1081,12 @@ class ShellScreen extends StatefulWidget {
     required this.onEmailNotificationsChanged,
     required this.onPushNotificationsChanged,
     required this.onPhotoLocationChanged,
+    required this.pushBlockedBySystem,
+    required this.biometricAvailable,
+    required this.biometricEnabled,
+    required this.onBiometricEnabledChanged,
+    required this.dashboardTiles,
+    required this.onDashboardTilesChanged,
     this.openConversationKey,
     required this.onOpenConversationConsumed,
   });
@@ -942,6 +1112,12 @@ class ShellScreen extends StatefulWidget {
   final ValueChanged<bool> onEmailNotificationsChanged;
   final ValueChanged<bool> onPushNotificationsChanged;
   final ValueChanged<bool> onPhotoLocationChanged;
+  final bool pushBlockedBySystem;
+  final bool biometricAvailable;
+  final bool biometricEnabled;
+  final ValueChanged<bool> onBiometricEnabledChanged;
+  final List<String> dashboardTiles;
+  final ValueChanged<List<String>> onDashboardTilesChanged;
   final String? openConversationKey;
   final VoidCallback onOpenConversationConsumed;
 
@@ -985,16 +1161,16 @@ class _ShellScreenState extends State<ShellScreen> {
   Widget build(BuildContext context) {
     final state = widget.state;
     final pages = <_MobilePage>[
-      _MobilePage('Pulpit', Icons.dashboard_outlined, Icons.dashboard, DashboardPage(session: widget.session, state: state, online: widget.online, queueCount: widget.queueCount, onNavigate: _selectTab)),
+      _MobilePage('Pulpit', Icons.dashboard_outlined, Icons.dashboard, DashboardPage(session: widget.session, state: state, online: widget.online, queueCount: widget.queueCount, onNavigate: _selectTab, pushBlockedBySystem: widget.pushBlockedBySystem, dashboardTiles: widget.dashboardTiles, onDashboardTilesChanged: widget.onDashboardTilesChanged)),
       _MobilePage('Podopieczni', Icons.person_outline, Icons.person, WardsPage(state: state, session: widget.session, onMutate: widget.onMutate, onDelete: widget.onDelete)),
       _MobilePage('Grupy', Icons.groups_outlined, Icons.groups, GroupsPage(state: state)),
       _MobilePage('Zbiórki', Icons.calendar_month_outlined, Icons.calendar_month, MeetingsPage(state: state, session: widget.session, onMutate: widget.onMutate, onDelete: widget.onDelete)),
-      _MobilePage('Galeria', Icons.photo_library_outlined, Icons.photo_library, MobileGalleryPage(state: state, session: widget.session, apiBaseUrl: widget.apiBaseUrl, onMutate: widget.onMutate)),
+      _MobilePage('Galeria', Icons.photo_library_outlined, Icons.photo_library, MobileGalleryPage(state: state, session: widget.session, apiBaseUrl: widget.apiBaseUrl, onMutate: widget.onMutate, onDelete: widget.onDelete)),
       _MobilePage('Wiadomości', Icons.chat_bubble_outline, Icons.chat_bubble, MessagesPage(state: state, session: widget.session, apiBaseUrl: widget.apiBaseUrl, onMutate: widget.onMutate, onConversationModeChanged: (value) => setState(() => _chatFocused = value), openConversationKey: widget.openConversationKey, onOpenConversationConsumed: widget.onOpenConversationConsumed)),
       _MobilePage('Gry', Icons.flag_outlined, Icons.flag, GamesPage(state: state, session: widget.session, onMutate: widget.onMutate, onDelete: widget.onDelete, onLoadGame: widget.onLoadGame)),
       _MobilePage('Współzawodnictwo', Icons.emoji_events_outlined, Icons.emoji_events, CompetitionPage(state: state, session: widget.session, onMutate: widget.onMutate, onDelete: widget.onDelete)),
       _MobilePage('Sync', Icons.cloud_sync_outlined, Icons.cloud_sync, SyncPage(online: widget.online, syncing: widget.syncing, queueCount: widget.queueCount, onSync: widget.onSync, onLogout: widget.onLogout)),
-      _MobilePage('Ustawienia', Icons.settings_outlined, Icons.settings, SettingsPage(session: widget.session, apiBaseUrl: widget.apiBaseUrl, queueCount: widget.queueCount, themeMode: widget.themeMode, accentHex: widget.accentHex, emailNotifications: widget.emailNotifications, pushNotifications: widget.pushNotifications, photoLocation: widget.photoLocation, onThemeModeChanged: widget.onThemeModeChanged, onAccentChanged: widget.onAccentChanged, onEmailNotificationsChanged: widget.onEmailNotificationsChanged, onPushNotificationsChanged: widget.onPushNotificationsChanged, onPhotoLocationChanged: widget.onPhotoLocationChanged, onLogout: widget.onLogout, onSync: widget.onSync)),
+      _MobilePage('Ustawienia', Icons.settings_outlined, Icons.settings, SettingsPage(session: widget.session, apiBaseUrl: widget.apiBaseUrl, queueCount: widget.queueCount, themeMode: widget.themeMode, accentHex: widget.accentHex, emailNotifications: widget.emailNotifications, pushNotifications: widget.pushNotifications, photoLocation: widget.photoLocation, biometricAvailable: widget.biometricAvailable, biometricEnabled: widget.biometricEnabled, onThemeModeChanged: widget.onThemeModeChanged, onAccentChanged: widget.onAccentChanged, onEmailNotificationsChanged: widget.onEmailNotificationsChanged, onPushNotificationsChanged: widget.onPushNotificationsChanged, onPhotoLocationChanged: widget.onPhotoLocationChanged, onBiometricEnabledChanged: widget.onBiometricEnabledChanged, onLogout: widget.onLogout, onSync: widget.onSync)),
       if (widget.session.user.isAdmin)
         _MobilePage('Wychowawcy i grupy', Icons.shield_outlined, Icons.shield, StaffPage(state: state, session: widget.session, onMutate: widget.onMutate, onDelete: widget.onDelete)),
     ];
@@ -1157,34 +1333,189 @@ class _MobilePage {
   final Widget child;
 }
 
+class _DashboardTileSpec {
+  const _DashboardTileSpec(this.key, this.label, this.icon, this.navIndex);
+  final String key;
+  final String label;
+  final IconData icon;
+  final int navIndex;
+}
+
+const _dashboardTileCatalog = <String, _DashboardTileSpec>{
+  'dzieci': _DashboardTileSpec('dzieci', 'Dzieci', Icons.person_outline, 1),
+  'grupy': _DashboardTileSpec('grupy', 'Grupy', Icons.groups_outlined, 2),
+  'zbiorki': _DashboardTileSpec('zbiorki', 'Zbiórki', Icons.calendar_month_outlined, 3),
+  'galeria': _DashboardTileSpec('galeria', 'Galeria', Icons.photo_library_outlined, 4),
+  'wiadomosci': _DashboardTileSpec('wiadomosci', 'Wiadomości', Icons.chat_bubble_outline, 5),
+  'gry': _DashboardTileSpec('gry', 'Gry', Icons.flag_outlined, 6),
+  'wspolzawodnictwo': _DashboardTileSpec('wspolzawodnictwo', 'Współzawodnictwo', Icons.emoji_events_outlined, 7),
+};
+const _defaultDashboardTiles = ['dzieci', 'wspolzawodnictwo', 'wiadomosci'];
+
+int _dashboardTileCount(AppState? state, String key) {
+  if (state == null) return 0;
+  switch (key) {
+    case 'dzieci':
+      return jsonList(state.raw['wards']).length;
+    case 'grupy':
+      return jsonList(state.raw['cohorts']).length;
+    case 'zbiorki':
+      return jsonList(state.raw['sessions']).length;
+    case 'galeria':
+      return jsonList(state.raw['photos']).length;
+    case 'wiadomosci':
+      return jsonList(state.raw['messages']).length;
+    case 'gry':
+      return jsonList(state.raw['games']).length;
+    case 'wspolzawodnictwo':
+      return jsonList(state.raw['competition_tents']).length;
+    default:
+      return 0;
+  }
+}
+
+List<String> _currentDashboardTiles(AppState? state, int userId) {
+  if (state == null) return _defaultDashboardTiles;
+  final caregivers = jsonList(state.raw['caregivers']);
+  final me = caregivers.firstWhere((item) => jsonInt(item['id']) == userId, orElse: () => <String, dynamic>{});
+  final raw = me['dashboard_tiles'];
+  if (raw == null) return _defaultDashboardTiles;
+  try {
+    final decoded = jsonDecode(jsonString(raw));
+    if (decoded is List) {
+      final tiles = decoded.map((item) => item.toString()).where(_dashboardTileCatalog.containsKey).toList();
+      if (tiles.isNotEmpty) return tiles;
+    }
+  } catch (_) {}
+  return _defaultDashboardTiles;
+}
+
+List<String> _resolveDashboardTiles(String? saved, AppState? state, int userId) {
+  if (saved != null) {
+    try {
+      final decoded = jsonDecode(saved);
+      if (decoded is List) {
+        final tiles = decoded.map((item) => item.toString()).where(_dashboardTileCatalog.containsKey).toList();
+        if (tiles.isNotEmpty) return tiles;
+      }
+    } catch (_) {}
+  }
+  return _currentDashboardTiles(state, userId);
+}
+
 class DashboardPage extends StatelessWidget {
-  const DashboardPage({super.key, required this.session, required this.state, required this.online, required this.queueCount, required this.onNavigate});
+  const DashboardPage({super.key, required this.session, required this.state, required this.online, required this.queueCount, required this.onNavigate, required this.pushBlockedBySystem, required this.dashboardTiles, required this.onDashboardTilesChanged});
 
   final AuthSession session;
   final AppState? state;
   final bool online;
   final int queueCount;
   final ValueChanged<int> onNavigate;
+  final bool pushBlockedBySystem;
+  final List<String> dashboardTiles;
+  final ValueChanged<List<String>> onDashboardTilesChanged;
+
+  Future<void> _editTiles(BuildContext context, List<String> current) async {
+    var selected = current.toSet();
+    await showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      isScrollControlled: true,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setModalState) => Padding(
+          padding: EdgeInsets.fromLTRB(20, 6, 20, MediaQuery.of(context).viewInsets.bottom + 24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              const Text('Kafelki pulpitu', style: TextStyle(fontSize: 20, fontWeight: FontWeight.w900)),
+              const SizedBox(height: 4),
+              Text('Wybierz do 6 skrótów, które chcesz widzieć na górze pulpitu. Zapisuje się na Twoim koncie.', style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant, fontSize: 12)),
+              const SizedBox(height: 10),
+              for (final spec in _dashboardTileCatalog.values)
+                CheckboxListTile(
+                  contentPadding: EdgeInsets.zero,
+                  secondary: Icon(spec.icon),
+                  title: Text(spec.label),
+                  value: selected.contains(spec.key),
+                  onChanged: (value) => setModalState(() {
+                    if (value == true) {
+                      if (selected.length < 6) selected.add(spec.key);
+                    } else {
+                      selected.remove(spec.key);
+                    }
+                  }),
+                ),
+              const SizedBox(height: 10),
+              FilledButton(
+                onPressed: selected.isEmpty
+                    ? null
+                    : () {
+                        onDashboardTilesChanged(selected.toList());
+                        Navigator.of(context).pop();
+                      },
+                child: const Text('Zapisz'),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
     final game = state?.game;
-    final wards = state == null ? <Map<String, dynamic>>[] : jsonList(state!.raw['wards']);
-    final tents = state == null ? <Map<String, dynamic>>[] : jsonList(state!.raw['competition_tents']);
     final sessions = state == null ? <Map<String, dynamic>>[] : jsonList(state!.raw['sessions']);
-    final messages = state == null ? <Map<String, dynamic>>[] : jsonList(state!.raw['messages']);
+    final tileKeys = dashboardTiles;
+    final tileWidth = (MediaQuery.of(context).size.width - 32 - 20) / 3;
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
         HufcHero(name: session.user.name, subtitle: online ? 'Połączono z serwerem' : 'Tryb offline - zapis lokalny'),
+        if (pushBlockedBySystem) ...[
+          const SizedBox(height: 12),
+          Container(
+            padding: const EdgeInsets.all(14),
+            decoration: BoxDecoration(
+              color: Theme.of(context).colorScheme.errorContainer,
+              borderRadius: BorderRadius.circular(18),
+            ),
+            child: Row(children: [
+              Icon(Icons.notifications_off_outlined, color: Theme.of(context).colorScheme.onErrorContainer),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  'Telefon zablokował powiadomienia dla tej apki.',
+                  style: TextStyle(color: Theme.of(context).colorScheme.onErrorContainer, fontWeight: FontWeight.w800),
+                ),
+              ),
+              const TextButton(onPressed: openAppSettings, child: Text('Ustawienia')),
+            ]),
+          ),
+        ],
         const SizedBox(height: 16),
         Row(children: [
-          Expanded(child: _MetricTile(label: 'Dzieci', value: '${wards.length}', icon: Icons.person_outline, onTap: () => onNavigate(1))),
-          const SizedBox(width: 10),
-          Expanded(child: _MetricTile(label: 'Współzawodnictwo', value: '${tents.length}', icon: Icons.emoji_events_outlined, onTap: () => onNavigate(7))),
-          const SizedBox(width: 10),
-          Expanded(child: _MetricTile(label: 'Wiadomości', value: '${messages.length}', icon: Icons.chat_bubble_outline, onTap: () => onNavigate(5))),
+          const Expanded(child: Text('Skróty', style: TextStyle(fontWeight: FontWeight.w800))),
+          TextButton.icon(onPressed: () => _editTiles(context, tileKeys), icon: const Icon(Icons.tune, size: 18), label: const Text('Edytuj kafelki')),
         ]),
+        Wrap(
+          spacing: 10,
+          runSpacing: 10,
+          children: [
+            for (final key in tileKeys)
+              if (_dashboardTileCatalog.containsKey(key))
+                SizedBox(
+                  width: tileWidth,
+                  child: _MetricTile(
+                    label: _dashboardTileCatalog[key]!.label,
+                    value: '${_dashboardTileCount(state, key)}',
+                    icon: _dashboardTileCatalog[key]!.icon,
+                    onTap: () => onNavigate(_dashboardTileCatalog[key]!.navIndex),
+                  ),
+                ),
+          ],
+        ),
         const SizedBox(height: 12),
         _InfoBlock(title: 'Aktywna gra', value: game?.name ?? 'Brak danych', icon: Icons.flag_outlined),
         const SizedBox(height: 12),
@@ -1227,6 +1558,9 @@ class SettingsPage extends StatefulWidget {
     required this.onEmailNotificationsChanged,
     required this.onPushNotificationsChanged,
     required this.onPhotoLocationChanged,
+    required this.biometricAvailable,
+    required this.biometricEnabled,
+    required this.onBiometricEnabledChanged,
     required this.onLogout,
     required this.onSync,
   });
@@ -1239,11 +1573,14 @@ class SettingsPage extends StatefulWidget {
   final bool emailNotifications;
   final bool pushNotifications;
   final bool photoLocation;
+  final bool biometricAvailable;
+  final bool biometricEnabled;
   final ValueChanged<ThemeMode> onThemeModeChanged;
   final ValueChanged<String> onAccentChanged;
   final ValueChanged<bool> onEmailNotificationsChanged;
   final ValueChanged<bool> onPushNotificationsChanged;
   final ValueChanged<bool> onPhotoLocationChanged;
+  final ValueChanged<bool> onBiometricEnabledChanged;
   final VoidCallback onLogout;
   final Future<void> Function() onSync;
 
@@ -1411,6 +1748,16 @@ class _SettingsPageState extends State<SettingsPage> {
         },
         child: const Text('Zmień hasło'),
       ),
+      if (widget.biometricAvailable) ...[
+        const SizedBox(height: 8),
+        SwitchListTile(
+          contentPadding: EdgeInsets.zero,
+          title: const Text('Odblokowanie odciskiem / Face ID', style: TextStyle(fontWeight: FontWeight.w900)),
+          subtitle: const Text('Po otwarciu apki na tym telefonie zamiast hasła wystarczy potwierdzić tożsamość biometrią.'),
+          value: widget.biometricEnabled,
+          onChanged: widget.onBiometricEnabledChanged,
+        ),
+      ],
       const SizedBox(height: 12),
       OutlinedButton(onPressed: widget.onLogout, child: const Text('Wyloguj się')),
       const SizedBox(height: 12),
@@ -1434,12 +1781,31 @@ class _ReadonlyField extends StatelessWidget {
 }
 
 
-class WardsPage extends StatelessWidget {
+class WardsPage extends StatefulWidget {
   const WardsPage({super.key, required this.state, required this.session, required this.onMutate, required this.onDelete});
   final AppState? state;
   final AuthSession session;
   final Future<void> Function(String url, Map<String, dynamic> body, AppState optimistic) onMutate;
   final Future<void> Function(String url, AppState optimistic) onDelete;
+
+  @override
+  State<WardsPage> createState() => _WardsPageState();
+}
+
+class _WardsPageState extends State<WardsPage> {
+  final _searchController = TextEditingController();
+  String _searchQuery = '';
+
+  AppState? get state => widget.state;
+  AuthSession get session => widget.session;
+  Future<void> Function(String url, Map<String, dynamic> body, AppState optimistic) get onMutate => widget.onMutate;
+  Future<void> Function(String url, AppState optimistic) get onDelete => widget.onDelete;
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
+  }
 
   Map<int, Map<String, dynamic>> _groupsById(AppState state) {
     return {for (final item in jsonList(state.raw['cohorts'])) jsonInt(item['id']): item};
@@ -1608,8 +1974,17 @@ class WardsPage extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     if (state == null) return const EmptyNotice(text: 'Brak listy podopiecznych w telefonie.');
-    final wards = jsonList(state!.raw['wards']);
+    final allWards = jsonList(state!.raw['wards']);
     final groups = _groupsById(state!);
+    final query = _searchQuery.trim().toLowerCase();
+    final wards = query.isEmpty
+        ? allWards
+        : allWards.where((ward) {
+            final name = jsonString(ward['name']).toLowerCase();
+            final parent = jsonString(ward['parent_name']).toLowerCase();
+            final group = _groupName(groups, jsonInt(ward['cohort_id'])).toLowerCase();
+            return name.contains(query) || parent.contains(query) || group.contains(query);
+          }).toList();
     return HufcPage(
       title: 'Podopieczni',
       subtitle: 'Lista osób pod opieką, dostępna także offline.',
@@ -1622,7 +1997,31 @@ class WardsPage extends StatelessWidget {
           ),
       ],
       children: [
-        if (wards.isEmpty) const EmptyNotice(text: 'Nie ma jeszcze podopiecznych.'),
+        if (allWards.length > 5) ...[
+          TextField(
+            controller: _searchController,
+            onChanged: (value) => setState(() => _searchQuery = value),
+            decoration: InputDecoration(
+              hintText: 'Szukaj po imieniu, opiekunie albo grupie…',
+              prefixIcon: const Icon(Icons.search),
+              suffixIcon: _searchQuery.isEmpty
+                  ? null
+                  : IconButton(
+                      icon: const Icon(Icons.close),
+                      onPressed: () {
+                        _searchController.clear();
+                        setState(() => _searchQuery = '');
+                      },
+                    ),
+              filled: true,
+              fillColor: Theme.of(context).colorScheme.surfaceContainerHighest,
+              border: OutlineInputBorder(borderRadius: BorderRadius.circular(22), borderSide: BorderSide.none),
+            ),
+          ),
+          const SizedBox(height: 14),
+        ],
+        if (wards.isEmpty)
+          EmptyNotice(text: query.isEmpty ? 'Nie ma jeszcze podopiecznych.' : 'Nikt nie pasuje do wyszukiwania "$query".'),
         for (final ward in wards)
           HufcListCard(
             onTap: () => _canManageWard(ward, groups) ? _openEditor(context, ward: ward) : _showDetails(context, ward, _groupName(groups, jsonInt(ward['cohort_id']))),
@@ -2354,11 +2753,12 @@ class MeetingsPage extends StatelessWidget {
 }
 
 class MobileGalleryPage extends StatefulWidget {
-  const MobileGalleryPage({super.key, required this.state, required this.session, required this.apiBaseUrl, required this.onMutate});
+  const MobileGalleryPage({super.key, required this.state, required this.session, required this.apiBaseUrl, required this.onMutate, required this.onDelete});
   final AppState? state;
   final AuthSession session;
   final String apiBaseUrl;
   final Future<void> Function(String url, Map<String, dynamic> body, AppState optimistic) onMutate;
+  final Future<void> Function(String url, AppState optimistic) onDelete;
 
   @override
   State<MobileGalleryPage> createState() => _MobileGalleryPageState();
@@ -2367,7 +2767,7 @@ class MobileGalleryPage extends StatefulWidget {
 class _MobileGalleryPageState extends State<MobileGalleryPage> {
   bool _uploading = false;
   bool _albums = false;
-  int? _albumSessionId;
+  int? _viewingAlbumId;
   bool _selectionMode = false;
   Set<int> _selectedIds = {};
 
@@ -2624,11 +3024,6 @@ class _MobileGalleryPageState extends State<MobileGalleryPage> {
   Future<void> _pick(ImageSource source) async {
     final state = widget.state;
     if (state == null || _uploading) return;
-    final sessions = jsonList(state.raw['sessions']);
-    if (sessions.isEmpty) {
-      _toast('Najpierw dodaj zbiórkę, żeby przypisać zdjęcie do galerii.');
-      return;
-    }
     final picker = ImagePicker();
     final file = await picker.pickImage(source: source, imageQuality: 72, maxWidth: 1600);
     if (file == null) return;
@@ -2638,24 +3033,18 @@ class _MobileGalleryPageState extends State<MobileGalleryPage> {
       final mime = file.mimeType ?? 'image/jpeg';
       final title = file.name.replaceAll(RegExp(r'\.[^.]+$'), '').trim().isEmpty ? 'Zdjęcie' : file.name.replaceAll(RegExp(r'\.[^.]+$'), '');
       final imageData = 'data:$mime;base64,${base64Encode(bytes)}';
-      final session = sessions.firstWhere((item) => jsonInt(item['id']) == _albumSessionId, orElse: () => sessions.first);
       final photo = {
         'id': -DateTime.now().millisecondsSinceEpoch,
-        'session_id': jsonInt(session['id']),
         'title': title,
         'image_data': imageData,
         'mime_type': mime,
         'color': '#1F5C36',
         'created_at': DateTime.now().toIso8601String(),
-        'session_title': jsonString(session['title'], fallback: 'Galeria'),
-        'session_date': jsonString(session['session_date']),
-        'session_location': jsonString(session['location']),
         'owner_user_id': widget.session.user.id,
       };
       final raw = Map<String, dynamic>.from(state.raw);
       raw['photos'] = [photo, ...jsonList(raw['photos'])];
       await widget.onMutate('/api/photos', {
-        'session_id': jsonInt(session['id']),
         'title': title,
         'image_data': imageData,
         'mime_type': mime,
@@ -2666,8 +3055,53 @@ class _MobileGalleryPageState extends State<MobileGalleryPage> {
     }
   }
 
-  void _toast(String text) {
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(text)));
+  Future<void> _createAlbumPrompt(BuildContext context) async {
+    final state = widget.state;
+    if (state == null) return;
+    final nameController = TextEditingController();
+    var saving = false;
+    await showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      isScrollControlled: true,
+      builder: (context) => StatefulBuilder(
+        builder: (context, modalSetState) => Padding(
+          padding: EdgeInsets.fromLTRB(20, 6, 20, MediaQuery.of(context).viewInsets.bottom + 24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              const Text('Nowy album', style: TextStyle(fontSize: 20, fontWeight: FontWeight.w900)),
+              const SizedBox(height: 14),
+              TextField(controller: nameController, decoration: const InputDecoration(labelText: 'Nazwa albumu', hintText: 'np. Ognisko zuchowe')),
+              const SizedBox(height: 16),
+              FilledButton(
+                onPressed: saving
+                    ? null
+                    : () async {
+                        final name = nameController.text.trim();
+                        if (name.isEmpty) return;
+                        modalSetState(() => saving = true);
+                        await widget.onMutate('/api/photo-albums', {'name': name, 'photo_ids': const [], 'game_id': state.game.id}, state);
+                        if (context.mounted) Navigator.of(context).pop();
+                      },
+                child: saving ? const HufcLoader(size: 22, color: Colors.white) : const Text('Utwórz'),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _deleteAlbum(int albumId) async {
+    final state = widget.state;
+    if (state == null) return;
+    final raw = _clone(state.raw);
+    raw['photo_albums'] = jsonList(raw['photo_albums']).where((item) => jsonInt(item['id']) != albumId).toList();
+    raw['photo_album_items'] = jsonList(raw['photo_album_items']).where((item) => jsonInt(item['album_id']) != albumId).toList();
+    await widget.onDelete('/api/photo-albums/$albumId?gameId=${state.game.id}', AppState.fromJson(raw));
+    if (mounted) setState(() => _viewingAlbumId = null);
   }
 
   @override
@@ -2675,14 +3109,17 @@ class _MobileGalleryPageState extends State<MobileGalleryPage> {
     final state = widget.state;
     if (state == null) return const EmptyNotice(text: 'Brak galerii w telefonie.');
     final photos = jsonList(state.raw['photos']);
-    final sessions = jsonList(state.raw['sessions']);
-    final shownPhotos = _albumSessionId == null ? photos : photos.where((photo) => jsonInt(photo['session_id']) == _albumSessionId).toList();
-    final albumTitle = _albumSessionId == null
+    final albums = jsonList(state.raw['photo_albums']);
+    final albumItems = jsonList(state.raw['photo_album_items']);
+    final viewingAlbum = _viewingAlbumId == null ? null : albums.firstWhere((item) => jsonInt(item['id']) == _viewingAlbumId, orElse: () => <String, dynamic>{});
+    final memberPhotoIds = _viewingAlbumId == null
         ? null
-        : jsonString(sessions.firstWhere((item) => jsonInt(item['id']) == _albumSessionId, orElse: () => {'title': 'Album'})['title'], fallback: 'Album');
+        : albumItems.where((item) => jsonInt(item['album_id']) == _viewingAlbumId).map((item) => jsonInt(item['photo_id'])).toSet();
+    final shownPhotos = memberPhotoIds == null ? photos : photos.where((photo) => memberPhotoIds.contains(jsonInt(photo['id']))).toList();
+    final albumTitle = viewingAlbum == null || viewingAlbum.isEmpty ? null : jsonString(viewingAlbum['name'], fallback: 'Album');
     final shares = jsonList(state.raw['shares']);
     return HufcPage(
-      title: _albumSessionId == null ? 'Galeria' : albumTitle!,
+      title: albumTitle ?? 'Galeria',
       subtitle: _selectionMode ? 'Zaznaczono ${_selectedIds.length} ${_selectedIds.length == 1 ? 'zdjęcie' : 'zdjęć'}.' : 'Zdjęcia z zajęć. Możesz robić zdjęcia, wgrywać je i otwierać podgląd.',
       actions: _selectionMode
           ? const []
@@ -2711,12 +3148,27 @@ class _MobileGalleryPageState extends State<MobileGalleryPage> {
               Center(child: TextButton(onPressed: _exitSelection, child: const Text('Anuluj'))),
             ]),
           ),
-        if (_albumSessionId != null)
-          Align(
-            alignment: Alignment.centerLeft,
-            child: OutlinedButton.icon(onPressed: () => setState(() => _albumSessionId = null), icon: const Icon(Icons.arrow_back), label: const Text('Albumy')),
+        if (_viewingAlbumId != null)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 12),
+            child: Row(children: [
+              Expanded(child: OutlinedButton.icon(onPressed: () => setState(() => _viewingAlbumId = null), icon: const Icon(Icons.arrow_back), label: const Text('Albumy'))),
+              const SizedBox(width: 10),
+              OutlinedButton.icon(
+                onPressed: () async {
+                  final confirmed = await _confirmDangerAction(
+                    context,
+                    title: 'Usunąć album "${albumTitle ?? ''}"?',
+                    message: '${shownPhotos.length} ${shownPhotos.length == 1 ? 'zdjęcie zostanie wypięte' : 'zdjęć zostanie wypiętych'} z tego albumu — same zdjęcia nadal będą w galerii, znika tylko album. Tej operacji nie da się cofnąć.',
+                  );
+                  if (confirmed) await _deleteAlbum(_viewingAlbumId!);
+                },
+                icon: const Icon(Icons.delete_outline),
+                label: const Text('Usuń album'),
+              ),
+            ]),
           ),
-        if (_albumSessionId == null)
+        if (_viewingAlbumId == null)
           Padding(
             padding: const EdgeInsets.only(bottom: 12),
             child: SegmentedButton<bool>(
@@ -2729,33 +3181,34 @@ class _MobileGalleryPageState extends State<MobileGalleryPage> {
             ),
           ),
         if (_uploading) const Padding(padding: EdgeInsets.only(bottom: 12), child: LinearProgressIndicator()),
-        if (_albums && _albumSessionId == null)
+        if (_albums && _viewingAlbumId == null)
           GridView.builder(
             shrinkWrap: true,
             physics: const NeverScrollableScrollPhysics(),
-            itemCount: sessions.length + 1,
+            itemCount: albums.length + 1,
             gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(crossAxisCount: 2, crossAxisSpacing: 12, mainAxisSpacing: 12, childAspectRatio: 1.15),
             itemBuilder: (context, index) {
               if (index == 0) {
                 return _AlbumTile(
                   title: 'Utwórz album',
-                  subtitle: 'Nowa galeria',
+                  subtitle: 'Nowy album',
                   icon: Icons.add,
-                  onTap: () => _toast('Album tworzy się automatycznie po dodaniu zbiórki w aplikacji web.'),
+                  onTap: () => _createAlbumPrompt(context),
                 );
               }
-              final session = sessions[index - 1];
-              final count = photos.where((photo) => jsonInt(photo['session_id']) == jsonInt(session['id'])).length;
-              final cover = photos.firstWhere((photo) => jsonInt(photo['session_id']) == jsonInt(session['id']), orElse: () => <String, dynamic>{});
+              final album = albums[index - 1];
+              final albumId = jsonInt(album['id']);
+              final memberIds = albumItems.where((item) => jsonInt(item['album_id']) == albumId).map((item) => jsonInt(item['photo_id'])).toSet();
+              final cover = photos.firstWhere((photo) => memberIds.contains(jsonInt(photo['id'])), orElse: () => <String, dynamic>{});
               return _AlbumTile(
-                title: jsonString(session['title'], fallback: 'Album'),
-                subtitle: '$count zdjęć',
+                title: jsonString(album['name'], fallback: 'Album'),
+                subtitle: '${jsonInt(album['photo_count'])} zdjęć',
                 photo: cover,
                 token: widget.session.token,
                 apiBaseUrl: widget.apiBaseUrl,
                 onTap: () => setState(() {
                   _albums = false;
-                  _albumSessionId = jsonInt(session['id']);
+                  _viewingAlbumId = albumId;
                 }),
               );
             },
@@ -4424,7 +4877,7 @@ class _CompetitionPageState extends State<CompetitionPage> {
       item['reason'] = _reason.text.trim();
       item['edited_at'] = DateTime.now().toIso8601String();
     } else {
-      points.insert(0, {'id': -DateTime.now().millisecondsSinceEpoch, 'tent_id': tentId, 'tent_name': jsonString(tent['name']), 'category': _category, 'points': _points, 'reason': _reason.text.trim()});
+      points.insert(0, {'id': -DateTime.now().millisecondsSinceEpoch, 'tent_id': tentId, 'tent_name': jsonString(tent['name']), 'category': _category, 'points': _points, 'reason': _reason.text.trim(), 'created_at': DateTime.now().toIso8601String()});
     }
     raw['competition_points'] = points;
     await widget.onMutate('/api/competition/points', {
@@ -4680,6 +5133,12 @@ class _CompetitionPageState extends State<CompetitionPage> {
                   tent: tent,
                   onEdit: () => _renameTent(context, tent),
                   onDelete: () async {
+                    final confirmed = await _confirmDangerAction(
+                      context,
+                      title: 'Usunąć namiot "${tent.name}"?',
+                      message: 'Razem z namiotem znikną wszyscy przypisani podopieczni i cała historia punktów tego namiotu (${tent.totalPoints} pkt). Tej operacji nie da się cofnąć.',
+                    );
+                    if (!confirmed) return;
                     await _deleteTent(tent);
                     if (context.mounted) Navigator.of(context).pop();
                   },
@@ -5008,9 +5467,21 @@ class _PointHistoryRow extends StatelessWidget {
   final VoidCallback? onEdit;
   final VoidCallback? onDelete;
 
+  Future<void> _confirmDelete(BuildContext context) async {
+    final confirmed = await _confirmDangerAction(
+      context,
+      title: 'Usunąć wpis?',
+      message: 'Namiot straci ${point.points > 0 ? '+' : ''}${point.points} pkt z tego wpisu. Tej operacji nie da się cofnąć.',
+    );
+    if (confirmed) onDelete?.call();
+  }
+
   @override
   Widget build(BuildContext context) {
     final hasOldValue = point.edited && point.previousPoints != null && point.previousPoints != point.points;
+    final muted = Theme.of(context).colorScheme.onSurfaceVariant;
+    var dateInfo = 'Wystawiono ${_shortDate(point.createdAt)}';
+    if (point.edited && point.editedAt != null) dateInfo += ' · edytowano ${_shortDate(point.editedAt!)}';
     return Container(
       margin: const EdgeInsets.only(bottom: 10),
       padding: const EdgeInsets.all(14),
@@ -5018,37 +5489,43 @@ class _PointHistoryRow extends StatelessWidget {
         border: Border.all(color: Theme.of(context).colorScheme.outlineVariant),
         borderRadius: BorderRadius.circular(18),
       ),
-      child: Row(children: [
-        Expanded(
-          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Row(children: [
-              Expanded(child: Text('${point.tentName} · ${point.category}', style: const TextStyle(fontWeight: FontWeight.w900))),
-              if (point.edited) ...[
-                const SizedBox(width: 6),
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                  decoration: BoxDecoration(color: const Color(0xFF1F5C36).withValues(alpha: 0.15), borderRadius: BorderRadius.circular(20)),
-                  child: const Text('Edytowano', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w800, color: Color(0xFF1F5C36))),
-                ),
-              ],
-            ]),
-            const SizedBox(height: 4),
-            Text(point.reason, style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant)),
-          ]),
-        ),
-        Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
-          Text(
-            '${point.points > 0 ? '+' : ''}${point.points} pkt',
-            style: TextStyle(fontWeight: FontWeight.w900, color: point.edited ? const Color(0xFF1F5C36) : null),
-          ),
-          if (hasOldValue)
-            Text(
-              '${point.previousPoints! > 0 ? '+' : ''}${point.previousPoints} pkt',
-              style: TextStyle(fontSize: 12, color: Theme.of(context).colorScheme.onSurfaceVariant, decoration: TextDecoration.lineThrough),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+        Row(children: [
+          Expanded(child: Text('${point.tentName} · ${point.category}', style: const TextStyle(fontWeight: FontWeight.w900))),
+          if (point.edited) ...[
+            const SizedBox(width: 6),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+              decoration: BoxDecoration(color: const Color(0xFF1F5C36).withValues(alpha: 0.15), borderRadius: BorderRadius.circular(20)),
+              child: const Text('Edytowano', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w800, color: Color(0xFF1F5C36))),
             ),
+          ],
         ]),
-        if (onEdit != null) IconButton(onPressed: onEdit, icon: const Icon(Icons.edit_outlined), tooltip: 'Edytuj wpis'),
-        if (onDelete != null) IconButton(onPressed: onDelete, icon: const Icon(Icons.delete_outline), tooltip: 'Usuń wpis'),
+        const SizedBox(height: 4),
+        Text(point.reason, style: TextStyle(color: muted)),
+        const SizedBox(height: 8),
+        Row(crossAxisAlignment: CrossAxisAlignment.center, children: [
+          Expanded(child: Text(dateInfo, style: TextStyle(fontSize: 12, color: muted))),
+          const SizedBox(width: 10),
+          Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
+            Text(
+              '${point.points > 0 ? '+' : ''}${point.points} pkt',
+              style: TextStyle(fontWeight: FontWeight.w900, color: point.edited ? const Color(0xFF1F5C36) : null),
+            ),
+            if (hasOldValue)
+              Text(
+                '${point.previousPoints! > 0 ? '+' : ''}${point.previousPoints} pkt',
+                style: TextStyle(fontSize: 12, color: muted, decoration: TextDecoration.lineThrough),
+              ),
+          ]),
+        ]),
+        if (onEdit != null || onDelete != null) ...[
+          const SizedBox(height: 4),
+          Row(mainAxisAlignment: MainAxisAlignment.end, children: [
+            if (onEdit != null) TextButton.icon(onPressed: onEdit, icon: const Icon(Icons.edit_outlined, size: 18), label: const Text('Edytuj')),
+            if (onDelete != null) TextButton.icon(onPressed: () => _confirmDelete(context), icon: const Icon(Icons.delete_outline, size: 18), label: const Text('Usuń')),
+          ]),
+        ],
       ]),
     );
   }
@@ -5844,6 +6321,21 @@ class HufcLoader extends StatelessWidget {
 }
 
 Map<String, dynamic> _clone(Map<String, dynamic> raw) => jsonDecode(jsonEncode(raw)) as Map<String, dynamic>;
+
+Future<bool> _confirmDangerAction(BuildContext context, {required String title, required String message, String confirmLabel = 'Usuń'}) async {
+  final confirmed = await showDialog<bool>(
+    context: context,
+    builder: (context) => AlertDialog(
+      title: Text(title),
+      content: Text(message),
+      actions: [
+        TextButton(onPressed: () => Navigator.of(context).pop(false), child: const Text('Anuluj')),
+        FilledButton(onPressed: () => Navigator.of(context).pop(true), child: Text(confirmLabel)),
+      ],
+    ),
+  );
+  return confirmed == true;
+}
 
 String _formatSeconds(int seconds) {
   final minutes = (seconds ~/ 60).toString().padLeft(2, '0');

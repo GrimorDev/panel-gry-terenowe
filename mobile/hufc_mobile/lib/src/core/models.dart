@@ -198,8 +198,10 @@ class CompetitionPoint {
     required this.category,
     required this.points,
     required this.reason,
+    required this.createdAt,
     this.previousPoints,
     this.edited = false,
+    this.editedAt,
   });
 
   final int id;
@@ -208,8 +210,10 @@ class CompetitionPoint {
   final String category;
   final int points;
   final String reason;
+  final String createdAt;
   final int? previousPoints;
   final bool edited;
+  final String? editedAt;
 
   factory CompetitionPoint.fromJson(Map<String, dynamic> json) => CompetitionPoint(
         id: jsonInt(json['id']),
@@ -218,8 +222,10 @@ class CompetitionPoint {
         category: jsonString(json['category'], fallback: 'Punkty'),
         points: jsonInt(json['points']),
         reason: jsonString(json['reason']),
+        createdAt: jsonString(json['created_at']),
         previousPoints: json['previous_points'] == null ? null : jsonInt(json['previous_points']),
         edited: json['edited_at'] != null,
+        editedAt: json['edited_at'] == null ? null : jsonString(json['edited_at']),
       );
 }
 
