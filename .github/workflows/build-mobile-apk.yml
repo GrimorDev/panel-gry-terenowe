@@ -48,6 +48,7 @@ jobs:
               '<uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32"/>',
               '<uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>',
               '<uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC"/>',
+              '<uses-permission android:name="android.permission.USE_BIOMETRIC"/>',
           ]
           missing = [permission for permission in permissions if permission not in text]
           if missing:
@@ -58,6 +59,9 @@ jobs:
               )
           text = text.replace('android:label="hufc_mobile"', 'android:label="Mój Hufiec"')
           text = text.replace('android:label="hufc mobile"', 'android:label="Mój Hufiec"')
+          # local_auth wymaga FragmentActivity zamiast zwyklej Activity - podmieniamy
+          # glowna aktywnosc na wbudowana klase Fluttera zamiast dotykac MainActivity.kt.
+          text = text.replace('android:name=".MainActivity"', 'android:name="io.flutter.embedding.android.FlutterFragmentActivity"')
           bg_service_tag = '<service android:name="id.flutter.flutter_background_service.BackgroundService" android:foregroundServiceType="dataSync"/>'
           if bg_service_tag not in text:
               text = text.replace('</application>', '    ' + bg_service_tag + '\\n    </application>', 1)

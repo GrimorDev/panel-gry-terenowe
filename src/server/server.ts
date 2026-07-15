@@ -357,6 +357,7 @@ async function ensureSchema() {
   await pool.query("ALTER TABLE competition_points ADD COLUMN IF NOT EXISTS edited_at TIMESTAMPTZ");
   await pool.query("ALTER TABLE session_photos ALTER COLUMN session_id DROP NOT NULL");
   await pool.query("ALTER TABLE messages ADD COLUMN IF NOT EXISTS edited_at TIMESTAMPTZ");
+  await pool.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS dashboard_tiles TEXT");
   await pool.query(`
     DELETE FROM competition_tent_members m
     USING (
@@ -630,7 +631,7 @@ async function state(gameId?: number, user?: User) {
       END
     `, [user.id, user.role]) : Promise.resolve({ rows: [] }),
     pool.query(`
-      SELECT u.id, u.email, u.name, u.role, u.created_at,
+      SELECT u.id, u.email, u.name, u.role, u.created_at, u.dashboard_tiles,
         COALESCE((SELECT COUNT(*) FROM cohorts c WHERE c.caretaker_user_id = u.id), 0)::int AS group_count
       FROM users u
       ORDER BY CASE WHEN u.role='administrator' THEN 0 ELSE 1 END, u.name
@@ -944,6 +945,17 @@ app.post("/api/profile", async (req, res) => {
   const user = result.rows[0];
   res.setHeader("Set-Cookie", `hufc_session=${sessionCookie(user)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=604800`);
   res.json({ ok: true, user });
+});
+
+const DASHBOARD_TILE_KINDS = ["dzieci", "grupy", "zbiorki", "galeria", "wiadomosci", "gry", "wspolzawodnictwo"];
+
+app.post("/api/profile/dashboard-tiles", async (req, res) => {
+  const userId = Number(req.user?.id);
+  if (!userId) return res.status(401).json({ ok: false, error: "Brak sesji" });
+  const tiles = Array.isArray(req.body.tiles) ? req.body.tiles.map((tile: unknown) => String(tile)) : [];
+  const valid = tiles.filter((tile: string) => DASHBOARD_TILE_KINDS.includes(tile)).slice(0, 6);
+  await pool.query("UPDATE users SET dashboard_tiles=$1 WHERE id=$2", [JSON.stringify(valid), userId]);
+  res.json(await stateFor(req, Number(req.body.game_id || 0) || undefined));
 });
 
 app.get("/api/state", async (req, res) => {
