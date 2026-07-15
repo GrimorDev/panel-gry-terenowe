@@ -1424,39 +1424,45 @@ class DashboardPage extends StatelessWidget {
       builder: (context) => StatefulBuilder(
         builder: (context, setModalState) => Padding(
           padding: EdgeInsets.fromLTRB(20, 6, 20, MediaQuery.of(context).viewInsets.bottom + 24),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              const Text('Kafelki pulpitu', style: TextStyle(fontSize: 20, fontWeight: FontWeight.w900)),
-              const SizedBox(height: 4),
-              Text('Wybierz do 6 skrótów, które chcesz widzieć na górze pulpitu. Zapisuje się na Twoim koncie.', style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant, fontSize: 12)),
-              const SizedBox(height: 10),
-              for (final spec in _dashboardTileCatalog.values)
-                CheckboxListTile(
-                  contentPadding: EdgeInsets.zero,
-                  secondary: Icon(spec.icon),
-                  title: Text(spec.label),
-                  value: selected.contains(spec.key),
-                  onChanged: (value) => setModalState(() {
-                    if (value == true) {
-                      if (selected.length < 6) selected.add(spec.key);
-                    } else {
-                      selected.remove(spec.key);
-                    }
-                  }),
+          // SingleChildScrollView - przy 7 pozycjach do wyboru lista łatwo nie mieści się
+          // na mniejszych ekranach, a zwykły Column bez scrolla wtedy po prostu ucina
+          // dolne pozycje bez żadnej możliwości do nich dojechać.
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                const Text('Kafelki pulpitu', style: TextStyle(fontSize: 20, fontWeight: FontWeight.w900)),
+                const SizedBox(height: 4),
+                Text('Wybierz do 6 skrótów, które chcesz widzieć na górze pulpitu (${selected.length}/6). Zapisuje się na Twoim koncie.', style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant, fontSize: 12)),
+                const SizedBox(height: 10),
+                for (final spec in _dashboardTileCatalog.values)
+                  CheckboxListTile(
+                    contentPadding: EdgeInsets.zero,
+                    secondary: Icon(spec.icon),
+                    title: Text(spec.label),
+                    value: selected.contains(spec.key),
+                    enabled: selected.contains(spec.key) || selected.length < 6,
+                    onChanged: (value) => setModalState(() {
+                      if (value == true) {
+                        if (selected.length < 6) selected.add(spec.key);
+                      } else {
+                        selected.remove(spec.key);
+                      }
+                    }),
+                  ),
+                const SizedBox(height: 10),
+                FilledButton(
+                  onPressed: selected.isEmpty
+                      ? null
+                      : () {
+                          onDashboardTilesChanged(selected.toList());
+                          Navigator.of(context).pop();
+                        },
+                  child: const Text('Zapisz'),
                 ),
-              const SizedBox(height: 10),
-              FilledButton(
-                onPressed: selected.isEmpty
-                    ? null
-                    : () {
-                        onDashboardTilesChanged(selected.toList());
-                        Navigator.of(context).pop();
-                      },
-                child: const Text('Zapisz'),
-              ),
-            ],
+              ],
+            ),
           ),
         ),
       ),
