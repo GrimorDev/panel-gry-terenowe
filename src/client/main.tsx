@@ -1269,13 +1269,17 @@ function CompetitionView({ state, user, setState, runBusy }: { state: AppState; 
   function renderHistoryRow(point: CompetitionPoint) {
     const edited = Boolean(point.edited_at);
     const hasOldValue = edited && point.previous_points != null && point.previous_points !== point.points;
+    const dateInfo = `Wystawiono ${dateLabel(point.created_at)}${edited && point.edited_at ? ` · edytowano ${dateLabel(point.edited_at)}` : ""} · ${point.created_by_name || "system"}`;
     return <article key={point.id} className="point-row">
-      <div><strong>{point.tent_name} · {point.category}</strong>{edited && <span className="edited-badge">Edytowano</span>}<p>{point.reason}</p><small>{dateLabel(point.created_at)} · {point.created_by_name || "system"}</small></div>
-      <div className="point-values">
-        <span className={point.points >= 0 ? "positive" : "negative"}>{point.points > 0 ? "+" : ""}{point.points} pkt</span>
-        {hasOldValue && <small className="point-old-value">{point.previous_points! > 0 ? "+" : ""}{point.previous_points} pkt</small>}
+      <div><strong>{point.tent_name} · {point.category}</strong>{edited && <span className="edited-badge">Edytowano</span>}<p>{point.reason}</p></div>
+      <div className="point-footer">
+        <small>{dateInfo}</small>
+        <div className="point-values">
+          <span className={point.points >= 0 ? "positive" : "negative"}>{point.points > 0 ? "+" : ""}{point.points} pkt</span>
+          {hasOldValue && <small className="point-old-value">{point.previous_points! > 0 ? "+" : ""}{point.previous_points} pkt</small>}
+        </div>
+        {user.role === "administrator" && <div className="point-actions"><Button type="button" onClick={() => editPoint(point.id)}>Edytuj</Button><Button variant="danger" onClick={() => { if (window.confirm(`Usunąć wpis "${point.category}" (${point.points > 0 ? "+" : ""}${point.points} pkt)? Namiot straci te punkty, tej operacji nie da się cofnąć.`)) deletePoint(point.id); }}>Usuń</Button></div>}
       </div>
-      {user.role === "administrator" && <><Button type="button" onClick={() => editPoint(point.id)}>Edytuj</Button><Button variant="danger" onClick={() => deletePoint(point.id)}>Usuń</Button></>}
     </article>;
   }
 

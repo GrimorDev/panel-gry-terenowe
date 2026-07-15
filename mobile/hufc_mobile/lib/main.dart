@@ -2760,7 +2760,18 @@ class _MobileGalleryPageState extends State<MobileGalleryPage> {
             child: Row(children: [
               Expanded(child: OutlinedButton.icon(onPressed: () => setState(() => _viewingAlbumId = null), icon: const Icon(Icons.arrow_back), label: const Text('Albumy'))),
               const SizedBox(width: 10),
-              OutlinedButton.icon(onPressed: () => _deleteAlbum(_viewingAlbumId!), icon: const Icon(Icons.delete_outline), label: const Text('Usuń album')),
+              OutlinedButton.icon(
+                onPressed: () async {
+                  final confirmed = await _confirmDangerAction(
+                    context,
+                    title: 'Usunąć album "${albumTitle ?? ''}"?',
+                    message: '${shownPhotos.length} ${shownPhotos.length == 1 ? 'zdjęcie zostanie wypięte' : 'zdjęć zostanie wypiętych'} z tego albumu — same zdjęcia nadal będą w galerii, znika tylko album. Tej operacji nie da się cofnąć.',
+                  );
+                  if (confirmed) await _deleteAlbum(_viewingAlbumId!);
+                },
+                icon: const Icon(Icons.delete_outline),
+                label: const Text('Usuń album'),
+              ),
             ]),
           ),
         if (_viewingAlbumId == null)
@@ -4472,7 +4483,7 @@ class _CompetitionPageState extends State<CompetitionPage> {
       item['reason'] = _reason.text.trim();
       item['edited_at'] = DateTime.now().toIso8601String();
     } else {
-      points.insert(0, {'id': -DateTime.now().millisecondsSinceEpoch, 'tent_id': tentId, 'tent_name': jsonString(tent['name']), 'category': _category, 'points': _points, 'reason': _reason.text.trim()});
+      points.insert(0, {'id': -DateTime.now().millisecondsSinceEpoch, 'tent_id': tentId, 'tent_name': jsonString(tent['name']), 'category': _category, 'points': _points, 'reason': _reason.text.trim(), 'created_at': DateTime.now().toIso8601String()});
     }
     raw['competition_points'] = points;
     await widget.onMutate('/api/competition/points', {
@@ -4728,6 +4739,12 @@ class _CompetitionPageState extends State<CompetitionPage> {
                   tent: tent,
                   onEdit: () => _renameTent(context, tent),
                   onDelete: () async {
+                    final confirmed = await _confirmDangerAction(
+                      context,
+                      title: 'Usunąć namiot "${tent.name}"?',
+                      message: 'Razem z namiotem znikną wszyscy przypisani podopieczni i cała historia punktów tego namiotu (${tent.totalPoints} pkt). Tej operacji nie da się cofnąć.',
+                    );
+                    if (!confirmed) return;
                     await _deleteTent(tent);
                     if (context.mounted) Navigator.of(context).pop();
                   },
@@ -5056,9 +5073,21 @@ class _PointHistoryRow extends StatelessWidget {
   final VoidCallback? onEdit;
   final VoidCallback? onDelete;
 
+  Future<void> _confirmDelete(BuildContext context) async {
+    final confirmed = await _confirmDangerAction(
+      context,
+      title: 'Usunąć wpis?',
+      message: 'Namiot straci ${point.points > 0 ? '+' : ''}${point.points} pkt z tego wpisu. Tej operacji nie da się cofnąć.',
+    );
+    if (confirmed) onDelete?.call();
+  }
+
   @override
   Widget build(BuildContext context) {
     final hasOldValue = point.edited && point.previousPoints != null && point.previousPoints != point.points;
+    final muted = Theme.of(context).colorScheme.onSurfaceVariant;
+    var dateInfo = 'Wystawiono ${_shortDate(point.createdAt)}';
+    if (point.edited && point.editedAt != null) dateInfo += ' · edytowano ${_shortDate(point.editedAt!)}';
     return Container(
       margin: const EdgeInsets.only(bottom: 10),
       padding: const EdgeInsets.all(14),
@@ -5066,37 +5095,43 @@ class _PointHistoryRow extends StatelessWidget {
         border: Border.all(color: Theme.of(context).colorScheme.outlineVariant),
         borderRadius: BorderRadius.circular(18),
       ),
-      child: Row(children: [
-        Expanded(
-          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Row(children: [
-              Expanded(child: Text('${point.tentName} · ${point.category}', style: const TextStyle(fontWeight: FontWeight.w900))),
-              if (point.edited) ...[
-                const SizedBox(width: 6),
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                  decoration: BoxDecoration(color: const Color(0xFF1F5C36).withValues(alpha: 0.15), borderRadius: BorderRadius.circular(20)),
-                  child: const Text('Edytowano', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w800, color: Color(0xFF1F5C36))),
-                ),
-              ],
-            ]),
-            const SizedBox(height: 4),
-            Text(point.reason, style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant)),
-          ]),
-        ),
-        Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
-          Text(
-            '${point.points > 0 ? '+' : ''}${point.points} pkt',
-            style: TextStyle(fontWeight: FontWeight.w900, color: point.edited ? const Color(0xFF1F5C36) : null),
-          ),
-          if (hasOldValue)
-            Text(
-              '${point.previousPoints! > 0 ? '+' : ''}${point.previousPoints} pkt',
-              style: TextStyle(fontSize: 12, color: Theme.of(context).colorScheme.onSurfaceVariant, decoration: TextDecoration.lineThrough),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+        Row(children: [
+          Expanded(child: Text('${point.tentName} · ${point.category}', style: const TextStyle(fontWeight: FontWeight.w900))),
+          if (point.edited) ...[
+            const SizedBox(width: 6),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+              decoration: BoxDecoration(color: const Color(0xFF1F5C36).withValues(alpha: 0.15), borderRadius: BorderRadius.circular(20)),
+              child: const Text('Edytowano', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w800, color: Color(0xFF1F5C36))),
             ),
+          ],
         ]),
-        if (onEdit != null) IconButton(onPressed: onEdit, icon: const Icon(Icons.edit_outlined), tooltip: 'Edytuj wpis'),
-        if (onDelete != null) IconButton(onPressed: onDelete, icon: const Icon(Icons.delete_outline), tooltip: 'Usuń wpis'),
+        const SizedBox(height: 4),
+        Text(point.reason, style: TextStyle(color: muted)),
+        const SizedBox(height: 8),
+        Row(crossAxisAlignment: CrossAxisAlignment.center, children: [
+          Expanded(child: Text(dateInfo, style: TextStyle(fontSize: 12, color: muted))),
+          const SizedBox(width: 10),
+          Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
+            Text(
+              '${point.points > 0 ? '+' : ''}${point.points} pkt',
+              style: TextStyle(fontWeight: FontWeight.w900, color: point.edited ? const Color(0xFF1F5C36) : null),
+            ),
+            if (hasOldValue)
+              Text(
+                '${point.previousPoints! > 0 ? '+' : ''}${point.previousPoints} pkt',
+                style: TextStyle(fontSize: 12, color: muted, decoration: TextDecoration.lineThrough),
+              ),
+          ]),
+        ]),
+        if (onEdit != null || onDelete != null) ...[
+          const SizedBox(height: 4),
+          Row(mainAxisAlignment: MainAxisAlignment.end, children: [
+            if (onEdit != null) TextButton.icon(onPressed: onEdit, icon: const Icon(Icons.edit_outlined, size: 18), label: const Text('Edytuj')),
+            if (onDelete != null) TextButton.icon(onPressed: () => _confirmDelete(context), icon: const Icon(Icons.delete_outline, size: 18), label: const Text('Usuń')),
+          ]),
+        ],
       ]),
     );
   }
@@ -5892,6 +5927,21 @@ class HufcLoader extends StatelessWidget {
 }
 
 Map<String, dynamic> _clone(Map<String, dynamic> raw) => jsonDecode(jsonEncode(raw)) as Map<String, dynamic>;
+
+Future<bool> _confirmDangerAction(BuildContext context, {required String title, required String message, String confirmLabel = 'Usuń'}) async {
+  final confirmed = await showDialog<bool>(
+    context: context,
+    builder: (context) => AlertDialog(
+      title: Text(title),
+      content: Text(message),
+      actions: [
+        TextButton(onPressed: () => Navigator.of(context).pop(false), child: const Text('Anuluj')),
+        FilledButton(onPressed: () => Navigator.of(context).pop(true), child: Text(confirmLabel)),
+      ],
+    ),
+  );
+  return confirmed == true;
+}
 
 String _formatSeconds(int seconds) {
   final minutes = (seconds ~/ 60).toString().padLeft(2, '0');
