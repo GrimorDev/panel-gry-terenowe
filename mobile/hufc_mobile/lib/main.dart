@@ -1476,7 +1476,10 @@ class DashboardPage extends StatelessWidget {
     final tileKeys = dashboardTiles;
     final tileWidth = (MediaQuery.of(context).size.width - 32 - 20) / 3;
     return ListView(
-      padding: const EdgeInsets.all(16),
+      // Szklany pasek nawigacji na dole (extendBody: true) zasłania koniec listy, jeśli
+      // nie zostawimy pod nim miejsca - przy większej liczbie kafelków "Nadchodzące
+      // zbiórki" kończyły się dokładnie za paskiem i nie dało się do nich doscrollować.
+      padding: EdgeInsets.fromLTRB(16, 16, 16, 16 + kBottomNavigationBarHeight + MediaQuery.of(context).padding.bottom),
       children: [
         HufcHero(name: session.user.name, subtitle: online ? 'Połączono z serwerem' : 'Tryb offline - zapis lokalny'),
         if (pushBlockedBySystem) ...[
