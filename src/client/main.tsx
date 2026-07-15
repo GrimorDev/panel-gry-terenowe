@@ -26,7 +26,8 @@ type MessageUnread = { target_type: string; target_id: number; unread_count: num
 type CompetitionTent = { id: number; name: string; color: string; total_points: number; member_count: number; created_at: string };
 type CompetitionMember = { tent_id: number; ward_id: number; ward_name: string; age: number; cohort_name: string | null; tent_name: string };
 type CompetitionPoint = { id: number; tent_id: number; tent_name: string; category: string; points: number; reason: string; created_by: number | null; created_by_name: string | null; created_at: string; previous_points: number | null; edited_at: string | null };
-type AppState = { ok: true; game: Game; games: Game[]; teams: Team[]; stations: Station[]; scores: Score[]; materials: Material[]; questions: Question[]; cohorts: Cohort[]; wards: Ward[]; sessions: Session[]; photos: Photo[]; photo_albums: PhotoAlbum[]; photo_album_items: PhotoAlbumItem[]; shares: InternalShare[]; messages: Message[]; message_unreads: MessageUnread[]; caregivers: Caregiver[]; competition_tents: CompetitionTent[]; competition_members: CompetitionMember[]; competition_points: CompetitionPoint[] };
+type CohortCaretaker = { cohort_id: number; user_id: number; user_name: string; user_email: string };
+type AppState = { ok: true; game: Game; games: Game[]; teams: Team[]; stations: Station[]; scores: Score[]; materials: Material[]; questions: Question[]; cohorts: Cohort[]; wards: Ward[]; sessions: Session[]; photos: Photo[]; photo_albums: PhotoAlbum[]; photo_album_items: PhotoAlbumItem[]; shares: InternalShare[]; messages: Message[]; message_unreads: MessageUnread[]; caregivers: Caregiver[]; competition_tents: CompetitionTent[]; competition_members: CompetitionMember[]; competition_points: CompetitionPoint[]; cohort_caretakers: CohortCaretaker[] };
 type GameState = Pick<AppState, "ok" | "game" | "games" | "teams" | "stations" | "scores" | "materials" | "questions">;
 type PulseState = GameState & Pick<AppState, "messages" | "message_unreads">;
 type NotificationItem = { id: string; title: string; detail: string; time: string; kind: "ward" | "session" | "message" | "today" };
@@ -245,9 +246,17 @@ function saveTimerMilestones(gameId: number, items: TimerMilestone[]) {
   localStorage.setItem(`hufc-timer-milestones-${gameId}`, JSON.stringify(items));
 }
 
+// Grupa może mieć więcej niż jednego opiekuna (komendant + druhny) - to zwraca wszystkie
+// grupy, do których dany user ma dostęp, żeby UI nie chowało niczego przed kimś, kto
+// faktycznie jest opiekunem tej grupy, tylko nie tym jedynym "głównym".
+function myCohortIds(state: AppState, user: User): Set<number> {
+  if (user.role === "administrator") return new Set(state.cohorts.map((cohort) => cohort.id));
+  return new Set(state.cohort_caretakers.filter((link) => link.user_id === user.id).map((link) => link.cohort_id));
+}
+
 function buildNotifications(state: AppState, user: User): NotificationItem[] {
   const todayKey = new Date().toISOString().slice(0, 10);
-  const ownedCohortIds = new Set(state.cohorts.filter((cohort) => user.role === "administrator" || cohort.caretaker_user_id === user.id).map((cohort) => cohort.id));
+  const ownedCohortIds = myCohortIds(state, user);
   const visibleWards = state.wards.filter((ward) => user.role === "administrator" || (ward.cohort_id != null && ownedCohortIds.has(ward.cohort_id)));
   const visibleSessions = state.sessions.filter((session) => user.role === "administrator" || session.scope === "grupa" || session.owner_user_id === user.id || (session.participant_user_ids || []).map(Number).includes(user.id) || !session.cohort_id || ownedCohortIds.has(session.cohort_id));
   const notifications: NotificationItem[] = [];
@@ -2042,7 +2051,8 @@ function MessagesView({ state, user, setState }: { state: AppState; user: User; 
     document.body.classList.toggle("chat-thread-mobile-active", mobileThreadOpen);
     return () => document.body.classList.remove("chat-thread-mobile-active");
   }, [mobileThreadOpen]);
-  const visibleCohorts = state.cohorts.filter((cohort) => user.role === "administrator" || cohort.caretaker_user_id === user.id);
+  const myCohortIdSet = myCohortIds(state, user);
+  const visibleCohorts = state.cohorts.filter((cohort) => myCohortIdSet.has(cohort.id));
   const conversations: Conversation[] = [
     { key: "hufiec", label: "Cały hufiec", hint: "wszyscy wychowawcy i administrator", target_type: "hufiec", target_id: null },
     { key: "staff", label: "Wychowawcy", hint: "rozmowa kadry", target_type: "staff", target_id: null },
@@ -2114,7 +2124,7 @@ function MessagesView({ state, user, setState }: { state: AppState; user: User; 
     const matchesSearch = searchQuery.length > 0 && text.includes(searchQuery);
     const hasMessages = state.messages.some((message) => messageBelongsToConversation(message, conversation));
     const hasUnread = messageUnreadFor(state, conversation.target_type, conversation.target_id) > 0;
-    const isAssignedGroup = conversation.target_type === "cohort" && (user.role === "administrator" || state.cohorts.some((cohort) => cohort.id === Number(conversation.target_id) && cohort.caretaker_user_id === user.id));
+    const isAssignedGroup = conversation.target_type === "cohort" && myCohortIdSet.has(Number(conversation.target_id));
     const isSystemDefault = ["hufiec", "staff"].includes(conversation.target_type);
     if (matchesSearch) return true;
     if (searchQuery) return false;
@@ -2383,7 +2393,14 @@ function StaffView({ state, setState }: { state: AppState; setState: (state: App
     </div>}
     {tab === "groups" && <Panel title="Grupy i podopieczni"><div className="group-list">{state.cohorts.map((cohort) => {
       const wards = state.wards.filter((ward) => ward.cohort_id === cohort.id);
-      return <article className="group-card" key={cohort.id}><div><strong>{cohort.name}</strong><small>Wychowawca: {cohort.caretaker_user_name || "Bez opiekuna"}</small></div><form onSubmit={async (event) => { event.preventDefault(); setState(await api<AppState>("/api/cohorts", { method: "POST", body: JSON.stringify({ id: cohort.id, name: cohort.name, ...Object.fromEntries(new FormData(event.currentTarget).entries()), game_id: state.game.id }) })); }}><select name="caretaker_user_id" defaultValue={cohort.caretaker_user_id || ""}><option value="">Bez opiekuna</option>{state.caregivers.map((person) => <option key={person.id} value={person.id}>{person.name}</option>)}</select><Button>Zapisz</Button></form><Button variant="danger" onClick={async () => { if (window.confirm(`Usunąć grupę ${cohort.name}? Podopieczni zostaną bez przypisanej grupy.`)) setState(await api<AppState>(`/api/cohorts/${cohort.id}?gameId=${state.game.id}`, { method: "DELETE" })); }}>Usuń grupę</Button><p>{wards.length ? wards.map((ward) => ward.name).join(", ") : "Brak podopiecznych w tej grupie."}</p></article>;
+      const extraCaretakerIds = new Set(state.cohort_caretakers.filter((link) => link.cohort_id === cohort.id && link.user_id !== cohort.caretaker_user_id).map((link) => link.user_id));
+      return <article className="group-card" key={cohort.id}><div><strong>{cohort.name}</strong><small>Wychowawca: {cohort.caretaker_user_name || "Bez opiekuna"}</small></div><form onSubmit={async (event) => { event.preventDefault(); setState(await api<AppState>("/api/cohorts", { method: "POST", body: JSON.stringify({ id: cohort.id, name: cohort.name, ...Object.fromEntries(new FormData(event.currentTarget).entries()), game_id: state.game.id }) })); }}><select name="caretaker_user_id" defaultValue={cohort.caretaker_user_id || ""}><option value="">Bez opiekuna</option>{state.caregivers.map((person) => <option key={person.id} value={person.id}>{person.name}</option>)}</select><Button>Zapisz</Button></form>
+        <form className="stack" onSubmit={async (event) => { event.preventDefault(); const userIds = new FormData(event.currentTarget).getAll("user_ids").map(Number); setState(await api<AppState>(`/api/cohorts/${cohort.id}/caretakers`, { method: "POST", body: JSON.stringify({ user_ids: userIds, game_id: state.game.id }) })); }}>
+          <small>Dodatkowi opiekunowie (np. druhny) - widzą to samo co wychowawca powyżej</small>
+          <div className="member-picker">{state.caregivers.filter((person) => person.id !== cohort.caretaker_user_id).map((person) => <label key={person.id} className="member-check"><input type="checkbox" name="user_ids" value={person.id} defaultChecked={extraCaretakerIds.has(person.id)} /> <span>{person.name}</span></label>)}</div>
+          <Button>Zapisz opiekunów</Button>
+        </form>
+        <Button variant="danger" onClick={async () => { if (window.confirm(`Usunąć grupę ${cohort.name}? Podopieczni zostaną bez przypisanej grupy.`)) setState(await api<AppState>(`/api/cohorts/${cohort.id}?gameId=${state.game.id}`, { method: "DELETE" })); }}>Usuń grupę</Button><p>{wards.length ? wards.map((ward) => ward.name).join(", ") : "Brak podopiecznych w tej grupie."}</p></article>;
     })}</div></Panel>}
   </div>;
 }

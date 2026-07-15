@@ -358,6 +358,23 @@ async function ensureSchema() {
   await pool.query("ALTER TABLE session_photos ALTER COLUMN session_id DROP NOT NULL");
   await pool.query("ALTER TABLE messages ADD COLUMN IF NOT EXISTS edited_at TIMESTAMPTZ");
   await pool.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS dashboard_tiles TEXT");
+  // Grupa (podóbz) może mieć więcej niż jednego opiekuna - komendant + kilka druhen,
+  // wszyscy powinni widzieć to samo (podopieczni, wiadomości, zdjęcia, współzawodnictwo).
+  // cohorts.caretaker_user_id zostaje jako "główny" opiekun pokazywany na liście grup,
+  // ale to ta tabela jest odtąd źródłem prawdy o tym, kto ma dostęp do danych grupy.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS cohort_caretakers (
+      cohort_id INTEGER NOT NULL REFERENCES cohorts(id) ON DELETE CASCADE,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (cohort_id, user_id)
+    )
+  `);
+  await pool.query(`
+    INSERT INTO cohort_caretakers (cohort_id, user_id)
+    SELECT id, caretaker_user_id FROM cohorts WHERE caretaker_user_id IS NOT NULL
+    ON CONFLICT DO NOTHING
+  `);
   await pool.query("ALTER TABLE competition_tents ADD COLUMN IF NOT EXISTS cohort_id INTEGER REFERENCES cohorts(id) ON DELETE SET NULL");
   await pool.query("ALTER TABLE competition_tents ADD COLUMN IF NOT EXISTS created_by INTEGER REFERENCES users(id) ON DELETE SET NULL");
   // Namioty istniejące sprzed wprowadzenia izolacji per-grupa nie mają jeszcze cohort_id -
@@ -424,14 +441,14 @@ async function assertGameAccess(user: User | undefined, gameId: number, mode: "v
 
 async function myCohortId(user?: User): Promise<number | null> {
   if (!user?.id) return null;
-  const result = await pool.query("SELECT id FROM cohorts WHERE caretaker_user_id=$1 ORDER BY id ASC LIMIT 1", [user.id]);
-  return result.rows[0]?.id ?? null;
+  const result = await pool.query("SELECT cohort_id FROM cohort_caretakers WHERE user_id=$1 ORDER BY cohort_id ASC LIMIT 1", [user.id]);
+  return result.rows[0]?.cohort_id ?? null;
 }
 
-// Namiot jest widoczny/edytowalny dla admina, wychowawcy przypisanego do jego grupy,
-// jego twórcy, albo kogokolwiek kto już dodawał do niego punkty - ten ostatni warunek
-// jest siatką bezpieczeństwa na wypadek gdyby przypisanie grupa/wychowawca w danych
-// nie było w 100% dokładne, żeby nikomu nic nie zniknęło przy tej zmianie. Namioty, które
+// Namiot jest widoczny/edytowalny dla admina, dowolnego opiekuna jego grupy (może być ich
+// kilku - komendant + druhny), jego twórcy, albo kogokolwiek kto już dodawał do niego punkty -
+// ten ostatni warunek jest siatką bezpieczeństwa na wypadek gdyby przypisanie grupa/opiekun w
+// danych nie było w 100% dokładne, żeby nikomu nic nie zniknęło przy tej zmianie. Namioty, które
 // wciąż nie mają żadnej grupy (np. założone zanim istniało powiązanie namiot-grupa, albo
 // ich podopieczni sami też nie mają grupy) zostają widoczne dla wszystkich - tak jak
 // zawsze - dopóki ktoś nie przypisze im grupy.
@@ -444,7 +461,7 @@ async function canManageTent(user: User | undefined, tentId: number): Promise<bo
        AND (
          t.cohort_id IS NULL
          OR t.created_by = $2
-         OR EXISTS (SELECT 1 FROM cohorts c WHERE c.id = t.cohort_id AND c.caretaker_user_id = $2)
+         OR EXISTS (SELECT 1 FROM cohort_caretakers cc WHERE cc.cohort_id = t.cohort_id AND cc.user_id = $2)
          OR EXISTS (SELECT 1 FROM competition_points cp WHERE cp.tent_id = t.id AND cp.created_by = $2)
        )`,
     [tentId, user.id]
@@ -472,23 +489,20 @@ function forbidden(message: string) {
 async function assertCohortManage(user: User | undefined, cohortId: number | null) {
   if (isAdmin(user)) return;
   if (!cohortId) throw forbidden("Tylko administrator moze przypisac podopiecznego bez grupy");
-  const result = await pool.query("SELECT caretaker_user_id FROM cohorts WHERE id=$1", [cohortId]);
-  const cohort = result.rows[0];
-  if (cohort && Number(cohort.caretaker_user_id) === Number(user?.id)) return;
+  const result = await pool.query("SELECT 1 FROM cohort_caretakers WHERE cohort_id=$1 AND user_id=$2", [cohortId, user?.id || 0]);
+  if (result.rows[0]) return;
   throw forbidden("Mozesz zarzadzac tylko podopiecznymi swojej grupy");
 }
 
 async function assertWardManage(user: User | undefined, wardId: number) {
   if (isAdmin(user)) return;
-  const result = await pool.query(`
-    SELECT w.id, c.caretaker_user_id
-    FROM wards w
-    LEFT JOIN cohorts c ON c.id = w.cohort_id
-    WHERE w.id=$1
-  `, [wardId]);
+  const result = await pool.query("SELECT id, cohort_id FROM wards WHERE id=$1", [wardId]);
   const ward = result.rows[0];
   if (!ward) throw new Error("Nie znaleziono podopiecznego");
-  if (Number(ward.caretaker_user_id) === Number(user?.id)) return;
+  if (ward.cohort_id) {
+    const access = await pool.query("SELECT 1 FROM cohort_caretakers WHERE cohort_id=$1 AND user_id=$2", [ward.cohort_id, user?.id || 0]);
+    if (access.rows[0]) return;
+  }
   throw forbidden("Mozesz edytowac tylko podopiecznych swojej grupy");
 }
 
@@ -528,7 +542,7 @@ async function state(gameId?: number, user?: User) {
   if (!game) throw new Error("Nie znaleziono gry");
   game.remaining_seconds = remaining(game);
 
-  const [teams, stations, scores, materials, questions, games, cohorts, wards, sessions, photos, photoAlbums, photoAlbumItems, shares, messages, messageUnreads, caregivers, competitionTents, competitionMembers, competitionPoints] = await Promise.all([
+  const [teams, stations, scores, materials, questions, games, cohorts, wards, sessions, photos, photoAlbums, photoAlbumItems, shares, messages, messageUnreads, caregivers, competitionTents, competitionMembers, competitionPoints, cohortCaretakers] = await Promise.all([
     pool.query(`
       SELECT t.*,
         COALESCE(SUM(ts.points), 0)::int AS total_points,
@@ -596,7 +610,7 @@ async function state(gameId?: number, user?: User) {
             AND (
               ish.target_type IN ('hufiec', 'staff', 'parents')
               OR (ish.target_type = 'user' AND ish.target_id = $2)
-              OR (ish.target_type = 'cohort' AND ($3 = 'administrator' OR EXISTS (SELECT 1 FROM cohorts gc WHERE gc.id = ish.target_id AND gc.caretaker_user_id = $2)))
+              OR (ish.target_type = 'cohort' AND ($3 = 'administrator' OR EXISTS (SELECT 1 FROM cohort_caretakers cc WHERE cc.cohort_id = ish.target_id AND cc.user_id = $2)))
             )
         )
       ORDER BY COALESCE(p.created_at, s.session_date::timestamptz) DESC, p.id DESC
@@ -641,7 +655,7 @@ async function state(gameId?: number, user?: User) {
       LEFT JOIN session_photos rp ON rp.id = rm.photo_id
       WHERE m.target_type IN ('hufiec', 'staff', 'parents')
         OR (m.target_type='user' AND (m.sender_id=$1 OR m.target_id=$1))
-        OR (m.target_type='cohort' AND ($2='administrator' OR EXISTS (SELECT 1 FROM cohorts gc WHERE gc.id=m.target_id AND gc.caretaker_user_id=$1)))
+        OR (m.target_type='cohort' AND ($2='administrator' OR EXISTS (SELECT 1 FROM cohort_caretakers cc WHERE cc.cohort_id=m.target_id AND cc.user_id=$1)))
       ORDER BY m.created_at DESC
       LIMIT 80
     `, [user?.id || 0, user?.role || 'wychowawca']),
@@ -668,7 +682,7 @@ async function state(gameId?: number, user?: User) {
           OR (m.target_type='user' AND m.target_id = $1)
           OR (m.target_type='cohort' AND (
             $2 = 'administrator'
-            OR EXISTS (SELECT 1 FROM cohorts c WHERE c.id = m.target_id AND c.caretaker_user_id = $1)
+            OR EXISTS (SELECT 1 FROM cohort_caretakers cc WHERE cc.cohort_id = m.target_id AND cc.user_id = $1)
           ))
         )
         AND m.id > COALESCE(r.last_read_message_id, 0)
@@ -679,7 +693,7 @@ async function state(gameId?: number, user?: User) {
     `, [user.id, user.role]) : Promise.resolve({ rows: [] }),
     pool.query(`
       SELECT u.id, u.email, u.name, u.role, u.created_at, u.dashboard_tiles,
-        COALESCE((SELECT COUNT(*) FROM cohorts c WHERE c.caretaker_user_id = u.id), 0)::int AS group_count
+        COALESCE((SELECT COUNT(*) FROM cohort_caretakers cc WHERE cc.user_id = u.id), 0)::int AS group_count
       FROM users u
       ORDER BY CASE WHEN u.role='administrator' THEN 0 ELSE 1 END, u.name
     `),
@@ -692,7 +706,7 @@ async function state(gameId?: number, user?: User) {
       WHERE $1::boolean
         OR t.cohort_id IS NULL
         OR t.created_by = $2
-        OR EXISTS (SELECT 1 FROM cohorts c WHERE c.id = t.cohort_id AND c.caretaker_user_id = $2)
+        OR EXISTS (SELECT 1 FROM cohort_caretakers cc WHERE cc.cohort_id = t.cohort_id AND cc.user_id = $2)
         OR EXISTS (SELECT 1 FROM competition_points cp WHERE cp.tent_id = t.id AND cp.created_by = $2)
       GROUP BY t.id
       ORDER BY total_points DESC, t.name ASC
@@ -706,7 +720,7 @@ async function state(gameId?: number, user?: User) {
       WHERE $1::boolean
         OR t.cohort_id IS NULL
         OR t.created_by = $2
-        OR EXISTS (SELECT 1 FROM cohorts gc WHERE gc.id = t.cohort_id AND gc.caretaker_user_id = $2)
+        OR EXISTS (SELECT 1 FROM cohort_caretakers cc WHERE cc.cohort_id = t.cohort_id AND cc.user_id = $2)
         OR EXISTS (SELECT 1 FROM competition_points cp WHERE cp.tent_id = t.id AND cp.created_by = $2)
       ORDER BY w.name
     `, [isAdmin(user), user?.id || 0]),
@@ -719,11 +733,17 @@ async function state(gameId?: number, user?: User) {
         OR t.cohort_id IS NULL
         OR t.created_by = $2
         OR p.created_by = $2
-        OR EXISTS (SELECT 1 FROM cohorts gc WHERE gc.id = t.cohort_id AND gc.caretaker_user_id = $2)
+        OR EXISTS (SELECT 1 FROM cohort_caretakers cc WHERE cc.cohort_id = t.cohort_id AND cc.user_id = $2)
         OR EXISTS (SELECT 1 FROM competition_points cp WHERE cp.tent_id = t.id AND cp.created_by = $2)
       ORDER BY COALESCE(p.edited_at, p.created_at) DESC, p.id DESC
       LIMIT 120
-    `, [isAdmin(user), user?.id || 0])
+    `, [isAdmin(user), user?.id || 0]),
+    pool.query(`
+      SELECT cc.cohort_id, cc.user_id, u.name AS user_name, u.email AS user_email
+      FROM cohort_caretakers cc
+      JOIN users u ON u.id = cc.user_id
+      ORDER BY cc.cohort_id, u.name
+    `)
   ]);
 
   return {
@@ -747,7 +767,8 @@ async function state(gameId?: number, user?: User) {
     caregivers: caregivers.rows,
     competition_tents: competitionTents.rows,
     competition_members: competitionMembers.rows,
-    competition_points: competitionPoints.rows
+    competition_points: competitionPoints.rows,
+    cohort_caretakers: cohortCaretakers.rows
   };
 }
 
@@ -868,7 +889,7 @@ async function pulseState(gameId?: number, user?: User) {
       LEFT JOIN session_photos rp ON rp.id = rm.photo_id
       WHERE m.target_type IN ('hufiec', 'staff', 'parents')
         OR (m.target_type='user' AND (m.sender_id=$1 OR m.target_id=$1))
-        OR (m.target_type='cohort' AND ($2='administrator' OR EXISTS (SELECT 1 FROM cohorts gc WHERE gc.id=m.target_id AND gc.caretaker_user_id=$1)))
+        OR (m.target_type='cohort' AND ($2='administrator' OR EXISTS (SELECT 1 FROM cohort_caretakers cc WHERE cc.cohort_id=m.target_id AND cc.user_id=$1)))
       ORDER BY m.created_at DESC
       LIMIT 80
     `, [userId || 0, user?.role || 'wychowawca']),
@@ -895,7 +916,7 @@ async function pulseState(gameId?: number, user?: User) {
           OR (m.target_type='user' AND m.target_id = $1)
           OR (m.target_type='cohort' AND (
             $2 = 'administrator'
-            OR EXISTS (SELECT 1 FROM cohorts c WHERE c.id = m.target_id AND c.caretaker_user_id = $1)
+            OR EXISTS (SELECT 1 FROM cohort_caretakers cc WHERE cc.cohort_id = m.target_id AND cc.user_id = $1)
           ))
         )
         AND m.id > COALESCE(r.last_read_message_id, 0)
@@ -1170,6 +1191,7 @@ app.post("/api/caregivers", async (req, res) => {
 
   if (cohortId) {
     await pool.query("UPDATE cohorts SET caretaker_user_id=$1, caretaker=$2 WHERE id=$3", [userId, name, cohortId]);
+    await pool.query("INSERT INTO cohort_caretakers (cohort_id, user_id) VALUES ($1,$2) ON CONFLICT DO NOTHING", [cohortId, userId]);
   }
   res.json(await stateFor(req, Number(req.body.game_id || 0) || undefined));
 });
@@ -1183,10 +1205,18 @@ app.post("/api/cohorts", async (req, res) => {
     ? String((await pool.query("SELECT name FROM users WHERE id=$1", [caretakerUserId])).rows[0]?.name || "")
     : String(req.body.caretaker || "").trim();
   if (!name) return res.status(400).json({ ok: false, error: "Podaj nazwę grupy" });
+  let cohortId = id;
   if (id) {
     await pool.query("UPDATE cohorts SET name=$1, caretaker=$2, caretaker_user_id=$3 WHERE id=$4", [name, caretaker || "Bez opiekuna", caretakerUserId, id]);
   } else {
-    await pool.query("INSERT INTO cohorts (name, caretaker, caretaker_user_id) VALUES ($1,$2,$3)", [name, caretaker || "Bez opiekuna", caretakerUserId]);
+    const inserted = await pool.query(
+      "INSERT INTO cohorts (name, caretaker, caretaker_user_id) VALUES ($1,$2,$3) RETURNING id",
+      [name, caretaker || "Bez opiekuna", caretakerUserId]
+    );
+    cohortId = Number(inserted.rows[0].id);
+  }
+  if (caretakerUserId) {
+    await pool.query("INSERT INTO cohort_caretakers (cohort_id, user_id) VALUES ($1,$2) ON CONFLICT DO NOTHING", [cohortId, caretakerUserId]);
   }
   res.json(await stateFor(req, Number(req.body.game_id || 0) || undefined));
 });
@@ -1195,6 +1225,34 @@ app.delete("/api/cohorts/:id", async (req, res) => {
   if (req.user?.role !== "administrator") return res.status(403).json({ ok: false, error: "Tylko administrator może usuwać grupy" });
   await pool.query("DELETE FROM cohorts WHERE id=$1", [Number(req.params.id)]);
   res.json(await stateFor(req, req.query.gameId ? Number(req.query.gameId) : undefined));
+});
+
+// Dodatkowi opiekunowie grupy (komendant + druhny) - obok "głównego" opiekuna z /api/cohorts.
+// Zestaw jest ustawiany hurtem (jak przy członkach namiotu), a główny opiekun jest zawsze
+// domyślnie w tym zestawie, żeby admin nie mógł go przez pomyłkę odciąć od własnej grupy.
+app.post("/api/cohorts/:id/caretakers", async (req, res) => {
+  if (req.user?.role !== "administrator") return res.status(403).json({ ok: false, error: "Tylko administrator może zarządzać opiekunami grupy" });
+  const cohortId = Number(req.params.id);
+  const cohort = await pool.query("SELECT caretaker_user_id FROM cohorts WHERE id=$1", [cohortId]);
+  if (!cohort.rows[0]) return res.status(404).json({ ok: false, error: "Nie znaleziono grupy" });
+  const userIds = new Set<number>(Array.isArray(req.body.user_ids) ? req.body.user_ids.map(Number).filter(Boolean) : []);
+  const primaryId = Number(cohort.rows[0].caretaker_user_id || 0) || null;
+  if (primaryId) userIds.add(primaryId);
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query("DELETE FROM cohort_caretakers WHERE cohort_id=$1", [cohortId]);
+    for (const userId of userIds) {
+      await client.query("INSERT INTO cohort_caretakers (cohort_id, user_id) VALUES ($1,$2) ON CONFLICT DO NOTHING", [cohortId, userId]);
+    }
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+  res.json(await stateFor(req, Number(req.body.game_id || 0) || undefined));
 });
 
 app.post("/api/competition/tents", async (req, res) => {
@@ -1449,7 +1507,7 @@ app.post("/api/messages", async (req, res) => {
   }
   if (targetType === "cohort" && req.user?.role !== "administrator") {
     const owns = targetId
-      ? await pool.query("SELECT 1 FROM cohorts WHERE id=$1 AND caretaker_user_id=$2", [targetId, req.user?.id || 0])
+      ? await pool.query("SELECT 1 FROM cohort_caretakers WHERE cohort_id=$1 AND user_id=$2", [targetId, req.user?.id || 0])
       : { rowCount: 0 };
     if (!owns.rowCount) return res.status(403).json({ ok: false, error: "Nie jesteś wychowawcą tej grupy" });
   }

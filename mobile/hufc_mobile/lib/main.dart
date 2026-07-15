@@ -1826,8 +1826,7 @@ class _WardsPageState extends State<WardsPage> {
 
   bool _canManageWard(Map<String, dynamic> ward, Map<int, Map<String, dynamic>> groups) {
     if (session.user.isAdmin) return true;
-    final cohort = groups[jsonInt(ward['cohort_id'])];
-    return jsonInt(cohort?['caretaker_user_id']) == session.user.id;
+    return _isCohortCaretaker(state, session.user.id, jsonInt(ward['cohort_id']));
   }
 
   int _nextLocalId(List<Map<String, dynamic>> items) {
@@ -2445,7 +2444,9 @@ class _GroupCard extends StatefulWidget {
 
 class _GroupCardState extends State<_GroupCard> {
   int? _caretakerId;
+  late Set<int> _extraCaretakerIds;
   bool _saving = false;
+  bool _savingCaretakers = false;
   bool _deleting = false;
 
   @override
@@ -2453,6 +2454,16 @@ class _GroupCardState extends State<_GroupCard> {
     super.initState();
     final id = jsonInt(widget.cohort['caretaker_user_id']);
     _caretakerId = id > 0 ? id : null;
+    _extraCaretakerIds = _currentExtraCaretakers();
+  }
+
+  Set<int> _currentExtraCaretakers() {
+    final cohortId = jsonInt(widget.cohort['id']);
+    final links = jsonList(widget.state.raw['cohort_caretakers']);
+    return links
+        .where((item) => jsonInt(item['cohort_id']) == cohortId && jsonInt(item['user_id']) != _caretakerId)
+        .map((item) => jsonInt(item['user_id']))
+        .toSet();
   }
 
   Future<void> _save() async {
@@ -2474,6 +2485,32 @@ class _GroupCardState extends State<_GroupCard> {
       }, AppState.fromJson(raw));
     } finally {
       if (mounted) setState(() => _saving = false);
+    }
+  }
+
+  // Dodatkowi opiekunowie (np. druhny obok komendanta) - obok "głównego" wychowawcy z pola
+  // wyżej, żeby kilka osób prowadzących ten sam podobóz widziało to samo (podopieczni,
+  // wiadomości, zdjęcia, współzawodnictwo), nie tylko jedna oficjalnie przypisana osoba.
+  Future<void> _saveExtraCaretakers() async {
+    setState(() => _savingCaretakers = true);
+    try {
+      final cohortId = jsonInt(widget.cohort['id']);
+      final userIds = {..._extraCaretakerIds, if (_caretakerId != null) _caretakerId!}.toList();
+      final caregivers = jsonList(widget.state.raw['caregivers']);
+      final raw = _clone(widget.state.raw);
+      final links = jsonList(raw['cohort_caretakers']).where((item) => jsonInt(item['cohort_id']) != cohortId).toList();
+      for (final userId in userIds) {
+        final person = caregivers.firstWhere((item) => jsonInt(item['id']) == userId, orElse: () => <String, dynamic>{});
+        links.add({'cohort_id': cohortId, 'user_id': userId, 'user_name': jsonString(person['name'], fallback: 'Wychowawca'), 'user_email': jsonString(person['email'])});
+      }
+      raw['cohort_caretakers'] = links;
+      await widget.onMutate('/api/cohorts/$cohortId/caretakers', {
+        'user_ids': userIds,
+        'game_id': widget.state.game.id,
+      }, AppState.fromJson(raw));
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Opiekunowie grupy zaktualizowani.')));
+    } finally {
+      if (mounted) setState(() => _savingCaretakers = false);
     }
   }
 
@@ -2514,6 +2551,40 @@ class _GroupCardState extends State<_GroupCard> {
           FilledButton(onPressed: busy ? null : _save, child: _saving ? const HufcLoader(size: 20, color: Colors.white) : const Text('Zapisz')),
           OutlinedButton(onPressed: busy ? null : _delete, child: _deleting ? const HufcLoader(size: 20) : const Text('Usuń grupę')),
         ]),
+        const SizedBox(height: 16),
+        Text('Dodatkowi opiekunowie (np. druhny)', style: TextStyle(fontWeight: FontWeight.w800, color: Theme.of(context).colorScheme.onSurfaceVariant)),
+        const SizedBox(height: 4),
+        Text('Widzą to samo co wychowawca powyżej: podopiecznych, wiadomości grupy, zdjęcia i współzawodnictwo.', style: TextStyle(fontSize: 12, color: Theme.of(context).colorScheme.onSurfaceVariant)),
+        const SizedBox(height: 8),
+        if (caregivers.where((item) => jsonInt(item['id']) != _caretakerId).isEmpty)
+          const Text('Brak innych kont do dodania.')
+        else
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              for (final person in caregivers.where((item) => jsonInt(item['id']) != _caretakerId))
+                FilterChip(
+                  label: Text(jsonString(person['name'], fallback: 'Wychowawca')),
+                  selected: _extraCaretakerIds.contains(jsonInt(person['id'])),
+                  onSelected: _savingCaretakers
+                      ? null
+                      : (value) => setState(() {
+                            final id = jsonInt(person['id']);
+                            if (value) {
+                              _extraCaretakerIds.add(id);
+                            } else {
+                              _extraCaretakerIds.remove(id);
+                            }
+                          }),
+                ),
+            ],
+          ),
+        const SizedBox(height: 8),
+        FilledButton.tonal(
+          onPressed: _savingCaretakers ? null : _saveExtraCaretakers,
+          child: _savingCaretakers ? const HufcLoader(size: 20) : const Text('Zapisz opiekunów'),
+        ),
         const SizedBox(height: 10),
         Text(
           wards.isEmpty ? 'Brak podopiecznych w tej grupie.' : wards.map((ward) => jsonString(ward['name'])).where((name) => name.isNotEmpty).join(', '),
@@ -2527,6 +2598,14 @@ class _GroupCardState extends State<_GroupCard> {
 Set<int> _idSet(Object? value) {
   if (value is List) return value.map((item) => jsonInt(item)).toSet();
   return <int>{};
+}
+
+// Grupa może mieć więcej niż jednego opiekuna (komendant + druhny) - to sprawdzenie
+// odzwierciedla po stronie apki to samo co serwer, żeby UI nie chowało czatu/podopiecznych
+// przed kimś, kto faktycznie ma do nich dostęp.
+bool _isCohortCaretaker(AppState? state, int userId, int cohortId) {
+  if (state == null || cohortId <= 0) return false;
+  return jsonList(state.raw['cohort_caretakers']).any((item) => jsonInt(item['cohort_id']) == cohortId && jsonInt(item['user_id']) == userId);
 }
 
 class MeetingsPage extends StatelessWidget {
@@ -5788,7 +5867,7 @@ List<_Conversation> _buildConversations(AppState state, AppUser user) {
 
   for (final cohort in jsonList(state.raw['cohorts'])) {
     final id = jsonInt(cohort['id']);
-    final canSee = user.isAdmin || jsonInt(cohort['caretaker_user_id']) == user.id;
+    final canSee = user.isAdmin || _isCohortCaretaker(state, user.id, id);
     if (id > 0 && canSee) {
       upsert(_Conversation(
         targetType: 'cohort',
@@ -5895,9 +5974,18 @@ List<_ConversationMember> _conversationMembers(_Conversation conversation, AppSt
   } else if (conversation.targetType == 'cohort') {
     final cohorts = jsonList(state.raw['cohorts']);
     final cohort = findById(cohorts, conversation.targetId);
-    final caretakerId = jsonInt(cohort?['caretaker_user_id']);
-    final caretaker = findById(caregivers, caretakerId);
-    add(jsonString(caretaker?['name'], fallback: jsonString(cohort?['caretaker_name'], fallback: 'Opiekun grupy')), 'wychowawca');
+    final caretakerIds = jsonList(state.raw['cohort_caretakers'])
+        .where((item) => jsonInt(item['cohort_id']) == conversation.targetId)
+        .map((item) => jsonInt(item['user_id']))
+        .toSet();
+    if (caretakerIds.isEmpty) {
+      add(jsonString(cohort?['caretaker_name'], fallback: 'Opiekun grupy'), 'wychowawca');
+    } else {
+      for (final caretakerId in caretakerIds) {
+        final caretaker = findById(caregivers, caretakerId);
+        add(jsonString(caretaker?['name'], fallback: 'Opiekun grupy'), 'wychowawca');
+      }
+    }
     for (final ward in jsonList(state.raw['wards']).where((item) => jsonInt(item['cohort_id']) == conversation.targetId)) {
       add(jsonString(ward['name'], fallback: 'Podopieczny'), 'podopieczny');
     }
