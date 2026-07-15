@@ -431,7 +431,10 @@ async function myCohortId(user?: User): Promise<number | null> {
 // Namiot jest widoczny/edytowalny dla admina, wychowawcy przypisanego do jego grupy,
 // jego twórcy, albo kogokolwiek kto już dodawał do niego punkty - ten ostatni warunek
 // jest siatką bezpieczeństwa na wypadek gdyby przypisanie grupa/wychowawca w danych
-// nie było w 100% dokładne, żeby nikomu nic nie zniknęło przy tej zmianie.
+// nie było w 100% dokładne, żeby nikomu nic nie zniknęło przy tej zmianie. Namioty, które
+// wciąż nie mają żadnej grupy (np. założone zanim istniało powiązanie namiot-grupa, albo
+// ich podopieczni sami też nie mają grupy) zostają widoczne dla wszystkich - tak jak
+// zawsze - dopóki ktoś nie przypisze im grupy.
 async function canManageTent(user: User | undefined, tentId: number): Promise<boolean> {
   if (isAdmin(user)) return true;
   if (!user?.id || !tentId) return false;
@@ -439,7 +442,8 @@ async function canManageTent(user: User | undefined, tentId: number): Promise<bo
     `SELECT 1 FROM competition_tents t
      WHERE t.id = $1
        AND (
-         t.created_by = $2
+         t.cohort_id IS NULL
+         OR t.created_by = $2
          OR EXISTS (SELECT 1 FROM cohorts c WHERE c.id = t.cohort_id AND c.caretaker_user_id = $2)
          OR EXISTS (SELECT 1 FROM competition_points cp WHERE cp.tent_id = t.id AND cp.created_by = $2)
        )`,
@@ -686,6 +690,7 @@ async function state(gameId?: number, user?: User) {
       FROM competition_tents t
       LEFT JOIN competition_points p ON p.tent_id = t.id
       WHERE $1::boolean
+        OR t.cohort_id IS NULL
         OR t.created_by = $2
         OR EXISTS (SELECT 1 FROM cohorts c WHERE c.id = t.cohort_id AND c.caretaker_user_id = $2)
         OR EXISTS (SELECT 1 FROM competition_points cp WHERE cp.tent_id = t.id AND cp.created_by = $2)
@@ -699,6 +704,7 @@ async function state(gameId?: number, user?: User) {
       JOIN competition_tents t ON t.id = m.tent_id
       LEFT JOIN cohorts c ON c.id = w.cohort_id
       WHERE $1::boolean
+        OR t.cohort_id IS NULL
         OR t.created_by = $2
         OR EXISTS (SELECT 1 FROM cohorts gc WHERE gc.id = t.cohort_id AND gc.caretaker_user_id = $2)
         OR EXISTS (SELECT 1 FROM competition_points cp WHERE cp.tent_id = t.id AND cp.created_by = $2)
@@ -710,6 +716,7 @@ async function state(gameId?: number, user?: User) {
       JOIN competition_tents t ON t.id = p.tent_id
       LEFT JOIN users u ON u.id = p.created_by
       WHERE $1::boolean
+        OR t.cohort_id IS NULL
         OR t.created_by = $2
         OR p.created_by = $2
         OR EXISTS (SELECT 1 FROM cohorts gc WHERE gc.id = t.cohort_id AND gc.caretaker_user_id = $2)
