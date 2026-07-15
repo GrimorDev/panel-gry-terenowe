@@ -186,6 +186,7 @@ class _HufcMobileAppState extends State<HufcMobileApp> with WidgetsBindingObserv
   bool _biometricEnabled = false;
   bool _biometricAvailable = false;
   bool _locked = false;
+  List<String> _dashboardTiles = _defaultDashboardTiles;
   final LocalAuthentication _localAuth = LocalAuthentication();
   StreamSubscription<List<ConnectivityResult>>? _connectivitySubscription;
   Timer? _realtimeTimer;
@@ -237,15 +238,22 @@ class _HufcMobileAppState extends State<HufcMobileApp> with WidgetsBindingObserv
     final savedPushNotifications = await widget.store.get('notify_push');
     final savedPhotoLocation = await widget.store.get('photo_location');
     final savedBiometric = await widget.store.get('biometric_unlock');
+    final savedDashboardTiles = await widget.store.get('dashboard_tiles');
     if (savedApiBaseUrl != null) widget.api.setBaseUrl(savedApiBaseUrl);
     final auth = await widget.store.readAuth();
     final cached = await widget.store.readState();
     final online = await _isOnline();
     bool biometricAvailable = false;
     try {
-      biometricAvailable = await _localAuth.isDeviceSupported() && await _localAuth.canCheckBiometrics;
+      // Niektóre telefony/wersje wtyczki zwracają true tylko na jednym z tych dwóch
+      // sprawdzeń mimo że sprzęt faktycznie obsługuje odcisk/Face ID - łączymy je przez
+      // "lub", żeby nie chować przełącznika bez potrzeby.
+      final supported = await _localAuth.isDeviceSupported();
+      final canCheck = await _localAuth.canCheckBiometrics;
+      biometricAvailable = supported || canCheck;
     } catch (_) {}
     final biometricEnabled = savedBiometric == 'true' && biometricAvailable;
+    final dashboardTiles = _resolveDashboardTiles(savedDashboardTiles, cached, auth?.user.id ?? 0);
     setState(() {
       _session = auth;
       _state = cached;
@@ -259,6 +267,7 @@ class _HufcMobileAppState extends State<HufcMobileApp> with WidgetsBindingObserv
       _biometricAvailable = biometricAvailable;
       _biometricEnabled = biometricEnabled;
       _locked = auth != null && biometricEnabled;
+      _dashboardTiles = dashboardTiles;
       _booting = false;
     });
     await _refreshQueue();
@@ -408,6 +417,21 @@ class _HufcMobileAppState extends State<HufcMobileApp> with WidgetsBindingObserv
     await widget.store.put('biometric_unlock', enabled.toString());
     if (!mounted) return;
     setState(() => _biometricEnabled = enabled);
+  }
+
+  Future<void> _setDashboardTiles(List<String> tiles) async {
+    // Wybór kafelków to preferencja urządzenia/konta - zapisujemy ją lokalnie od razu,
+    // żeby UI trzymał wybór natychmiast i nie znikał przy kolejnym pełnym pobraniu stanu
+    // z serwera. Zapis do bazy jest tylko "przy okazji", w tle, best-effort.
+    await widget.store.put('dashboard_tiles', jsonEncode(tiles));
+    if (mounted) setState(() => _dashboardTiles = tiles);
+    if (_session == null || !_online) return;
+    try {
+      await widget.api.postState(_session!.token, '/api/profile/dashboard-tiles', {'tiles': tiles, 'game_id': _state?.game.id ?? 0});
+    } catch (_) {
+      // Brak połączenia albo serwer jeszcze nie ma tego endpointu - lokalny wybór
+      // i tak już jest zapisany, spróbujemy zsynchronizować przy kolejnej okazji.
+    }
   }
 
   Future<void> _unlockWithBiometrics() async {
@@ -730,6 +754,8 @@ class _HufcMobileAppState extends State<HufcMobileApp> with WidgetsBindingObserv
                   biometricAvailable: _biometricAvailable,
                   biometricEnabled: _biometricEnabled,
                   onBiometricEnabledChanged: _setBiometricEnabled,
+                  dashboardTiles: _dashboardTiles,
+                  onDashboardTilesChanged: _setDashboardTiles,
                   openConversationKey: _pendingConversationKey,
                   onOpenConversationConsumed: _consumePendingConversation,
                 ),
@@ -1059,6 +1085,8 @@ class ShellScreen extends StatefulWidget {
     required this.biometricAvailable,
     required this.biometricEnabled,
     required this.onBiometricEnabledChanged,
+    required this.dashboardTiles,
+    required this.onDashboardTilesChanged,
     this.openConversationKey,
     required this.onOpenConversationConsumed,
   });
@@ -1088,6 +1116,8 @@ class ShellScreen extends StatefulWidget {
   final bool biometricAvailable;
   final bool biometricEnabled;
   final ValueChanged<bool> onBiometricEnabledChanged;
+  final List<String> dashboardTiles;
+  final ValueChanged<List<String>> onDashboardTilesChanged;
   final String? openConversationKey;
   final VoidCallback onOpenConversationConsumed;
 
@@ -1131,7 +1161,7 @@ class _ShellScreenState extends State<ShellScreen> {
   Widget build(BuildContext context) {
     final state = widget.state;
     final pages = <_MobilePage>[
-      _MobilePage('Pulpit', Icons.dashboard_outlined, Icons.dashboard, DashboardPage(session: widget.session, state: state, online: widget.online, queueCount: widget.queueCount, onNavigate: _selectTab, pushBlockedBySystem: widget.pushBlockedBySystem, onMutate: widget.onMutate)),
+      _MobilePage('Pulpit', Icons.dashboard_outlined, Icons.dashboard, DashboardPage(session: widget.session, state: state, online: widget.online, queueCount: widget.queueCount, onNavigate: _selectTab, pushBlockedBySystem: widget.pushBlockedBySystem, dashboardTiles: widget.dashboardTiles, onDashboardTilesChanged: widget.onDashboardTilesChanged)),
       _MobilePage('Podopieczni', Icons.person_outline, Icons.person, WardsPage(state: state, session: widget.session, onMutate: widget.onMutate, onDelete: widget.onDelete)),
       _MobilePage('Grupy', Icons.groups_outlined, Icons.groups, GroupsPage(state: state)),
       _MobilePage('Zbiórki', Icons.calendar_month_outlined, Icons.calendar_month, MeetingsPage(state: state, session: widget.session, onMutate: widget.onMutate, onDelete: widget.onDelete)),
@@ -1360,8 +1390,21 @@ List<String> _currentDashboardTiles(AppState? state, int userId) {
   return _defaultDashboardTiles;
 }
 
+List<String> _resolveDashboardTiles(String? saved, AppState? state, int userId) {
+  if (saved != null) {
+    try {
+      final decoded = jsonDecode(saved);
+      if (decoded is List) {
+        final tiles = decoded.map((item) => item.toString()).where(_dashboardTileCatalog.containsKey).toList();
+        if (tiles.isNotEmpty) return tiles;
+      }
+    } catch (_) {}
+  }
+  return _currentDashboardTiles(state, userId);
+}
+
 class DashboardPage extends StatelessWidget {
-  const DashboardPage({super.key, required this.session, required this.state, required this.online, required this.queueCount, required this.onNavigate, required this.pushBlockedBySystem, required this.onMutate});
+  const DashboardPage({super.key, required this.session, required this.state, required this.online, required this.queueCount, required this.onNavigate, required this.pushBlockedBySystem, required this.dashboardTiles, required this.onDashboardTilesChanged});
 
   final AuthSession session;
   final AppState? state;
@@ -1369,11 +1412,10 @@ class DashboardPage extends StatelessWidget {
   final int queueCount;
   final ValueChanged<int> onNavigate;
   final bool pushBlockedBySystem;
-  final Future<void> Function(String url, Map<String, dynamic> body, AppState optimistic) onMutate;
+  final List<String> dashboardTiles;
+  final ValueChanged<List<String>> onDashboardTilesChanged;
 
   Future<void> _editTiles(BuildContext context, List<String> current) async {
-    final state = this.state;
-    if (state == null) return;
     var selected = current.toSet();
     await showModalBottomSheet<void>(
       context: context,
@@ -1408,15 +1450,9 @@ class DashboardPage extends StatelessWidget {
               FilledButton(
                 onPressed: selected.isEmpty
                     ? null
-                    : () async {
-                        final tiles = selected.toList();
-                        final raw = _clone(state.raw);
-                        final caregivers = jsonList(raw['caregivers']);
-                        final me = caregivers.firstWhere((item) => jsonInt(item['id']) == session.user.id, orElse: () => <String, dynamic>{});
-                        if (me.isNotEmpty) me['dashboard_tiles'] = jsonEncode(tiles);
-                        raw['caregivers'] = caregivers;
-                        await onMutate('/api/profile/dashboard-tiles', {'tiles': tiles, 'game_id': state.game.id}, AppState.fromJson(raw));
-                        if (context.mounted) Navigator.of(context).pop();
+                    : () {
+                        onDashboardTilesChanged(selected.toList());
+                        Navigator.of(context).pop();
                       },
                 child: const Text('Zapisz'),
               ),
@@ -1431,7 +1467,7 @@ class DashboardPage extends StatelessWidget {
   Widget build(BuildContext context) {
     final game = state?.game;
     final sessions = state == null ? <Map<String, dynamic>>[] : jsonList(state!.raw['sessions']);
-    final tileKeys = _currentDashboardTiles(state, session.user.id);
+    final tileKeys = dashboardTiles;
     final tileWidth = (MediaQuery.of(context).size.width - 32 - 20) / 3;
     return ListView(
       padding: const EdgeInsets.all(16),
