@@ -111,6 +111,54 @@ jobs:
               app_gradle.write_text(gradle, encoding="utf-8")
           PY
 
+      - name: Configure release signing
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > android/app/upload-keystore.jks
+          cat > android/key.properties <<KEYPROPS
+          storePassword=$ANDROID_KEYSTORE_PASSWORD
+          keyPassword=$ANDROID_KEY_PASSWORD
+          keyAlias=$ANDROID_KEY_ALIAS
+          storeFile=upload-keystore.jks
+          KEYPROPS
+          python - <<'PY'
+          from pathlib import Path
+
+          gradle_path = Path("android/app/build.gradle.kts")
+          text = gradle_path.read_text(encoding="utf-8")
+          if "keystoreProperties" not in text:
+              text = (
+                  'import java.util.Properties\n'
+                  'import java.io.FileInputStream\n\n'
+                  'val keystoreProperties = Properties()\n'
+                  'val keystorePropertiesFile = rootProject.file("key.properties")\n'
+                  'if (keystorePropertiesFile.exists()) {\n'
+                  '    keystoreProperties.load(FileInputStream(keystorePropertiesFile))\n'
+                  '}\n\n'
+              ) + text
+          if "signingConfigs {" not in text:
+              signing_block = (
+                  '    signingConfigs {\n'
+                  '        create("release") {\n'
+                  '            keyAlias = keystoreProperties["keyAlias"] as String?\n'
+                  '            keyPassword = keystoreProperties["keyPassword"] as String?\n'
+                  '            storeFile = keystoreProperties["storeFile"]?.let { file(it) }\n'
+                  '            storePassword = keystoreProperties["storePassword"] as String?\n'
+                  '        }\n'
+                  '    }\n'
+              )
+              text = text.replace("    buildTypes {", signing_block + "    buildTypes {", 1)
+          text = text.replace(
+              'signingConfig = signingConfigs.getByName("debug")',
+              'signingConfig = signingConfigs.getByName("release")',
+          )
+          gradle_path.write_text(text, encoding="utf-8")
+          PY
+
       - name: Generate launcher icons
         run: dart run flutter_launcher_icons -f flutter_launcher_icons_android.yaml
 
@@ -125,3 +173,12 @@ jobs:
         with:
           name: moj-hufiec-android-apk
           path: mobile/hufc_mobile/build/app/outputs/flutter-apk/app-release.apk
+
+      - name: Build release App Bundle (for Google Play)
+        run: flutter build appbundle --release --dart-define=API_URL=${{ inputs.api_url }}
+
+      - name: Upload App Bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: moj-hufiec-android-aab
+          path: mobile/hufc_mobile/build/app/outputs/bundle/release/app-release.aab
