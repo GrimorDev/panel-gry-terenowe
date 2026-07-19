@@ -34,7 +34,12 @@ jobs:
       - name: Ensure Android branding and permissions
         run: |
           python - <<'PY'
+          import re
           from pathlib import Path
+
+          # Nazwa pakietu na Google Play jest permanentna - musi się dokładnie zgadzać
+          # z tym, co zostało utworzone w Play Console.
+          package_name = "com.vipile.mojhufiec"
 
           manifest = Path("android/app/src/main/AndroidManifest.xml")
           text = manifest.read_text(encoding="utf-8")
@@ -70,6 +75,8 @@ jobs:
           app_gradle_kts = Path("android/app/build.gradle.kts")
           if app_gradle_kts.exists():
               gradle = app_gradle_kts.read_text(encoding="utf-8")
+              gradle = re.sub(r'namespace\s*=\s*"[^"]*"', f'namespace = "{package_name}"', gradle)
+              gradle = re.sub(r'applicationId\s*=\s*"[^"]*"', f'applicationId = "{package_name}"', gradle)
               if "isCoreLibraryDesugaringEnabled" not in gradle:
                   gradle = gradle.replace(
                       "compileOptions {\n",
@@ -87,6 +94,8 @@ jobs:
           app_gradle = Path("android/app/build.gradle")
           if app_gradle.exists():
               gradle = app_gradle.read_text(encoding="utf-8")
+              gradle = re.sub(r"namespace\s+['\"][^'\"]*['\"]", f"namespace '{package_name}'", gradle)
+              gradle = re.sub(r"applicationId\s+['\"][^'\"]*['\"]", f"applicationId '{package_name}'", gradle)
               if "coreLibraryDesugaringEnabled" not in gradle:
                   gradle = gradle.replace(
                       "compileOptions {\n",
